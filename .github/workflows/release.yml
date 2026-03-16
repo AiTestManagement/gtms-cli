@@ -1,0 +1,73 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+            ext: ""
+          - goos: linux
+            goarch: arm64
+            ext: ""
+          - goos: darwin
+            goarch: amd64
+            ext: ""
+          - goos: darwin
+            goarch: arm64
+            ext: ""
+          - goos: windows
+            goarch: amd64
+            ext: ".exe"
+          - goos: windows
+            goarch: arm64
+            ext: ".exe"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+
+      - name: Build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/}"
+          OUTPUT="gtms-${VERSION}-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}"
+          go build -ldflags "-X github.com/aitestmanagement/gtms-cli/internal/cli.Version=${VERSION}" -o "${OUTPUT}" ./cmd/gtms
+
+      - name: Package (unix)
+        if: matrix.goos != 'windows'
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/}"
+          BINARY="gtms-${VERSION}-${{ matrix.goos }}-${{ matrix.goarch }}"
+          ARCHIVE="gtms-${VERSION}-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz"
+          tar czf "${ARCHIVE}" "${BINARY}"
+
+      - name: Package (windows)
+        if: matrix.goos == 'windows'
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/}"
+          BINARY="gtms-${VERSION}-${{ matrix.goos }}-${{ matrix.goarch }}.exe"
+          ARCHIVE="gtms-${VERSION}-${{ matrix.goos }}-${{ matrix.goarch }}.zip"
+          zip "${ARCHIVE}" "${BINARY}"
+
+      - name: Upload release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            gtms-*.tar.gz
+            gtms-*.zip

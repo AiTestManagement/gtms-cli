@@ -1,0 +1,13 @@
+project:
+  name: "Timeout Test"
+  repo: org/timeout-test
+
+adapters:
+  create:
+    local-claude:
+      mode: sync
+      command: 'echo test'
+      timeout: 5m
+
+defaults:
+  create: local-claude

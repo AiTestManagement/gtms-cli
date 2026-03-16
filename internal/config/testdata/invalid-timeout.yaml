@@ -1,0 +1,13 @@
+project:
+  name: "Invalid Timeout"
+  repo: org/invalid-timeout
+
+adapters:
+  create:
+    bad-adapter:
+      mode: sync
+      command: 'echo test'
+      timeout: banana
+
+defaults:
+  create: bad-adapter

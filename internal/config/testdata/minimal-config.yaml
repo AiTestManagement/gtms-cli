@@ -1,0 +1,7 @@
+project:
+  name: "Minimal"
+  repo: org/minimal
+
+adapters: {}
+
+defaults: {}

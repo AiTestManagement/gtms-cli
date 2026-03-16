@@ -1,0 +1,17 @@
+project:
+  name: "Output Dir Test"
+  repo: test/repo
+adapters:
+  create:
+    my-creator:
+      mode: sync
+      output-dir: tests/features/
+      command: 'echo test'
+  automate:
+    my-automator:
+      mode: sync
+      output-dir: tests/e2e/
+      command: 'echo test'
+defaults:
+  create: my-creator
+  automate: my-automator

@@ -1,0 +1,12 @@
+project:
+  name: "My Project"
+  repo: org/my-repo
+
+adapters:
+  create:
+    local-claude:
+      mode: sync
+      command: 'echo hello'
+
+defaults:
+  execute: some-adapter

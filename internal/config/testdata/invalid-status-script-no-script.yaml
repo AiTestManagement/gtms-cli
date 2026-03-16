@@ -1,0 +1,12 @@
+project:
+  name: "My Project"
+  repo: org/my-repo
+
+adapters:
+  create:
+    bad-status:
+      mode: async
+      command: 'echo hello'
+      status-script: adapters/create-status.sh
+
+defaults: {}

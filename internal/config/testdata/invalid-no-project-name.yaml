@@ -1,0 +1,5 @@
+project:
+  repo: org/my-repo
+
+adapters: {}
+defaults: {}

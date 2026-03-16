@@ -1,0 +1,11 @@
+project:
+  name: "Spec Dir Compat Test"
+  repo: test/repo
+adapters:
+  automate:
+    playwright:
+      mode: sync
+      spec-dir: e2e/
+      command: 'echo test'
+defaults:
+  automate: playwright

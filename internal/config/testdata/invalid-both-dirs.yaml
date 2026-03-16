@@ -1,0 +1,12 @@
+project:
+  name: "Both Dirs Test"
+  repo: test/repo
+adapters:
+  automate:
+    playwright:
+      mode: sync
+      spec-dir: e2e/
+      output-dir: tests/e2e/
+      command: 'echo test'
+defaults:
+  automate: playwright

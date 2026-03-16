@@ -1,0 +1,35 @@
+project:
+  name: "My Project"
+  repo: org/my-repo
+
+adapters:
+  create:
+    local-claude:
+      mode: sync
+      prompt-template: test-cases/prompts/create-standard.md
+      guide-dir: test-cases/guides/
+      command: 'claude -p {prompt}'
+    github-create:
+      mode: async
+      prompt-template: test-cases/prompts/create-standard.md
+      script: adapters/github-create.sh
+      status-script: adapters/github-create-status.sh
+  automate:
+    local-claude:
+      mode: sync
+      prompt-template: test-automation/prompts/automate-standard.md
+      command: 'claude -p {prompt}'
+      timeout: 5m
+  execute:
+    local-runner:
+      mode: sync
+      command: 'npx playwright test {spec_file} --reporter=junit --output=results/junit/'
+    github-actions:
+      mode: async
+      script: adapters/github-execute.sh
+      status-script: adapters/github-execute-status.sh
+
+defaults:
+  create: local-claude
+  automate: local-claude
+  execute: local-runner

@@ -1,0 +1,11 @@
+project:
+  name: "Built-in Test"
+  repo: org/builtin
+
+adapters:
+  create:
+    local-builtin:
+      mode: sync
+
+defaults:
+  create: local-builtin

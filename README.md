@@ -111,6 +111,13 @@ Git helps you develop code but doesn't run it in production. GTMS helps you deve
 - Git on PATH
 - An AI coding tool (Claude, GPT, Copilot, etc.) for create/automate adapters
 
+## Verifying releases
+
+Windows binaries are Authenticode-signed via [SignPath Foundation](https://signpath.org/).
+
+See [SIGNING.md](SIGNING.md) for the signing policy and verification instructions.
+
+
 ## License
 
 [MIT](LICENSE)

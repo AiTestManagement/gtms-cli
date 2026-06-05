@@ -1,0 +1,13 @@
+project:
+  name: "ENH-078 Bad String"
+  repo: org/test
+
+adapters:
+  execute:
+    tier1-bad:
+      mode: sync
+      command: 'bats {artefact_file}'
+      fail-exit-codes: "one"
+
+defaults:
+  execute: tier1-bad

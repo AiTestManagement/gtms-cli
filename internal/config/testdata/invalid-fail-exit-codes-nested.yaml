@@ -1,0 +1,13 @@
+project:
+  name: "ENH-078 Nested"
+  repo: org/test
+
+adapters:
+  execute:
+    tier1-bad:
+      mode: sync
+      command: 'bats {artefact_file}'
+      fail-exit-codes: [[1]]
+
+defaults:
+  execute: tier1-bad

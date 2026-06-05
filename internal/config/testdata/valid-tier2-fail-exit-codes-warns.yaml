@@ -1,0 +1,14 @@
+project:
+  name: "ENH-078 Tier 2 Warning Test"
+  repo: org/test
+
+adapters:
+  execute:
+    tier2-with-key:
+      mode: sync
+      script: adapters/some-runner.sh
+      framework: bats
+      fail-exit-codes: [1]
+
+defaults:
+  execute: tier2-with-key

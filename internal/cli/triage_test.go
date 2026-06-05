@@ -87,26 +87,21 @@ func setupTriageFixture(t *testing.T) string {
 	root := t.TempDir()
 
 	// Test case
-	writeTestFile(t, root, filepath.Join("test-cases", "tc-aaa1111-login-happy.md"), `---
+	writeTestFile(t, root, filepath.Join("gtms/cases", "tc-aaa1111-login-happy.md"), `---
 test_case_id: tc-aaa1111
 title: Login Happy Path
 requirement: REQ-A
 ---
 `)
 
-	// Automation record with fail result (required for triage)
-	writeTestFile(t, root, filepath.Join("test-automation", "records", "tc-aaa1111.automation.md"), `---
-testcase: tc-aaa1111
-framework: playwright
-status: accepted
-last-formal-result: fail
-attempts: 1
-cycle: 1
----
-`)
+	// CON-023 / ENH-145: wiring record + terminal handoff with result: fail.
+	writeTestFile(t, root, filepath.Join("gtms/automation", "wiring", "tc-aaa1111--playwright.wiring.yaml"),
+		"testcase: tc-aaa1111\ntestcase-hash: 0011223344556677\nframework: playwright\nadapter: playwright-runner\nartefact: test/sample.spec.ts\nartefact-hash: aabbccddeeff0011\n")
+	writeTestFile(t, root, filepath.Join(".gtms", "results", "task-aaa1111.handoff.yaml"),
+		"task: task-aaa1111\ncommand: execute\ntarget: tc-aaa1111\nadapter: playwright-runner\nmode: sync\ncreated: \"2026-05-19T10:00:00Z\"\nstatus: complete\nresult: fail\nframework: playwright\ncompleted: \"2026-05-19T10:01:00Z\"\n")
 
-	// test-tasks/pending/ must exist for task creation
-	writeTestFile(t, root, filepath.Join("test-tasks", "pending", ".gitkeep"), "")
+	// gtms/tasks/pending/ must exist for task creation
+	writeTestFile(t, root, filepath.Join("gtms/tasks", "pending", ".gitkeep"), "")
 
 	return root
 }
@@ -116,7 +111,7 @@ func TestTriageCommand_JSON_AutomationWrong(t *testing.T) {
 	var buf bytes.Buffer
 
 	// Call RecordTriage directly then write JSON (same as the CLI path)
-	result, err := reader.RecordTriage(root, "tc-aaa1111", "automation-wrong", "Selectors broke", "")
+	result, err := reader.RecordTriage(root, "tc-aaa1111", "automation-wrong", "Selectors broke", "", "")
 	require.NoError(t, err)
 
 	err = writeTriageJSON(&buf, result)

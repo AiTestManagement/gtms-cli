@@ -29,9 +29,9 @@ func TestAdapterAbstractionAcidTest(t *testing.T) {
 		// --- Set up project root ---
 		root := t.TempDir()
 		for _, dir := range []string{
-			"test-tasks/pending", "test-tasks/complete", "test-tasks/failed",
-			"test-tasks/in-progress", "test-tasks/in-review",
-			"test-cases", "test-automation",
+			"gtms/tasks/pending", "gtms/tasks/complete", "gtms/tasks/error",
+			"gtms/tasks/in-progress", "gtms/tasks/in-review",
+			"gtms/cases", "gtms/automation",
 			".gtms/results", ".gtms/worktrees", ".gtms/logs",
 			"testdata",
 		} {
@@ -67,6 +67,7 @@ target: ${GTMS_REFERENCE}
 adapter: mock-tier2
 mode: sync
 status: complete
+result: pass
 artefact: test-output.md
 attempts: 1
 summary: "Mock tier2 completed"
@@ -99,7 +100,8 @@ EOF
 			assert.Equal(t, "complete", res.Status, "Tier 1 should complete")
 			assert.Equal(t, "mock-tier1", res.Adapter)
 			assert.Equal(t, "sync", res.Mode)
-			assert.Contains(t, res.Branch, "feature/create-ACID-TIER1")
+			// BUG-056: sync adapter in non-git temp dir → empty branch
+			assert.Equal(t, "", res.Branch)
 
 			// Verify task file in complete
 			completeTasks, err := task.List(root, "complete")
@@ -143,7 +145,8 @@ EOF
 			assert.Equal(t, "complete", res.Status, "Tier 2 should complete")
 			assert.Equal(t, "mock-tier2", res.Adapter)
 			assert.Equal(t, "sync", res.Mode)
-			assert.Contains(t, res.Branch, "feature/create-ACID-TIER2")
+			// BUG-056: sync adapter in non-git temp dir → empty branch
+			assert.Equal(t, "", res.Branch)
 
 			// Verify task file in complete
 			completeTasks, err := task.List(root, "complete")
@@ -210,8 +213,8 @@ func TestAcidTest_NoTierBranchingInCreateCommand(t *testing.T) {
 
 	root := t.TempDir()
 	for _, dir := range []string{
-		"test-tasks/pending", "test-tasks/complete", "test-tasks/failed",
-		"test-tasks/in-progress", ".gtms/results",
+		"gtms/tasks/pending", "gtms/tasks/complete", "gtms/tasks/error",
+		"gtms/tasks/in-progress", ".gtms/results",
 	} {
 		require.NoError(t, os.MkdirAll(filepath.Join(root, dir), 0755))
 	}
@@ -253,8 +256,8 @@ func TestAcidTest_ErrorHandlingIdentical(t *testing.T) {
 	skipIfShort(t)
 	root := t.TempDir()
 	for _, dir := range []string{
-		"test-tasks/pending", "test-tasks/complete", "test-tasks/failed",
-		"test-tasks/in-progress", ".gtms/results",
+		"gtms/tasks/pending", "gtms/tasks/complete", "gtms/tasks/error",
+		"gtms/tasks/in-progress", ".gtms/results",
 	} {
 		require.NoError(t, os.MkdirAll(filepath.Join(root, dir), 0755))
 	}
@@ -286,8 +289,8 @@ func TestAcidTest_ErrorHandlingIdentical(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "error", res2.Status)
 
-	// Both failed tasks should be in the failed directory
-	failedTasks, err := task.List(root, "failed")
+	// Both error tasks should be in the error directory
+	errorTasks, err := task.List(root, "error")
 	require.NoError(t, err)
-	assert.Len(t, failedTasks, 2, "Both tier 1 and tier 2 failures should be in failed/")
+	assert.Len(t, errorTasks, 2, "Both tier 1 and tier 2 failures should be in error/")
 }

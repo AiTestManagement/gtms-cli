@@ -12,7 +12,7 @@ GTMS uses [SignPath Foundation](https://signpath.org/) for Authenticode code sig
 - Windows installers (MSI / winget packages) when those distribution channels go live.
 - macOS and Linux binaries are not Authenticode-signed — Authenticode applies to Windows only.
 
-Signing applies to the first release after SignPath Foundation approval and to all subsequent releases. Earlier releases (v0.1.0 and prior) are unsigned.
+Signing applies to the first release after SignPath Foundation approval and to all subsequent releases. Earlier releases (v0.2.0 and prior) are unsigned.
 
 ## Roles and approvals
 

@@ -25,7 +25,7 @@ func TestCreateAndRead(t *testing.T) {
 	path, err := Create(root, tf, "Task body content\n")
 	require.NoError(t, err)
 	assert.FileExists(t, path)
-	assert.Contains(t, path, filepath.Join("test-tasks", "pending"))
+	assert.Contains(t, path, filepath.Join("gtms/tasks", "pending"))
 	assert.Contains(t, path, "task-abc1234-create-JIRA-456.md")
 
 	// Read it back
@@ -51,7 +51,7 @@ func TestCreate_DefaultStatus(t *testing.T) {
 
 	path, err := Create(root, tf, "")
 	require.NoError(t, err)
-	assert.Contains(t, path, filepath.Join("test-tasks", "pending"))
+	assert.Contains(t, path, filepath.Join("gtms/tasks", "pending"))
 	assert.Equal(t, "pending", tf.Status)
 	assert.NotEmpty(t, tf.Created) // should have been set
 }
@@ -67,6 +67,50 @@ func TestCreate_MissingFields(t *testing.T) {
 
 	_, err = Create(root, &TaskFile{ID: "task-123", Type: "create"}, "")
 	assert.Error(t, err, "missing target should error")
+}
+
+func TestCreate_RejectsInvalidStatus(t *testing.T) {
+	root := t.TempDir()
+
+	tests := []struct {
+		name   string
+		status string
+	}{
+		{name: "rejects failed", status: "failed"},
+		{name: "rejects unknown", status: "banana"},
+		{name: "rejects arbitrary", status: "closed"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tf := &TaskFile{
+				ID:     "task-val0001",
+				Type:   "execute",
+				Target: "tc-001",
+				Status: tt.status,
+			}
+			_, err := Create(root, tf, "")
+			assert.Error(t, err)
+			assert.Contains(t, err.Error(), "invalid status")
+		})
+	}
+}
+
+func TestCreate_AcceptsErrorStatus(t *testing.T) {
+	root := t.TempDir()
+
+	tf := &TaskFile{
+		ID:      "task-err0001",
+		Type:    "execute",
+		Target:  "tc-002",
+		Adapter: "test",
+		Status:  "error",
+		Created: "2025-02-14T10:00:00Z",
+	}
+
+	path, err := Create(root, tf, "")
+	require.NoError(t, err)
+	assert.Contains(t, path, filepath.Join("gtms/tasks", "error"))
 }
 
 func TestMove(t *testing.T) {
@@ -95,7 +139,7 @@ func TestMove(t *testing.T) {
 	assert.NoFileExists(t, path)
 
 	// New file should exist
-	newPath := filepath.Join(root, "test-tasks", "complete", "task-mov1234-create-JIRA-789.md")
+	newPath := filepath.Join(root, "gtms/tasks", "complete", "task-mov1234-create-JIRA-789.md")
 	assert.FileExists(t, newPath)
 
 	// Read moved file and verify status updated in frontmatter
@@ -118,6 +162,21 @@ func TestMove_InvalidStatus(t *testing.T) {
 	err := Move(root, tf, "invalid-status")
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid status")
+}
+
+func TestMove_RejectsFailedStatus(t *testing.T) {
+	root := t.TempDir()
+
+	tf := &TaskFile{
+		ID:     "task-mrf001",
+		Type:   "create",
+		Target: "X",
+		Status: "pending",
+	}
+
+	err := Move(root, tf, "failed")
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid status: failed")
 }
 
 func TestMove_SameStatus(t *testing.T) {
@@ -296,7 +355,7 @@ func TestTaskFileNaming(t *testing.T) {
 	// Verify directory structure
 	relPath, err := filepath.Rel(root, path)
 	require.NoError(t, err)
-	assert.Equal(t, filepath.Join("test-tasks", "pending", "task-abc1234-execute-tc-007.md"), relPath)
+	assert.Equal(t, filepath.Join("gtms/tasks", "pending", "task-abc1234-execute-tc-007.md"), relPath)
 }
 
 func TestFilename_SanitizesTarget(t *testing.T) {
@@ -379,7 +438,7 @@ func TestCreateAndMove_WithPathTarget(t *testing.T) {
 	err = Move(root, tf, "complete")
 	require.NoError(t, err)
 
-	newPath := filepath.Join(root, "test-tasks", "complete", "task-path123-create-reference-gtms-implementation.md")
+	newPath := filepath.Join(root, "gtms/tasks", "complete", "task-path123-create-reference-gtms-implementation.md")
 	assert.FileExists(t, newPath)
 }
 
@@ -402,7 +461,7 @@ func TestMove_PreservesBody(t *testing.T) {
 	err = Move(root, tf, "complete")
 	require.NoError(t, err)
 
-	newPath := filepath.Join(root, "test-tasks", "complete", "task-body123-create-JIRA-999.md")
+	newPath := filepath.Join(root, "gtms/tasks", "complete", "task-body123-create-JIRA-999.md")
 	content, err := os.ReadFile(newPath)
 	require.NoError(t, err)
 	assert.Contains(t, string(content), "# Task Body")

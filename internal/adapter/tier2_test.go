@@ -58,7 +58,7 @@ echo "TASK=$GTMS_TASK_ID CMD=$GTMS_COMMAND SRC=$GTMS_REFERENCE"
 		Reference:   "JIRA-789",
 		TestCase:    "tc-001",
 		OutputDir:   "/output",
-		SpecFile:    "spec.md",
+		ArtefactFile: "spec.md",
 		Branch:      "feature/test",
 		Repo:        "org/repo",
 		ProjectRoot: dir,
@@ -179,6 +179,7 @@ target: ${GTMS_REFERENCE}
 adapter: mock-tier2
 mode: sync
 status: complete
+result: pass
 artefact: test-output.md
 attempts: 1
 summary: "Mock tier2 completed"
@@ -509,12 +510,8 @@ func TestInvokeTier2_ShNotFound_Windows(t *testing.T) {
 	err := os.WriteFile(scriptPath, []byte("#!/bin/bash\necho hello\n"), 0755)
 	require.NoError(t, err)
 
-	// Override lookPath to simulate sh not found
-	origLookPath := lookPath
-	lookPath = func(name string) (string, error) {
-		return "", &exec.Error{Name: name, Err: exec.ErrNotFound}
-	}
-	defer func() { lookPath = origLookPath }()
+	// Simulate sh neither on PATH nor at Git for Windows fallback paths.
+	defer stubMissingSh()()
 
 	ac := &AdapterContext{
 		TaskID:      "task-t2nosh-win",
@@ -528,7 +525,57 @@ func TestInvokeTier2_ShNotFound_Windows(t *testing.T) {
 	_, err = InvokeTier2(context.Background(), ac, scriptPath)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "POSIX shell")
-	assert.Contains(t, err.Error(), "Git Bash or WSL")
+	assert.Contains(t, err.Error(), "Git for Windows")
+}
+
+func TestInvokeTier2_ShViaGitForWindowsFallback_Windows(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows-only test")
+	}
+
+	dir := t.TempDir()
+	scriptPath := filepath.Join(dir, "test-adapter.sh")
+	err := os.WriteFile(scriptPath, []byte("#!/bin/bash\necho hello\n"), 0755)
+	require.NoError(t, err)
+
+	// sh not on PATH, but present at a Git for Windows location. InvokeTier2
+	// must get past the shell-resolution gate (i.e. not return the "requires
+	// POSIX shell" error). Whether the script actually runs depends on the
+	// fake path — which won't exec — so we only assert absence of the
+	// resolution-gate error.
+	origLookPath := lookPath
+	origOsStat := osStat
+	lookPath = func(name string) (string, error) {
+		return "", &exec.Error{Name: name, Err: exec.ErrNotFound}
+	}
+	candidates := gitForWindowsShPaths()
+	require.NotEmpty(t, candidates)
+	target := candidates[0]
+	osStat = func(name string) (os.FileInfo, error) {
+		if name == target || name == scriptPath {
+			return fakeFileInfo{}, nil
+		}
+		return nil, os.ErrNotExist
+	}
+	defer func() {
+		lookPath = origLookPath
+		osStat = origOsStat
+	}()
+
+	_, err = InvokeTier2(context.Background(), &AdapterContext{
+		TaskID:      "task-t2gfw",
+		Command:     "create",
+		Reference:   "REQ-1",
+		ProjectRoot: dir,
+		WorkDir:     dir,
+		ResultFile:  filepath.Join(dir, "result.yaml"),
+	}, scriptPath)
+	// We expect some error (the fake sh.exe path cannot actually exec) but
+	// NOT the resolution-gate error — resolveSh should have succeeded.
+	if err != nil {
+		assert.NotContains(t, err.Error(), "requires a POSIX shell")
+		assert.NotContains(t, err.Error(), "Git for Windows (standard location)")
+	}
 }
 
 func TestInvokeTier2_ShNotFound_NonWindows(t *testing.T) {
@@ -542,11 +589,7 @@ func TestInvokeTier2_ShNotFound_NonWindows(t *testing.T) {
 	err := os.WriteFile(scriptPath, []byte("#!/bin/bash\necho hello\n"), 0755)
 	require.NoError(t, err)
 
-	origLookPath := lookPath
-	lookPath = func(name string) (string, error) {
-		return "", &exec.Error{Name: name, Err: exec.ErrNotFound}
-	}
-	defer func() { lookPath = origLookPath }()
+	defer stubMissingSh()()
 
 	ac := &AdapterContext{
 		TaskID:      "task-t2nosh-nix",

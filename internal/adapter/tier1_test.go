@@ -1,9 +1,12 @@
 package adapter
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -12,6 +15,35 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// fakeFileInfo is a minimal os.FileInfo used by tests that stub osStat to
+// report a (non-directory) file exists at a given path.
+type fakeFileInfo struct{}
+
+func (fakeFileInfo) Name() string       { return "sh.exe" }
+func (fakeFileInfo) Size() int64        { return 0 }
+func (fakeFileInfo) Mode() os.FileMode  { return 0 }
+func (fakeFileInfo) ModTime() time.Time { return time.Time{} }
+func (fakeFileInfo) IsDir() bool        { return false }
+func (fakeFileInfo) Sys() interface{}   { return nil }
+
+// stubMissingSh overrides lookPath and osStat to simulate a system on which
+// sh is neither on PATH nor present at any Git for Windows fallback location.
+// Returns a cleanup func that restores the originals.
+func stubMissingSh() func() {
+	origLookPath := lookPath
+	origOsStat := osStat
+	lookPath = func(name string) (string, error) {
+		return "", &exec.Error{Name: name, Err: exec.ErrNotFound}
+	}
+	osStat = func(name string) (os.FileInfo, error) {
+		return nil, os.ErrNotExist
+	}
+	return func() {
+		lookPath = origLookPath
+		osStat = origOsStat
+	}
+}
 
 func skipIfShort(t *testing.T) {
 	t.Helper()
@@ -129,7 +161,7 @@ func TestShellEscape(t *testing.T) {
 	}{
 		{"empty string", "", "''"},
 		{"safe value", "JIRA-456", "JIRA-456"},
-		{"safe path", "test-cases/foo.md", "test-cases/foo.md"},
+		{"safe path", "gtms/cases/foo.md", "gtms/cases/foo.md"},
 		{"safe with numbers", "task-a3f72b1", "task-a3f72b1"},
 		{"safe with equals", "key=value", "key=value"},
 		{"spaces", "hello world", "'hello world'"},
@@ -518,8 +550,9 @@ func TestResolveShell_ShAvailable(t *testing.T) {
 	// On this system sh is available; resolveShell should return sh/-c
 	shell, flag, err := resolveShell()
 	require.NoError(t, err)
-	assert.Equal(t, "sh", shell)
+	// On PATH, resolveShell now returns the absolute path (via resolveSh), not bare "sh".
 	assert.Equal(t, "-c", flag)
+	assert.NotEmpty(t, shell)
 }
 
 func TestResolveShell_ShMissing_Windows(t *testing.T) {
@@ -527,12 +560,8 @@ func TestResolveShell_ShMissing_Windows(t *testing.T) {
 		t.Skip("Windows-only test")
 	}
 
-	// Override lookPath to simulate sh not being on PATH
-	origLookPath := lookPath
-	lookPath = func(name string) (string, error) {
-		return "", &exec.Error{Name: name, Err: exec.ErrNotFound}
-	}
-	defer func() { lookPath = origLookPath }()
+	// Simulate sh not on PATH AND no Git for Windows install → cmd /c fallback.
+	defer stubMissingSh()()
 
 	shell, flag, err := resolveShell()
 	require.NoError(t, err)
@@ -540,16 +569,44 @@ func TestResolveShell_ShMissing_Windows(t *testing.T) {
 	assert.Equal(t, "/c", flag)
 }
 
+func TestResolveShell_ShViaGitForWindowsFallback_Windows(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows-only test")
+	}
+
+	// sh not on PATH, but Git for Windows sh.exe present at a known location.
+	// resolveShell must return that absolute path (not "sh", not "cmd").
+	origLookPath := lookPath
+	origOsStat := osStat
+	lookPath = func(name string) (string, error) {
+		return "", &exec.Error{Name: name, Err: exec.ErrNotFound}
+	}
+	candidates := gitForWindowsShPaths()
+	require.NotEmpty(t, candidates)
+	target := candidates[0]
+	osStat = func(name string) (os.FileInfo, error) {
+		if name == target {
+			return fakeFileInfo{}, nil
+		}
+		return nil, os.ErrNotExist
+	}
+	defer func() {
+		lookPath = origLookPath
+		osStat = origOsStat
+	}()
+
+	shell, flag, err := resolveShell()
+	require.NoError(t, err)
+	assert.Equal(t, target, shell)
+	assert.Equal(t, "-c", flag)
+}
+
 func TestResolveShell_ShMissing_NonWindows(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("non-Windows-only test")
 	}
 
-	origLookPath := lookPath
-	lookPath = func(name string) (string, error) {
-		return "", &exec.Error{Name: name, Err: exec.ErrNotFound}
-	}
-	defer func() { lookPath = origLookPath }()
+	defer stubMissingSh()()
 
 	_, _, err := resolveShell()
 	require.Error(t, err)
@@ -562,10 +619,17 @@ func TestInvokeTier1_ShMissing_ReturnsError_NonWindows(t *testing.T) {
 	}
 
 	origLookPath := lookPath
+	origOsStat := osStat
 	lookPath = func(name string) (string, error) {
 		return "", errors.New("not found")
 	}
-	defer func() { lookPath = origLookPath }()
+	osStat = func(name string) (os.FileInfo, error) {
+		return nil, os.ErrNotExist
+	}
+	defer func() {
+		lookPath = origLookPath
+		osStat = origOsStat
+	}()
 
 	ac := &AdapterContext{
 		TaskID:      "task-nosh",
@@ -578,4 +642,190 @@ func TestInvokeTier1_ShMissing_ReturnsError_NonWindows(t *testing.T) {
 	_, err := InvokeTier1(context.Background(), ac, `echo "hello"`)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "cannot execute Tier 1 adapter")
+}
+
+// TestGitBashDirsFromShPath_GitForWindowsLayout verifies that a shPath under a
+// standard Git for Windows install expands to usr\bin + mingw64\bin + bin so
+// coreutils are all reachable from the spawned shell (BUG-030 part 2).
+func TestGitBashDirsFromShPath_GitForWindowsLayout(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows-only: backslash paths and Git-for-Windows layout are Windows concepts")
+	}
+	dirs := gitBashDirsFromShPath(`C:\Program Files\Git\usr\bin\sh.exe`)
+	assert.Contains(t, dirs, `C:\Program Files\Git\usr\bin`)
+	assert.Contains(t, dirs, `C:\Program Files\Git\mingw64\bin`)
+	assert.Contains(t, dirs, `C:\Program Files\Git\bin`)
+	assert.Equal(t, `C:\Program Files\Git\usr\bin`, dirs[0], "containing dir must come first")
+}
+
+// TestGitBashDirsFromShPath_NonGitLayout verifies that a non-Git-for-Windows
+// shPath still yields at least the containing directory (no panics, no junk).
+func TestGitBashDirsFromShPath_NonGitLayout(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows-only: test asserts on Windows-specific expansion behaviour")
+	}
+	// Use a path whose parent-of-bin is NOT "Git" — this must NOT expand into
+	// fictitious mingw64/usr/bin siblings.
+	shPath := filepath.Join("C:", "tools", "shbin", "bin", "sh.exe")
+	dirs := gitBashDirsFromShPath(shPath)
+	require.NotEmpty(t, dirs)
+	assert.Equal(t, filepath.Dir(shPath), dirs[0])
+	for _, d := range dirs[1:] {
+		assert.NotContains(t, d, "mingw64", "non-Git layouts must not invent Git subdirs")
+	}
+}
+
+// TestPrependPathEntries_PrependsToExistingPath verifies that new directories
+// land at the front of an existing PATH entry, case-insensitively matched.
+func TestPrependPathEntries_PrependsToExistingPath(t *testing.T) {
+	env := []string{"FOO=bar", "Path=C:\\existing", "BAZ=qux"}
+	out := prependPathEntries(env, []string{`C:\Program Files\Git\usr\bin`})
+	sep := string(os.PathListSeparator)
+	expected := "PATH=C:\\Program Files\\Git\\usr\\bin" + sep + "C:\\existing"
+	found := false
+	for _, e := range out {
+		if e == expected {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found, "expected %q in env, got %v", expected, out)
+	assert.Len(t, out, 3, "should not add a duplicate PATH entry")
+}
+
+// TestPrependPathEntries_AppendsWhenMissing verifies behaviour when the env
+// has no PATH entry at all — rare but possible with stripped minimalEnv.
+func TestPrependPathEntries_AppendsWhenMissing(t *testing.T) {
+	env := []string{"FOO=bar"}
+	out := prependPathEntries(env, []string{`/x`, `/y`})
+	sep := string(os.PathListSeparator)
+	assert.Contains(t, out, "PATH=/x"+sep+"/y")
+}
+
+// TestPrependPathEntries_EmptyDirsIsNoOp verifies callers on non-Windows paths
+// pay no cost.
+func TestPrependPathEntries_EmptyDirsIsNoOp(t *testing.T) {
+	env := []string{"PATH=/usr/bin", "FOO=bar"}
+	out := prependPathEntries(env, nil)
+	assert.Equal(t, env, out)
+}
+
+// --- BUG-076: Unrecognized template variable warning tests ---
+
+// TestWarnUnrecognizedVars_EmitsWarning verifies that a command template
+// containing an unrecognized {variable} triggers a warning (AC1).
+func TestWarnUnrecognizedVars_EmitsWarning(t *testing.T) {
+	vars := map[string]string{
+		"reference": "JIRA-123",
+		"branch":    "feature/test",
+	}
+	var buf bytes.Buffer
+	warnUnrecognizedVars(&buf, `echo {reference} {typo_var}`, vars)
+
+	output := buf.String()
+	assert.Contains(t, output, "typo_var", "warning should name the unrecognized variable")
+	assert.Contains(t, output, "Unrecognized template variable", "warning should use standard preamble")
+}
+
+// TestWarnUnrecognizedVars_NamesVarsAndListsAlternatives verifies the warning
+// includes both the unrecognized name(s) and the sorted list of valid
+// alternatives (AC2).
+func TestWarnUnrecognizedVars_NamesVarsAndListsAlternatives(t *testing.T) {
+	vars := map[string]string{
+		"artefact_file": "/path/to/file",
+		"branch":        "main",
+		"reference":     "REQ-1",
+	}
+	var buf bytes.Buffer
+	warnUnrecognizedVars(&buf, `bats {artefact}`, vars)
+
+	output := buf.String()
+	// Should name the unrecognized variable in braces.
+	assert.Contains(t, output, "{artefact}")
+	// Should list valid alternatives in sorted order.
+	assert.Contains(t, output, "artefact_file")
+	assert.Contains(t, output, "branch")
+	assert.Contains(t, output, "reference")
+	// Verify sorted order: artefact_file, branch, reference.
+	assert.Contains(t, output, "artefact_file, branch, reference")
+}
+
+// TestInvokeTier1_UnrecognizedVarWarnsButProceeds verifies that execution
+// continues normally after the warning is emitted (AC3). The command succeeds
+// even though it contains an unrecognized variable.
+func TestInvokeTier1_UnrecognizedVarWarnsButProceeds(t *testing.T) {
+	skipIfShort(t)
+	ac := &AdapterContext{
+		TaskID:      "task-bug076",
+		Command:     "create",
+		Reference:   "JIRA-BUG076",
+		ProjectRoot: t.TempDir(),
+		WorkDir:     t.TempDir(),
+	}
+
+	// {bogus_var} is not a known variable — it will be left as literal text.
+	// The command should still execute and produce output.
+	result, err := InvokeTier1(context.Background(), ac, `echo "ref={reference} bogus={bogus_var}"`)
+	require.NoError(t, err, "InvokeTier1 should not return an error for unrecognized vars")
+	assert.Equal(t, 0, result.ExitCode, "command should succeed despite unrecognized variable")
+	assert.Contains(t, result.Stdout, "ref=JIRA-BUG076", "recognized variable should be substituted")
+}
+
+// TestWarnUnrecognizedVars_NoWarningWhenAllRecognized verifies no warning is
+// emitted when every {variable} in the template matches a known key (AC4).
+func TestWarnUnrecognizedVars_NoWarningWhenAllRecognized(t *testing.T) {
+	vars := map[string]string{
+		"reference": "JIRA-123",
+		"branch":    "feature/test",
+		"task_id":   "task-abc123",
+	}
+	var buf bytes.Buffer
+	warnUnrecognizedVars(&buf, `echo {reference} {branch} {task_id}`, vars)
+
+	assert.Empty(t, buf.String(), "no warning should be emitted when all variables are recognized")
+}
+
+// TestWarnUnrecognizedVars_ScansOriginalTemplate verifies that detection runs on
+// the original commandTemplate string, not on the post-substitution result (AC5).
+// If a substituted value contains literal {fake_var} text, it must NOT trigger
+// a false-positive warning.
+func TestWarnUnrecognizedVars_ScansOriginalTemplate(t *testing.T) {
+	vars := map[string]string{
+		"reference": "a value containing {fake_var} literal text",
+		"branch":    "main",
+	}
+	var buf bytes.Buffer
+	// The template only uses {reference} and {branch} — both are known.
+	// The value of "reference" contains "{fake_var}" but since we scan the
+	// TEMPLATE (not the substituted result), this must not trigger a warning.
+	warnUnrecognizedVars(&buf, `echo {reference} {branch}`, vars)
+
+	assert.Empty(t, buf.String(), "should not warn about {fake_var} in a substituted value")
+}
+
+// TestWarnUnrecognizedVars_AlternativesFromVarsMap verifies that the list of
+// valid alternatives in the warning comes from the vars map keys at runtime,
+// not a hard-coded list (AC6).
+func TestWarnUnrecognizedVars_AlternativesFromVarsMap(t *testing.T) {
+	// Use a small, custom vars map — NOT the full InvokeTier1 vars.
+	// This proves the alternatives are derived from whatever map is passed.
+	vars := map[string]string{
+		"zebra":   "z",
+		"apple":   "a",
+		"mango":   "m",
+	}
+	var buf bytes.Buffer
+	warnUnrecognizedVars(&buf, `echo {unknown}`, vars)
+
+	output := buf.String()
+	require.NotEmpty(t, output, "should emit a warning for {unknown}")
+	// Alternatives should be alpha-sorted and match exactly the map keys.
+	assert.Contains(t, output, "apple, mango, zebra")
+	// Must NOT contain the unrecognized var in the alternatives list.
+	// The word "unknown" appears in the unrecognized section but not in Valid variables.
+	lines := strings.Split(strings.TrimSpace(output), "\n")
+	require.Len(t, lines, 2, "warning should be exactly two lines")
+	assert.Contains(t, lines[0], "{unknown}", "first line names the unrecognized variable")
+	assert.NotContains(t, lines[1], "unknown", "alternatives line must not include unrecognized var")
+	assert.Contains(t, lines[1], "apple, mango, zebra", "alternatives should be sorted vars map keys")
 }

@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 
 	"github.com/spf13/cobra"
 	"github.com/aitestmanagement/gtms-cli/internal/config"
+	"github.com/aitestmanagement/gtms-cli/internal/layout"
 	"github.com/aitestmanagement/gtms-cli/internal/output"
 	"github.com/aitestmanagement/gtms-cli/internal/reader"
 )
@@ -15,45 +17,132 @@ import (
 func newGapsCmd() *cobra.Command {
 	var jsonOut bool
 	var recursive bool
+	var framework string
 
 	cmd := &cobra.Command{
 		Use:   "gaps [folder]",
 		Short: "Show test coverage gaps",
-		Long: `Analyze the project for test coverage gaps across four categories: missing tests, missing automation, never executed, and currently failing.
+		Long: `Analyze the project for test coverage gaps across the CON-023 / ENH-146
+wiring-aware categories: missing tests, missing automation, currently failing,
+execution errors, runtime-skipped, stale wiring (testcase / artefact),
+missing artefacts, and manual test cases with spec drift.
 
   gtms gaps              — text output (all test cases)
-  gtms gaps bug-022      — scoped to test-cases/bug-022/
+  gtms gaps bug-022      — scoped to gtms/cases/bug-022/
+  gtms gaps tc-a1b2c3d4  — error (positional arg is a folder; use 'gtms status tc-...' for per-TC views)
   gtms gaps --json       — machine-readable JSON output
-  gtms gaps -r           — include test cases from subdirectories`,
+  gtms gaps -r           — include test cases from subdirectories
+  gtms gaps --framework bats  — filter by automation framework`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			root := GetProjectRoot()
 			cfg := GetConfig()
-			specDirs := config.CollectSpecDirs(cfg)
+			defaultFw := config.DefaultFramework(cfg)
+			if framework != "" {
+				defaultFw = framework
+			}
+			// ENH-082: explicit --framework enables strict per-TC selection;
+			// config-default fallback is unchanged.
+			strict := framework != ""
 
-			var folder string
-			if len(args) > 0 {
-				var err error
-				folder, err = validateFolderArg(args[0])
-				if err != nil {
-					output.Errorf(err.Error(), "")
-					return output.AsDisplayed(err)
+			if len(args) == 0 {
+				// No arg: -r → recursive flat list; default → folder summary
+				if recursive {
+					scope := buildScopeFromArg(root, "", true)
+					return runGaps(os.Stdout, root, scope, jsonOut, defaultFw, strict)
+				}
+				// BUG-082: pass the explicit --framework value, not the
+				// config default. When no flag is given, framework == ""
+				// and GapsFolderSummary skips framework filtering,
+				// counting ALL non-manual wiring as automated.
+				return runGapsFolderSummary(os.Stdout, root, jsonOut, framework)
+			}
+
+			// BUG-081: existence-first guard against TC-ID-shaped args.
+			// isTestCaseID is a loose prefix check, so a legitimate folder named
+			// e.g. "tc-regression" must still scope normally. Only reject when
+			// the arg is TC-shaped AND no folder of that name exists.
+			normalised := normaliseTarget(args[0])
+			if isTestCaseID(normalised) {
+				folderPath := filepath.Join(layout.CasesDir(root), normalised)
+				if info, statErr := os.Stat(folderPath); statErr != nil || !info.IsDir() {
+					output.Errorf("argument must be a folder, not a TC ID",
+						"Use 'gtms status "+normalised+"' for per-TC detail.")
+					return output.AsDisplayed(fmt.Errorf("argument must be a folder, not a TC ID"))
 				}
 			}
+
+			folder, err := validateFolderArg(args[0])
+			if err != nil {
+				output.Errorf(err.Error(), "")
+				return output.AsDisplayed(err)
+			}
 			scope := buildScopeFromArg(root, folder, recursive)
-			return runGaps(os.Stdout, root, specDirs, scope, jsonOut)
+			return runGaps(os.Stdout, root, scope, jsonOut, defaultFw, strict)
 		},
 	}
 
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Output as JSON")
 	cmd.Flags().BoolVarP(&recursive, "recursive", "r", false, "Include test cases from subdirectories")
+	cmd.Flags().StringVar(&framework, "framework", "", "Filter by automation framework")
 
 	return cmd
 }
 
+// runGapsFolderSummary displays the folder summary view for gaps (no-arg default).
+func runGapsFolderSummary(w io.Writer, projectRoot string, jsonOut bool, defaultFramework string) error {
+	entries, err := reader.GapsFolderSummary(projectRoot, defaultFramework)
+	if err != nil {
+		return err
+	}
+
+	if jsonOut {
+		return writeGapsFolderJSON(w, entries)
+	}
+
+	if len(entries) == 0 {
+		fmt.Fprintln(w, "No test cases found.")
+		fmt.Fprintln(w)
+		output.Dimln(w, "Next: gtms create <folder> --reference <doc>  \u2014 create your first test cases")
+		return nil
+	}
+
+	// CON-023 / ENH-146: "Not run here" is not a gap — fresh clones legitimately
+	// have all wiring un-run locally. The NOT EXECUTED column is therefore
+	// dropped from the folder-summary human surface. The `not_executed`
+	// JSON field is kept on GapsFolderSummaryEntry for shape stability but
+	// is no longer populated.
+	tbl := output.NewTable("FOLDER", "CREATED", "NOT AUTOMATED", "FAILING")
+	for _, e := range entries {
+		tbl.AddRow(
+			e.Folder,
+			fmt.Sprintf("%d", e.Created),
+			fmt.Sprintf("%d", e.NotAutomated),
+			fmt.Sprintf("%d", e.Failing),
+		)
+	}
+	tbl.Render(w)
+
+	fmt.Fprintln(w)
+	output.Dimln(w, "Next: gtms gaps <folder>  \u2014 see detailed gap breakdown")
+	return nil
+}
+
+// writeGapsFolderJSON outputs the gaps folder summary as indented JSON.
+func writeGapsFolderJSON(w io.Writer, entries []reader.GapsFolderSummaryEntry) error {
+	if entries == nil {
+		entries = []reader.GapsFolderSummaryEntry{}
+	}
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	return enc.Encode(entries)
+}
+
 // runGaps displays the gap report for test cases within the scope.
-func runGaps(w io.Writer, projectRoot string, specDirs []string, scope *reader.ScopeInfo, jsonOut bool) error {
-	report, err := reader.Gaps(projectRoot, specDirs, scope)
+// ENH-082: strictFramework is true when the user supplied --framework explicitly,
+// causing per-TC categorisation to skip TCs without a matching framework record.
+func runGaps(w io.Writer, projectRoot string, scope *reader.ScopeInfo, jsonOut bool, defaultFramework string, strictFramework bool) error {
+	report, err := reader.Gaps(projectRoot, scope, defaultFramework, strictFramework)
 	if err != nil {
 		return err
 	}
@@ -72,8 +161,15 @@ func runGaps(w io.Writer, projectRoot string, specDirs []string, scope *reader.S
 		fmt.Fprintln(w)
 	}
 
+	// Distinguish empty project from fully covered
 	if report.TotalGaps() == 0 {
-		fmt.Fprintln(w, "No coverage gaps found.")
+		if report.TotalTestCases == 0 {
+			fmt.Fprintln(w, "No test cases found.")
+			fmt.Fprintln(w)
+			output.Dimln(w, "Next: gtms create <folder> --reference <doc>  \u2014 create your first test cases")
+		} else {
+			fmt.Fprintln(w, "No coverage gaps found.")
+		}
 		return nil
 	}
 
@@ -81,11 +177,19 @@ func runGaps(w io.Writer, projectRoot string, specDirs []string, scope *reader.S
 	fmt.Fprintln(w, "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500")
 	fmt.Fprintln(w)
 
+	// CON-023 / ENH-146 wiring-aware category set. Retired prints
+	// ("Automated but never executed", "Spec coverage but no automation
+	// record", "Stale execution results") removed — the underlying GapReport
+	// fields are Go-internal carriers (json:"-") with no populated data.
 	printGapCategory(w, "Requirements without test cases", report.NoTests)
 	printGapCategory(w, "Test cases without automation", report.NoAutomation)
-	printGapCategory(w, "Automated but never executed", report.NeverExecuted)
 	printGapCategoryWithSince(w, "Currently failing", report.CurrentlyFailing)
-	printGapCategory(w, "Spec coverage but no automation record", report.SpecButNoRecord)
+	printGapCategory(w, "Execution errors", report.ExecutionErrors)
+	printGapCategory(w, "Runtime-skipped tests", report.RuntimeSkipped)
+	printGapCategory(w, "Stale wiring (testcase)", report.StaleTestCaseHash)
+	printGapCategory(w, "Stale wiring (artefact)", report.StaleArtefactHash)
+	printGapCategory(w, "Missing artefacts", report.MissingArtefact)
+	printGapCategory(w, "Manual results with TC drift", report.DriftDetected)
 
 	return nil
 }
@@ -114,6 +218,8 @@ func printGapCategoryWithSince(w io.Writer, title string, entries []reader.GapEn
 
 // writeGapsJSON outputs the gap report as indented JSON.
 // Nil slices are initialized to empty slices so they serialize as [] not null.
+// CON-023 / ENH-146 retired SpecButNoRecord / NeverExecuted / StaleExecution
+// (json:"-" carriers — not normalized here).
 func writeGapsJSON(w io.Writer, report *reader.GapReport) error {
 	if report.NoTests == nil {
 		report.NoTests = []reader.GapEntry{}
@@ -121,14 +227,26 @@ func writeGapsJSON(w io.Writer, report *reader.GapReport) error {
 	if report.NoAutomation == nil {
 		report.NoAutomation = []reader.GapEntry{}
 	}
-	if report.NeverExecuted == nil {
-		report.NeverExecuted = []reader.GapEntry{}
-	}
 	if report.CurrentlyFailing == nil {
 		report.CurrentlyFailing = []reader.GapEntry{}
 	}
-	if report.SpecButNoRecord == nil {
-		report.SpecButNoRecord = []reader.GapEntry{}
+	if report.ExecutionErrors == nil {
+		report.ExecutionErrors = []reader.GapEntry{}
+	}
+	if report.RuntimeSkipped == nil {
+		report.RuntimeSkipped = []reader.GapEntry{}
+	}
+	if report.StaleTestCaseHash == nil {
+		report.StaleTestCaseHash = []reader.GapEntry{}
+	}
+	if report.StaleArtefactHash == nil {
+		report.StaleArtefactHash = []reader.GapEntry{}
+	}
+	if report.MissingArtefact == nil {
+		report.MissingArtefact = []reader.GapEntry{}
+	}
+	if report.DriftDetected == nil {
+		report.DriftDetected = []reader.GapEntry{}
 	}
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")

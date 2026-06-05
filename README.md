@@ -12,13 +12,13 @@ You write requirements. AI writes the tests. GTMS conducts the orchestra.
 
 ## Install
 
-**Go install** (requires Go 1.21+):
+**Go install** (recommended — requires Go 1.21+):
 
 ```bash
 go install github.com/aitestmanagement/gtms-cli/cmd/gtms@latest
 ```
 
-**Download a binary** from [GitHub Releases](https://github.com/AiTestManagement/gtms-cli/releases), extract, and add to your PATH.
+**Download a binary** from [GitHub Releases](https://github.com/aitestmanagement/gtms-cli/releases), extract, and add to your PATH. On Windows, if SmartScreen shows *"Windows protected your PC"*, click **More info → Run anyway** — SmartScreen reputation builds organically across the first few signed releases. See [SIGNING.md](SIGNING.md) for the signing policy and how to verify a binary.
 
 **Verify:**
 
@@ -82,7 +82,7 @@ adapters:
   execute:
     local-runner:
       mode: sync
-      command: 'npx playwright test {spec_file}'
+      command: 'npx playwright test {artefact_file}'
 
 defaults:
   create: local-claude
@@ -111,12 +111,9 @@ Git helps you develop code but doesn't run it in production. GTMS helps you deve
 - Git on PATH
 - An AI coding tool (Claude, GPT, Copilot, etc.) for create/automate adapters
 
-## Verifying releases
+## Verifying Releases
 
-Windows binaries are Authenticode-signed via [SignPath Foundation](https://signpath.org/).
-
-See [SIGNING.md](SIGNING.md) for the signing policy and verification instructions.
-
+Windows binaries are Authenticode-signed via [SignPath Foundation](https://signpath.org/). See [SIGNING.md](SIGNING.md) for the signing policy and verification instructions.
 
 ## License
 

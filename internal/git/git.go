@@ -59,6 +59,32 @@ func CurrentBranch(ctx context.Context, dir string) (string, error) {
 	return branch, nil
 }
 
+// HeadCommit returns the SHA of the current HEAD commit. Added for
+// CON-023 / ENH-146 result-contract Git-context stamping. Returns an
+// error if HEAD cannot be resolved (e.g. a freshly init'd repo with
+// no commits) — callers stamp the contract field only on success.
+func HeadCommit(ctx context.Context, dir string) (string, error) {
+	sha, err := run(ctx, dir, "rev-parse", "HEAD")
+	if err != nil {
+		return "", fmt.Errorf("could not determine HEAD commit: %w", err)
+	}
+	return sha, nil
+}
+
+// IsDirty reports whether the working tree has uncommitted changes
+// (modified, added, deleted, or untracked files) at the moment the call
+// runs. CON-023 / ENH-146: stamped on the result contract before the
+// result file is written so the result write itself cannot make the
+// workspace look dirty. Returns an error if git status fails; callers
+// stamp the contract field only on success (nil pointer = unavailable).
+func IsDirty(ctx context.Context, dir string) (bool, error) {
+	out, err := run(ctx, dir, "status", "--porcelain")
+	if err != nil {
+		return false, fmt.Errorf("could not read working-tree status: %w", err)
+	}
+	return out != "", nil
+}
+
 // FileExists returns true if the given path is tracked by git.
 func FileExists(ctx context.Context, dir string, path string) bool {
 	_, err := run(ctx, dir, "ls-files", "--error-unmatch", path)

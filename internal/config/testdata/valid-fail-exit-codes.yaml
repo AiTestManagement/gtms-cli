@@ -1,0 +1,14 @@
+project:
+  name: "ENH-078 Test"
+  repo: org/test
+
+adapters:
+  execute:
+    tier1-fail:
+      mode: sync
+      command: 'bats {artefact_file}'
+      framework: bats
+      fail-exit-codes: [1]
+
+defaults:
+  execute: tier1-fail

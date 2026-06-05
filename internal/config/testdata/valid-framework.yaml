@@ -1,0 +1,15 @@
+project:
+  name: Framework Test
+  repo: org/framework-test
+adapters:
+  automate:
+    claude-bats:
+      mode: sync
+      framework: bats
+      command: 'echo automate'
+    claude-pester:
+      mode: sync
+      framework: pester-v2
+      command: 'echo automate'
+defaults:
+  automate: claude-bats

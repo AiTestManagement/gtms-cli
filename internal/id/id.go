@@ -1,4 +1,4 @@
-// Package id generates unique 7-character hexadecimal identifiers
+// Package id generates unique 8-character hexadecimal identifiers
 // for GTMS task files using crypto/rand.
 package id
 
@@ -7,13 +7,13 @@ import (
 	"fmt"
 )
 
-// New returns a 7-character lowercase hexadecimal string generated
+// New returns an 8-character lowercase hexadecimal string generated
 // from crypto/rand. It panics if the system's cryptographic random
 // number generator fails.
 func New() string {
-	b := make([]byte, 4) // 4 bytes = 8 hex chars; we take 7
+	b := make([]byte, 4) // 4 bytes = 8 hex chars
 	if _, err := rand.Read(b); err != nil {
 		panic(fmt.Sprintf("crypto/rand failed: %v", err))
 	}
-	return fmt.Sprintf("%x", b)[:7]
+	return fmt.Sprintf("%x", b)
 }

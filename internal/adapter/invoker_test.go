@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -14,6 +15,7 @@ import (
 	"github.com/aitestmanagement/gtms-cli/internal/config"
 	"github.com/aitestmanagement/gtms-cli/internal/result"
 	"github.com/aitestmanagement/gtms-cli/internal/task"
+	"github.com/aitestmanagement/gtms-cli/internal/wiring"
 )
 
 // setupTestProject creates a minimal project structure for invoker tests.
@@ -23,9 +25,9 @@ func setupTestProject(t *testing.T) string {
 
 	// Create required directories
 	for _, dir := range []string{
-		"test-tasks/pending", "test-tasks/complete", "test-tasks/failed",
-		"test-tasks/in-progress", "test-tasks/in-review",
-		"test-cases", "test-automation",
+		"gtms/tasks/pending", "gtms/tasks/complete", "gtms/tasks/error",
+		"gtms/tasks/in-progress", "gtms/tasks/in-review",
+		"gtms/cases", "gtms/automation",
 		".gtms/results", ".gtms/worktrees", ".gtms/logs",
 	} {
 		require.NoError(t, os.MkdirAll(filepath.Join(root, dir), 0755))
@@ -72,7 +74,8 @@ func TestInvokeWithRoot_Tier1Sync(t *testing.T) {
 	assert.Equal(t, "sync", res.Mode)
 	assert.Equal(t, "complete", res.Status)
 	assert.Contains(t, res.TaskID, "task-")
-	assert.Contains(t, res.Branch, "feature/create-JIRA-456")
+	// BUG-056: sync adapter in non-git temp dir → empty branch (no fake feature/ name)
+	assert.Equal(t, "", res.Branch)
 
 	// Verify task file moved to complete
 	completeTasks, err := task.List(root, "complete")
@@ -91,7 +94,7 @@ func TestInvokeWithRoot_Tier1Sync(t *testing.T) {
 
 // TestBUG022_SyncTaskTransitionsToInProgress verifies that sync adapters move the task
 // to in-progress before invocation. We use a failing adapter to verify the task transitions
-// from in-progress to failed (not from pending to failed), confirming the in-progress
+// from in-progress to error (not from pending to error), confirming the in-progress
 // transition happened.
 func TestBUG022_SyncTaskTransitionsToInProgress(t *testing.T) {
 	skipIfShort(t)
@@ -133,7 +136,7 @@ func TestBUG022_SyncTaskTransitionsToInProgress(t *testing.T) {
 }
 
 // TestBUG022_SyncFailedTaskTransitionsFromInProgress verifies that a failing sync adapter
-// moves the task from in-progress to failed (not directly from pending).
+// moves the task from in-progress to error (not directly from pending).
 func TestBUG022_SyncFailedTaskTransitionsFromInProgress(t *testing.T) {
 	skipIfShort(t)
 	root := setupTestProject(t)
@@ -159,8 +162,8 @@ func TestBUG022_SyncFailedTaskTransitionsFromInProgress(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, pendingTasks, "no tasks should remain in pending after sync failure")
 
-	// Verify task ended in failed
-	failedTasks, err := task.List(root, "failed")
+	// Verify task ended in error
+	failedTasks, err := task.List(root, "error")
 	require.NoError(t, err)
 	assert.Len(t, failedTasks, 1)
 }
@@ -232,6 +235,7 @@ target: ${GTMS_REFERENCE}
 adapter: mock-tier2
 mode: sync
 status: complete
+result: pass
 artefact: test-output.md
 attempts: 1
 summary: "Mock tier2 completed"
@@ -268,6 +272,85 @@ EOF
 	assert.Equal(t, "mock-tier2", completeTasks[0].Adapter)
 }
 
+// BUG-063: A Tier 2 create adapter that writes its file directly to
+// GTMS_OUTPUT_DIR and reports it via the contract's artefact: field
+// (not via <gtms-file> streaming markers) must still surface the file
+// in InvokeResult.ArtifactPaths so the CLI's printCreatedHeadline can
+// fire. Mirrors the symmetrical fallback in the exit-code branch.
+func TestBUG063_Tier2ContractUpdate_ScansOutputDirWhenStreamingEmpty(t *testing.T) {
+	skipIfShort(t)
+	root := setupTestProject(t)
+
+	// Mock skeleton-style Tier 2: write file directly under gtms/cases/<folder>/,
+	// no <gtms-file> markers in stdout, contract updated to status: complete.
+	scriptPath := filepath.Join(root, "testdata", "mock-skeleton.sh")
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "testdata"), 0755))
+
+	// Note: script intentionally does not write the `artefact:` line into
+	// the contract. The whole point of the BUG-063 fix is that GTMS must
+	// discover the file by scanning GTMS_OUTPUT_DIR even when the contract
+	// doesn't name it. Quoting an absolute Windows path with `C:` into
+	// YAML's `artefact:` field would also fail to parse, but the fix is
+	// independent of that.
+	// Use the first ID from the pre-generated batch (ENH-042) so the
+	// BUG-038 post-write spec validator accepts the file.
+	script := `#!/bin/sh
+mkdir -p "${GTMS_OUTPUT_DIR}"
+ID=$(echo "${GTMS_TC_IDS}" | cut -d',' -f1)
+OUTFILE="${GTMS_OUTPUT_DIR}/${ID}-direct-write.md"
+cat > "${OUTFILE}" <<TCEOF
+---
+test_case_id: ${ID}
+name: "direct-write"
+---
+TCEOF
+cat > "${GTMS_RESULT_FILE}" <<EOF
+task: ${GTMS_TASK_ID}
+command: create
+target: ${GTMS_REFERENCE}
+adapter: mock-skeleton
+mode: sync
+status: complete
+result: pass
+attempts: 1
+summary: "Mock skeleton wrote one file directly"
+completed: "2026-05-03T10:00:00Z"
+EOF
+`
+	require.NoError(t, os.WriteFile(scriptPath, []byte(script), 0755))
+
+	cfg := &config.Config{
+		Project: config.ProjectConfig{Name: "Test", Repo: "org/test"},
+	}
+
+	resolved := &ResolvedAdapter{
+		Command: "create",
+		Name:    "mock-skeleton",
+		Config:  &config.AdapterConfig{Mode: "sync", Script: "testdata/mock-skeleton.sh"},
+		Tier:    2,
+		Mode:    "sync",
+	}
+
+	flags := CommandFlags{Folder: "demo-folder"}
+
+	res, err := InvokeWithRoot(context.Background(), root, cfg, resolved, "demo-folder", flags)
+	require.NoError(t, err)
+	assert.Equal(t, "complete", res.Status)
+
+	// The fix: ArtifactPaths must be populated even though SavedFiles was empty.
+	require.NotEmpty(t, res.ArtifactPaths,
+		"BUG-063: ArtifactPaths should be populated via scanOutputDir fallback when streaming captured nothing")
+	assert.Equal(t, 1, res.ArtifactCount)
+
+	// The single discovered path should match the file the mock wrote.
+	require.Len(t, res.ArtifactPaths, 1)
+	assert.Contains(t, res.ArtifactPaths[0], "-direct-write.md",
+		"discovered path should include the slug from the script")
+	// Forward-slash relative path under gtms/cases/.
+	assert.True(t, strings.HasPrefix(res.ArtifactPaths[0], "gtms/cases/"),
+		"path should be relative and forward-slashed: got %q", res.ArtifactPaths[0])
+}
+
 func TestInvokeWithRoot_Tier1Error(t *testing.T) {
 	skipIfShort(t)
 	root := setupTestProject(t)
@@ -291,8 +374,8 @@ func TestInvokeWithRoot_Tier1Error(t *testing.T) {
 	assert.Equal(t, "error", res.Status)
 	assert.Contains(t, res.Summary, "Process exited with code 1")
 
-	// Verify task moved to failed
-	failedTasks, err := task.List(root, "failed")
+	// Verify task moved to error
+	failedTasks, err := task.List(root, "error")
 	require.NoError(t, err)
 	assert.Len(t, failedTasks, 1)
 	assert.Equal(t, "JIRA-FAIL", failedTasks[0].Target)
@@ -359,7 +442,8 @@ func TestInvokeWithRoot_TaskFileCreatedCorrectly(t *testing.T) {
 	assert.Equal(t, "create", tf.Type)
 	assert.Equal(t, "JIRA-CHECK", tf.Target)
 	assert.Equal(t, "test-adapter", tf.Adapter)
-	assert.Contains(t, tf.Branch, "feature/create-JIRA-CHECK")
+	// BUG-056: sync adapter in non-git temp dir → empty branch
+	assert.Equal(t, "", tf.Branch)
 	assert.NotEmpty(t, tf.Created)
 }
 
@@ -368,7 +452,7 @@ func TestInvokeWithRoot_GuidesFlow(t *testing.T) {
 	root := setupTestProject(t)
 
 	// Create guide-dir with a guide file
-	guideDir := filepath.Join(root, "test-cases", "guides")
+	guideDir := filepath.Join(root, "gtms/cases", "guides")
 	require.NoError(t, os.MkdirAll(guideDir, 0755))
 	require.NoError(t, os.WriteFile(
 		filepath.Join(guideDir, "template.md"),
@@ -382,7 +466,7 @@ func TestInvokeWithRoot_GuidesFlow(t *testing.T) {
 	resolved := &ResolvedAdapter{
 		Command: "create",
 		Name:    "mock-tier1",
-		Config:  &config.AdapterConfig{Mode: "sync", Command: `echo "ok"`, GuideDir: "test-cases/guides/"},
+		Config:  &config.AdapterConfig{Mode: "sync", Command: `echo "ok"`, GuideDir: "gtms/cases/guides/"},
 		Tier:    1,
 		Mode:    "sync",
 	}
@@ -479,6 +563,140 @@ func TestInvokeWithRoot_PromptFileCreatedTier2(t *testing.T) {
 	// Verify prompt file exists in .gtms/tmp/
 	matches, _ := filepath.Glob(filepath.Join(root, ".gtms", "tmp", "*-prompt.md"))
 	require.Len(t, matches, 1, "expected one prompt file in .gtms/tmp/")
+}
+
+// --- BUG-056: taskBranch mode-aware branch resolution ---
+
+// TestBUG056_SyncAdapterRecordsEmptyBranchInNonGitDir verifies that sync adapters
+// in a non-git temp directory record an empty branch (not a fake feature/ name).
+func TestBUG056_SyncAdapterRecordsEmptyBranchInNonGitDir(t *testing.T) {
+	skipIfShort(t)
+	root := setupTestProject(t)
+
+	cfg := &config.Config{
+		Project: config.ProjectConfig{Name: "Test", Repo: "org/test"},
+	}
+
+	resolved := &ResolvedAdapter{
+		Command: "create",
+		Name:    "mock-tier1",
+		Config:  &config.AdapterConfig{Mode: "sync", Command: `echo "output"`},
+		Tier:    1,
+		Mode:    "sync",
+	}
+
+	res, err := InvokeWithRoot(context.Background(), root, cfg, resolved, "BUG056-SYNC", CommandFlags{})
+	require.NoError(t, err)
+	assert.Equal(t, "complete", res.Status)
+	// Non-git temp dir → empty branch for sync adapter
+	assert.Equal(t, "", res.Branch, "sync adapter in non-git dir should have empty branch")
+
+	// Verify task file also has empty branch
+	completeTasks, err := task.List(root, "complete")
+	require.NoError(t, err)
+	require.Len(t, completeTasks, 1)
+	assert.Equal(t, "", completeTasks[0].Branch, "task file branch should be empty for sync in non-git dir")
+}
+
+// TestBUG056_SyncAdapterRecordsRealBranchInGitRepo verifies that sync adapters
+// in a real git repository record the actual current branch name.
+func TestBUG056_SyncAdapterRecordsRealBranchInGitRepo(t *testing.T) {
+	skipIfShort(t)
+	root := setupTestProject(t)
+
+	// Initialize a git repo with an initial commit so HEAD is valid
+	gitInit(t, root)
+
+	cfg := &config.Config{
+		Project: config.ProjectConfig{Name: "Test", Repo: "org/test"},
+	}
+
+	resolved := &ResolvedAdapter{
+		Command: "create",
+		Name:    "mock-tier1",
+		Config:  &config.AdapterConfig{Mode: "sync", Command: `echo "output"`},
+		Tier:    1,
+		Mode:    "sync",
+	}
+
+	res, err := InvokeWithRoot(context.Background(), root, cfg, resolved, "BUG056-GIT", CommandFlags{})
+	require.NoError(t, err)
+	assert.Equal(t, "complete", res.Status)
+	// In a git repo, sync adapter should record the real branch (not feature/)
+	assert.NotEqual(t, "", res.Branch, "sync adapter in git repo should have non-empty branch")
+	assert.NotContains(t, res.Branch, "feature/", "sync adapter should NOT have constructed feature/ branch")
+
+	// Verify task file has the same real branch
+	completeTasks, err := task.List(root, "complete")
+	require.NoError(t, err)
+	require.Len(t, completeTasks, 1)
+	assert.Equal(t, res.Branch, completeTasks[0].Branch, "task file branch should match InvokeResult branch")
+}
+
+// TestBUG056_AsyncAdapterRetainsConstructedBranch verifies that async adapters
+// still get the constructed feature/{command}-{target} branch name.
+func TestBUG056_AsyncAdapterRetainsConstructedBranch(t *testing.T) {
+	skipIfShort(t)
+	root := setupTestProject(t)
+
+	cfg := &config.Config{
+		Project: config.ProjectConfig{Name: "Test", Repo: "org/test"},
+	}
+
+	resolved := &ResolvedAdapter{
+		Command: "create",
+		Name:    "mock-async",
+		Config:  &config.AdapterConfig{Mode: "async", Command: `echo "async output"`},
+		Tier:    1,
+		Mode:    "async",
+	}
+
+	res, err := InvokeWithRoot(context.Background(), root, cfg, resolved, "BUG056-ASYNC", CommandFlags{})
+	require.NoError(t, err)
+	assert.Equal(t, "in-progress", res.Status)
+	// Async adapter should retain constructed branch
+	assert.Equal(t, "feature/create-BUG056-ASYNC", res.Branch, "async adapter should have constructed feature/ branch")
+}
+
+// TestBUG056_TaskBranchHelper_UnitTests exercises the taskBranch helper directly.
+func TestBUG056_TaskBranchHelper_UnitTests(t *testing.T) {
+	t.Run("sync_mode_non_git_dir", func(t *testing.T) {
+		resolved := &ResolvedAdapter{Command: "create", Mode: "sync"}
+		branch := taskBranch(context.Background(), t.TempDir(), resolved, "TARGET-1")
+		assert.Equal(t, "", branch, "sync in non-git dir → empty")
+	})
+
+	t.Run("async_mode_constructs_feature_branch", func(t *testing.T) {
+		resolved := &ResolvedAdapter{Command: "automate", Mode: "async"}
+		branch := taskBranch(context.Background(), t.TempDir(), resolved, "tc-abc123")
+		assert.Equal(t, "feature/automate-tc-abc123", branch)
+	})
+
+	t.Run("async_mode_sanitizes_target", func(t *testing.T) {
+		resolved := &ResolvedAdapter{Command: "create", Mode: "async"}
+		branch := taskBranch(context.Background(), t.TempDir(), resolved, "path/to/file.md")
+		assert.Equal(t, "feature/create-path-to-file", branch)
+	})
+}
+
+// gitInit initializes a git repo with an initial commit in the given directory.
+func gitInit(t *testing.T, dir string) {
+	t.Helper()
+	cmds := []struct {
+		args []string
+	}{
+		{[]string{"init"}},
+		{[]string{"config", "user.email", "test@test.com"}},
+		{[]string{"config", "user.name", "Test"}},
+		{[]string{"add", "."}},
+		{[]string{"commit", "--allow-empty", "-m", "initial commit"}},
+	}
+	for _, c := range cmds {
+		cmd := exec.Command("git", c.args...)
+		cmd.Dir = dir
+		out, err := cmd.CombinedOutput()
+		require.NoError(t, err, "git %v failed: %s", c.args, string(out))
+	}
 }
 
 // --- sanitizeBranchTarget tests (BUG-008) ---
@@ -623,8 +841,8 @@ func TestInvokeWithRoot_TimeoutFromConfig(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "timed out")
 
-	// Verify task file moved to failed
-	failedTasks, listErr := task.List(root, "failed")
+	// Verify task file moved to error
+	failedTasks, listErr := task.List(root, "error")
 	require.NoError(t, listErr)
 	assert.Len(t, failedTasks, 1)
 	assert.Equal(t, "JIRA-TIMEOUT", failedTasks[0].Target)
@@ -635,7 +853,7 @@ func TestInvokeWithRoot_TimeoutFromConfig(t *testing.T) {
 	assert.Len(t, pendingTasks, 0)
 
 	// Verify result contract status is error
-	// Find the task ID from the failed task
+	// Find the task ID from the error task
 	taskID := failedTasks[0].ID
 	rcPath := result.ResultPath(root, taskID)
 	rc, rcErr := result.Read(rcPath)
@@ -675,7 +893,7 @@ func TestInvokeWithRoot_CancellationCleansUpTaskFile(t *testing.T) {
 	// Two valid outcomes depending on timing:
 	// Path A: InvokeTier1 returns error → invoker detects ctx.Err(), returns (nil, error with "cancelled")
 	// Path B: InvokeTier1 captures exit code → handleSyncResult processes it as non-zero exit → returns (result with status "error", nil)
-	// Both paths correctly move the task to "failed".
+	// Both paths correctly move the task to "error".
 	if err != nil {
 		// Path A: cancellation detected by invoker
 		assert.Contains(t, err.Error(), "cancelled")
@@ -685,8 +903,8 @@ func TestInvokeWithRoot_CancellationCleansUpTaskFile(t *testing.T) {
 		assert.Equal(t, "error", res.Status)
 	}
 
-	// Key invariant: task file is in "failed", not left in "pending"
-	failedTasks, listErr := task.List(root, "failed")
+	// Key invariant: task file is in "error", not left in "pending"
+	failedTasks, listErr := task.List(root, "error")
 	require.NoError(t, listErr)
 	assert.Len(t, failedTasks, 1)
 	assert.Equal(t, "JIRA-CANCEL", failedTasks[0].Target)
@@ -694,6 +912,122 @@ func TestInvokeWithRoot_CancellationCleansUpTaskFile(t *testing.T) {
 	pendingTasks, listErr := task.List(root, "pending")
 	require.NoError(t, listErr)
 	assert.Len(t, pendingTasks, 0)
+}
+
+// TestInvokeWithRoot_Tier1_FailExitCodes covers ENH-078: an opt-in
+// fail-exit-codes list on a Tier 1 adapter maps listed non-zero exit codes
+// to status: fail. Codes outside the list — and any non-zero exit when the
+// list is unset — still produce status: error. Exit 0 is unaffected.
+func TestInvokeWithRoot_Tier1_FailExitCodes(t *testing.T) {
+	skipIfShort(t)
+
+	cases := []struct {
+		name           string
+		failExitCodes  []int
+		exitCode       int
+		expectStatus   string // result-contract status field
+		expectResult   string // result-contract result field (ENH-130)
+		expectInvoke   string // InvokeResult.Status
+		expectTaskDir  string // "complete" or "error"
+	}{
+		{
+			name:          "unset list — exit 1 still produces error",
+			failExitCodes: nil,
+			exitCode:      1,
+			expectStatus:  "error",
+			expectResult:  "",
+			expectInvoke:  "error",
+			expectTaskDir: "error",
+		},
+		{
+			name:          "list [1] — exit 1 produces complete+fail",
+			failExitCodes: []int{1},
+			exitCode:      1,
+			expectStatus:  "complete",
+			expectResult:  "fail",
+			expectInvoke:  "complete",
+			expectTaskDir: "complete", // ENH-130: clean adapter run, task to complete/
+		},
+		{
+			name:          "list [1] — exit 127 produces error",
+			failExitCodes: []int{1},
+			exitCode:      127,
+			expectStatus:  "error",
+			expectResult:  "",
+			expectInvoke:  "error",
+			expectTaskDir: "error",
+		},
+		{
+			name:          "list [1] — exit 0 produces complete+pass",
+			failExitCodes: []int{1},
+			exitCode:      0,
+			expectStatus:  "complete",
+			expectResult:  "pass",
+			expectInvoke:  "complete",
+			expectTaskDir: "complete",
+		},
+		{
+			name:          "list [1, 2, 3] — exit 2 produces complete+fail",
+			failExitCodes: []int{1, 2, 3},
+			exitCode:      2,
+			expectStatus:  "complete",
+			expectResult:  "fail",
+			expectInvoke:  "complete",
+			expectTaskDir: "complete", // ENH-130: clean adapter run, task to complete/
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := setupTestProject(t)
+
+			cfg := &config.Config{
+				Project: config.ProjectConfig{Name: "Test", Repo: "org/test"},
+			}
+
+			// Use sh -c so the test controls the exit code precisely. The
+			// invoker wraps Tier 1 commands in sh -c on Unix / cmd /c on
+			// Windows; either resolves "exit N" the same way.
+			resolved := &ResolvedAdapter{
+				Command: "create",
+				Name:    "mock-tier1",
+				Config: &config.AdapterConfig{
+					Mode:          "sync",
+					Command:       fmt.Sprintf("exit %d", tc.exitCode),
+					FailExitCodes: tc.failExitCodes,
+				},
+				Tier: 1,
+				Mode: "sync",
+			}
+
+			res, err := InvokeWithRoot(context.Background(), root, cfg, resolved, "ENH-078", CommandFlags{})
+			require.NoError(t, err)
+			require.NotNil(t, res)
+
+			// Verify InvokeResult.Status reflects the contract status
+			assert.Equal(t, tc.expectInvoke, res.Status,
+				"InvokeResult.Status should match contract status for exit code %d", tc.exitCode)
+
+			// Verify result-contract status and result fields on disk
+			rcPath := result.ResultPath(root, res.TaskID)
+			rc, rcErr := result.Read(rcPath)
+			require.NoError(t, rcErr)
+			assert.Equal(t, tc.expectStatus, rc.Status,
+				"contract status field should be %s for exit code %d with fail-exit-codes=%v",
+				tc.expectStatus, tc.exitCode, tc.failExitCodes)
+			assert.Equal(t, tc.expectResult, rc.Result,
+				"contract result field should be %q for exit code %d with fail-exit-codes=%v",
+				tc.expectResult, tc.exitCode, tc.failExitCodes)
+
+			// Verify task moved to expected directory
+			tasks, listErr := task.List(root, tc.expectTaskDir)
+			require.NoError(t, listErr)
+			assert.Len(t, tasks, 1, "expected exactly one task in %s/", tc.expectTaskDir)
+			if len(tasks) > 0 {
+				assert.Equal(t, "ENH-078", tasks[0].Target)
+			}
+		})
+	}
 }
 
 // --- OutputDir tests ---
@@ -739,7 +1073,7 @@ func TestInvokeWithRoot_CreateWithoutOutputDir(t *testing.T) {
 	res, err := InvokeWithRoot(context.Background(), root, cfg, resolved, "REQ-OUT2", CommandFlags{})
 	require.NoError(t, err)
 	assert.Equal(t, "complete", res.Status)
-	assert.Contains(t, res.Summary, filepath.Join(root, "test-cases"))
+	assert.Contains(t, res.Summary, filepath.Join(root, "gtms/cases"))
 }
 
 func TestInvokeWithRoot_AutomateWithOutputDir(t *testing.T) {
@@ -783,7 +1117,7 @@ func TestInvokeWithRoot_AutomateWithoutOutputDir(t *testing.T) {
 	res, err := InvokeWithRoot(context.Background(), root, cfg, resolved, "tc-002", CommandFlags{})
 	require.NoError(t, err)
 	assert.Equal(t, "complete", res.Status)
-	assert.Contains(t, res.Summary, filepath.Join(root, "test-automation", "specs", "my-auto"))
+	assert.Contains(t, res.Summary, filepath.Join(root, "gtms/automation", "specs", "my-auto"))
 }
 
 func TestInvokeWithRoot_ExecuteWithoutOutputDir(t *testing.T) {
@@ -1047,17 +1381,17 @@ echo "SOURCE=${GTMS_REFERENCE} TESTCASE=${GTMS_TESTCASE}"
 
 func TestFindTestCaseSource_ExactMatch(t *testing.T) {
 	root := t.TempDir()
-	tcDir := filepath.Join(root, "test-cases")
+	tcDir := filepath.Join(root, "gtms/cases")
 	require.NoError(t, os.MkdirAll(tcDir, 0755))
 	require.NoError(t, os.WriteFile(filepath.Join(tcDir, "tc-a1b2c3d-description.md"), []byte("test"), 0644))
 
 	result := findTestCaseSource(root, "tc-a1b2c3d")
-	assert.Equal(t, "test-cases/tc-a1b2c3d-description.md", result)
+	assert.Equal(t, "gtms/cases/tc-a1b2c3d-description.md", result)
 }
 
 func TestFindTestCaseSource_NoPartialMatch(t *testing.T) {
 	root := t.TempDir()
-	tcDir := filepath.Join(root, "test-cases")
+	tcDir := filepath.Join(root, "gtms/cases")
 	require.NoError(t, os.MkdirAll(tcDir, 0755))
 	require.NoError(t, os.WriteFile(filepath.Join(tcDir, "tc-a1b2c3d-description.md"), []byte("test"), 0644))
 
@@ -1068,12 +1402,12 @@ func TestFindTestCaseSource_NoPartialMatch(t *testing.T) {
 
 func TestFindTestCaseSource_DotExtension(t *testing.T) {
 	root := t.TempDir()
-	tcDir := filepath.Join(root, "test-cases")
+	tcDir := filepath.Join(root, "gtms/cases")
 	require.NoError(t, os.MkdirAll(tcDir, 0755))
 	require.NoError(t, os.WriteFile(filepath.Join(tcDir, "tc-a1b2c3d.md"), []byte("test"), 0644))
 
 	result := findTestCaseSource(root, "tc-a1b2c3d")
-	assert.Equal(t, "test-cases/tc-a1b2c3d.md", result)
+	assert.Equal(t, "gtms/cases/tc-a1b2c3d.md", result)
 }
 
 func TestBUG006_S1_SyncZeroArtifactsWarns(t *testing.T) {
@@ -1164,27 +1498,43 @@ func TestBUG006_S3_PipelineRecordFailureWarns(t *testing.T) {
 	skipIfShort(t)
 	root := setupTestProject(t)
 
-	// Create test-automation/records as a regular FILE to block MkdirAll
-	recordsPath := filepath.Join(root, "test-automation", "records")
-	// First remove the directory that setupTestProject may have created
-	os.RemoveAll(recordsPath)
-	// Write a regular file at that path so MkdirAll fails
-	require.NoError(t, os.WriteFile(recordsPath, []byte("blocker"), 0644))
+	// CON-023 / ENH-145: block the wiring directory (was records/). We
+	// create gtms/automation/wiring as a regular FILE so MkdirAll fails
+	// inside WriteAutomateWiring, exercising the same "pipeline write
+	// failure produces a warning, doesn't block the task" path.
+	wiringPath := filepath.Join(root, "gtms/automation", "wiring")
+	os.RemoveAll(wiringPath)
+	require.NoError(t, os.WriteFile(wiringPath, []byte("blocker"), 0644))
+
+	// Seed a TC spec so the wiring writer gets past the spec-resolution
+	// step and reaches the MkdirAll on the (blocked) wiring directory.
+	require.NoError(t, os.WriteFile(
+		filepath.Join(root, "gtms/cases/tc-s3test-spec.md"),
+		[]byte("---\nid: tc-s3test\n---\nbody\n"),
+		0644,
+	))
 
 	cfg := &config.Config{
 		Project: config.ProjectConfig{Name: "Test", Repo: "org/test"},
+		Adapters: map[string]map[string]*config.AdapterConfig{
+			"execute": {
+				"playwright-runner": {Framework: "playwright", Mode: "sync", Command: "echo ok"},
+			},
+		},
+		Defaults: map[string]string{"execute": "playwright-runner"},
 	}
 
-	// Use automate command so buildPipelineRecords calls BuildAutomationRecord
+	// Automate command. Framework is explicit so the wiring writer doesn't
+	// short-circuit on missing framework — we want it to fail at MkdirAll.
 	resolved := &ResolvedAdapter{
 		Command: "automate",
 		Name:    "mock-tier1",
-		Config:  &config.AdapterConfig{Mode: "sync", Command: `printf '<gtms-file name="tc-s3.spec.js">\ntest()\n</gtms-file>\n'`},
+		Config:  &config.AdapterConfig{Mode: "sync", Command: `printf '<gtms-file name="tc-s3test.spec.js">\ntest()\n</gtms-file>\n'`, Framework: "playwright"},
 		Tier:    1,
 		Mode:    "sync",
 	}
 
-	res, err := InvokeWithRoot(context.Background(), root, cfg, resolved, "tc-s3test", CommandFlags{})
+	res, err := InvokeWithRoot(context.Background(), root, cfg, resolved, "tc-s3test", CommandFlags{Framework: "playwright"})
 	require.NoError(t, err)
 	assert.Equal(t, "complete", res.Status, "task should still complete despite pipeline failure")
 
@@ -1252,6 +1602,7 @@ target: ${GTMS_REFERENCE}
 adapter: mock-tier2
 mode: sync
 status: complete
+result: pass
 artefact: test-output.md
 attempts: 1
 summary: "Tier2 completed with contract update"
@@ -1430,9 +1781,9 @@ func TestInvokeWithRoot_CreateFolderOutputDir(t *testing.T) {
 	res, err := InvokeWithRoot(context.Background(), root, cfg, resolved, "login", flags)
 	require.NoError(t, err)
 
-	// Folder-based output dir should be test-cases/<folder>
-	expectedDir := filepath.Join(root, "test-cases", "login")
-	assert.Contains(t, res.Summary, expectedDir, "Folder-based output dir should be test-cases/<folder>")
+	// Folder-based output dir should be gtms/cases/<folder>
+	expectedDir := filepath.Join(root, "gtms/cases", "login")
+	assert.Contains(t, res.Summary, expectedDir, "Folder-based output dir should be gtms/cases/<folder>")
 }
 
 func TestInvokeWithRoot_CreateConfigOutputDirOverridesFolder(t *testing.T) {
@@ -1480,9 +1831,9 @@ func TestInvokeWithRoot_CreateEmptyFolder(t *testing.T) {
 	res, err := InvokeWithRoot(context.Background(), root, cfg, resolved, "test-target", flags)
 	require.NoError(t, err)
 
-	// Empty folder falls back to test-cases/
-	expectedDir := filepath.Join(root, "test-cases")
-	assert.Contains(t, res.Summary, expectedDir, "Default should be test-cases/ when folder is empty")
+	// Empty folder falls back to gtms/cases/
+	expectedDir := filepath.Join(root, "gtms/cases")
+	assert.Contains(t, res.Summary, expectedDir, "Default should be gtms/cases/ when folder is empty")
 }
 
 func TestInvokeWithRoot_CreateReferenceFlag(t *testing.T) {
@@ -1640,22 +1991,22 @@ func TestDeriveOutputSubdir_EmptyString(t *testing.T) {
 }
 
 func TestDeriveOutputSubdir_RootLevel(t *testing.T) {
-	result := deriveOutputSubdir("test-cases/tc-abc123.md")
+	result := deriveOutputSubdir("gtms/cases/tc-abc123.md")
 	assert.Equal(t, "", result)
 }
 
 func TestDeriveOutputSubdir_SingleSubdir(t *testing.T) {
-	result := deriveOutputSubdir("test-cases/cwd-scoping/tc-abc123.md")
+	result := deriveOutputSubdir("gtms/cases/cwd-scoping/tc-abc123.md")
 	assert.Equal(t, "cwd-scoping/", result)
 }
 
 func TestDeriveOutputSubdir_NestedSubdir(t *testing.T) {
-	result := deriveOutputSubdir("test-cases/auth/login/tc-abc123.md")
+	result := deriveOutputSubdir("gtms/cases/auth/login/tc-abc123.md")
 	assert.Equal(t, "auth/login/", result)
 }
 
 func TestDeriveOutputSubdir_DeeplyNested(t *testing.T) {
-	result := deriveOutputSubdir("test-cases/a/b/c/tc-xyz.md")
+	result := deriveOutputSubdir("gtms/cases/a/b/c/tc-xyz.md")
 	assert.Equal(t, "a/b/c/", result)
 }
 
@@ -1683,9 +2034,9 @@ func TestBuildAdapterContext_SetsTestCaseIDs_ForCreate(t *testing.T) {
 	ids := strings.Split(ac.TestCaseIDs, ",")
 	assert.Len(t, ids, 20, "should generate batch of 20 IDs")
 
-	// Each ID should match tc-{7hex} pattern
+	// Each ID should match tc-{8hex} pattern
 	for _, id := range ids {
-		assert.Regexp(t, `^tc-[0-9a-f]{7,8}$`, id, "each ID should match tc-{7hex} pattern")
+		assert.Regexp(t, `^tc-[0-9a-f]{8}$`, id, "each ID should match tc-{8hex} pattern")
 	}
 
 	// All IDs should be unique
@@ -1730,4 +2081,645 @@ func TestBuildAdapterContext_NoTestCaseIDs_ForExecute(t *testing.T) {
 
 	ac := buildAdapterContext(root, "task-test789", resolved, "tc-def5678", flags, "feature/test", cfg, root, "/tmp/result.yaml")
 	assert.Empty(t, ac.TestCaseIDs, "TestCaseIDs should be empty for execute command")
+}
+
+// --- BUG-023: Failed execute results propagated to automation records ---
+// TestBUG023_FailedExecuteUpdatesPipelineRecord is in execute_acid_test.go
+
+func TestBUG023_PassAfterFailUpdatesPipelineRecord(t *testing.T) {
+	skipIfShort(t)
+	root := setupTestProject(t)
+
+	cfg := &config.Config{
+		Project: config.ProjectConfig{Name: "Test", Repo: "org/test"},
+	}
+
+	// First: execute that fails
+	resolved := &ResolvedAdapter{
+		Command: "execute",
+		Name:    "fail-runner",
+		Config:  &config.AdapterConfig{Mode: "sync", Command: `sh -c "exit 1"`, Framework: "bats"},
+		Tier:    1,
+		Mode:    "sync",
+	}
+
+	res, err := InvokeWithRoot(context.Background(), root, cfg, resolved, "tc-bug023b", CommandFlags{})
+	require.NoError(t, err)
+	assert.Equal(t, "error", res.Status)
+
+	// CON-023 / ENH-146: assert against the result contract — the legacy
+	// .automation.md update is retired on the execute path.
+	failRC, err := result.Read(result.ResultPath(root, res.TaskID))
+	require.NoError(t, err)
+	assert.Equal(t, "error", failRC.Status)
+
+	// Second: execute that succeeds
+	resolved.Config.Command = `echo "all tests passed"`
+	res, err = InvokeWithRoot(context.Background(), root, cfg, resolved, "tc-bug023b", CommandFlags{})
+	require.NoError(t, err)
+	assert.Equal(t, "complete", res.Status)
+
+	passRC, err := result.Read(result.ResultPath(root, res.TaskID))
+	require.NoError(t, err)
+	assert.Equal(t, "complete", passRC.Status)
+	assert.Equal(t, "pass", passRC.Result, "successful execute after failure should set rc.Result to pass")
+}
+
+// --- ENH-080: Multi-file automate output must be rejected at automate time ---
+
+// TestENH080_AutomateMultiFileFails_Tier1 verifies that a Tier 1 sync automate
+// adapter emitting two <gtms-file> tags for a single TC fails the task,
+// writes NO automation record, and surfaces a recognisable error summary.
+func TestENH080_AutomateMultiFileFails_Tier1(t *testing.T) {
+	skipIfShort(t)
+	root := setupTestProject(t)
+
+	cfg := &config.Config{
+		Project: config.ProjectConfig{Name: "Test", Repo: "org/test"},
+	}
+
+	// Mock Tier 1 adapter emitting TWO <gtms-file> tags for one automate run.
+	// This matches the AI-defect pattern from tc-4abe0420 / tc-4043bc4f.
+	multiFileCmd := `printf '<gtms-file name="tc-enh080-primary.bats">\n#!/usr/bin/env bats\n@test "main" { true; }\n</gtms-file>\n<gtms-file name="tc-enh080-extra.bats">\n#!/usr/bin/env bats\n@test "extra" { true; }\n</gtms-file>\n'`
+
+	resolved := &ResolvedAdapter{
+		Command: "automate",
+		Name:    "multi-file-mock",
+		Config:  &config.AdapterConfig{Mode: "sync", Command: multiFileCmd, Framework: "bats"},
+		Tier:    1,
+		Mode:    "sync",
+	}
+
+	res, err := InvokeWithRoot(context.Background(), root, cfg, resolved, "tc-enh080", CommandFlags{})
+	require.NoError(t, err)
+
+	// Task result: error status (not complete)
+	assert.Equal(t, "error", res.Status, "multi-file automate must be rejected as error")
+	assert.Contains(t, res.Summary, "automate emitted 2 files",
+		"summary should name the command and file count")
+	assert.Contains(t, res.Summary, "exactly one is expected",
+		"summary should state the expectation")
+	assert.Contains(t, res.Summary, "tc-enh080-primary.bats",
+		"summary should list the captured filenames for user diagnosis")
+	assert.Contains(t, res.Summary, "tc-enh080-extra.bats")
+
+	// Task file must live in gtms/tasks/error/
+	failedTasks, err := task.List(root, "error")
+	require.NoError(t, err)
+	assert.Len(t, failedTasks, 1, "task file should be in gtms/tasks/error/")
+	assert.Equal(t, "tc-enh080", failedTasks[0].Target)
+
+	// Result contract: status=error, summary matches
+	rcPath := result.ResultPath(root, res.TaskID)
+	rc, err := result.Read(rcPath)
+	require.NoError(t, err)
+	assert.Equal(t, "error", rc.Status)
+	assert.Contains(t, rc.Summary, "exactly one is expected")
+
+	// NO wiring record should have been written. This is the whole point
+	// of ENH-080 — a comma-separated artefact: field never ships in a record
+	// GTMS writes. (CON-023 retargeted records → wiring; the guard fires
+	// before buildPipelineRecords either way.)
+	wiringDir := filepath.Join(root, "gtms/automation", "wiring")
+	if entries, statErr := os.ReadDir(wiringDir); statErr == nil {
+		for _, e := range entries {
+			if !e.IsDir() && strings.Contains(e.Name(), "tc-enh080") {
+				t.Errorf("wiring record should not have been written: %s", e.Name())
+			}
+		}
+	}
+}
+
+// TestENH080_AutomateMultiFileFails_Tier2ScriptContract verifies the guard
+// also fires on the Tier 2 script-updated-contract branch. Even if the Tier 2
+// script reports status=complete in its result contract, GTMS must override
+// to error when the streaming writer captured multiple files.
+func TestENH080_AutomateMultiFileFails_Tier2ScriptContract(t *testing.T) {
+	skipIfShort(t)
+	root := setupTestProject(t)
+
+	// Build a Tier 2 mock script that emits two <gtms-file> tags AND writes
+	// status=complete to the result contract. The guard must override.
+	scriptPath := filepath.Join(root, "mock-tier2-multifile.sh")
+	script := `#!/bin/bash
+printf '<gtms-file name="tc-enh080b-primary.bats">\n#!/usr/bin/env bats\n@test "main" { true; }\n</gtms-file>\n'
+printf '<gtms-file name="tc-enh080b-extra.bats">\n#!/usr/bin/env bats\n@test "extra" { true; }\n</gtms-file>\n'
+cat > "${GTMS_RESULT_FILE}" <<EOF
+task: ${GTMS_TASK_ID}
+command: ${GTMS_COMMAND}
+target: ${GTMS_TESTCASE}
+adapter: multi-file-tier2-mock
+mode: sync
+created: "2026-04-16T00:00:00Z"
+status: complete
+result: pass
+artefact: tc-enh080b-primary.bats,tc-enh080b-extra.bats
+attempts: 1
+summary: "adapter says all good"
+completed: "2026-04-16T00:00:00Z"
+EOF
+exit 0
+`
+	require.NoError(t, os.WriteFile(scriptPath, []byte(script), 0755))
+
+	cfg := &config.Config{
+		Project: config.ProjectConfig{Name: "Test", Repo: "org/test"},
+	}
+
+	resolved := &ResolvedAdapter{
+		Command: "automate",
+		Name:    "multi-file-tier2-mock",
+		Config:  &config.AdapterConfig{Mode: "sync", Script: "mock-tier2-multifile.sh", Framework: "bats"},
+		Tier:    2,
+		Mode:    "sync",
+	}
+
+	res, err := InvokeWithRoot(context.Background(), root, cfg, resolved, "tc-enh080b", CommandFlags{})
+	require.NoError(t, err)
+
+	// Guard must override the script's status=complete.
+	assert.Equal(t, "error", res.Status, "guard must override tier 2 script status=complete")
+	assert.Contains(t, res.Summary, "automate emitted 2 files")
+
+	// Task moved to error
+	failedTasks, err := task.List(root, "error")
+	require.NoError(t, err)
+	assert.Len(t, failedTasks, 1)
+	assert.Equal(t, "tc-enh080b", failedTasks[0].Target)
+
+	// Result contract status must be error (not complete)
+	rcPath := result.ResultPath(root, res.TaskID)
+	rc, err := result.Read(rcPath)
+	require.NoError(t, err)
+	assert.Equal(t, "error", rc.Status)
+
+	// No wiring record (CON-023).
+	wiringDir := filepath.Join(root, "gtms/automation", "wiring")
+	if entries, statErr := os.ReadDir(wiringDir); statErr == nil {
+		for _, e := range entries {
+			if !e.IsDir() && strings.Contains(e.Name(), "tc-enh080b") {
+				t.Errorf("wiring record should not have been written: %s", e.Name())
+			}
+		}
+	}
+}
+
+// TestENH080_AutomateSingleFileStillWorks is the regression check that the
+// guard fires ONLY for multi-file output. A single <gtms-file> tag must
+// still produce a clean complete + automation record.
+func TestENH080_AutomateSingleFileStillWorks(t *testing.T) {
+	skipIfShort(t)
+	root := setupTestProject(t)
+
+	// Seed a TC spec so testcase-hash can be computed.
+	require.NoError(t, os.WriteFile(
+		filepath.Join(root, "gtms/cases/tc-enh080c-spec.md"),
+		[]byte("---\nid: tc-enh080c\n---\nbody\n"),
+		0644,
+	))
+
+	// CON-023 / ENH-145: cfg must have a bats execute adapter so the
+	// wiring writer can resolve the canonical execute adapter.
+	cfg := &config.Config{
+		Project: config.ProjectConfig{Name: "Test", Repo: "org/test"},
+		Adapters: map[string]map[string]*config.AdapterConfig{
+			"execute": {
+				"bats-runner": {Framework: "bats", Mode: "sync", Script: "ignored"},
+			},
+		},
+		Defaults: map[string]string{"execute": "bats-runner"},
+	}
+
+	singleFileCmd := `printf '<gtms-file name="tc-enh080c-ok.bats">\n#!/usr/bin/env bats\n@test "ok" { true; }\n</gtms-file>\n'`
+
+	resolved := &ResolvedAdapter{
+		Command: "automate",
+		Name:    "single-file-mock",
+		Config:  &config.AdapterConfig{Mode: "sync", Command: singleFileCmd, Framework: "bats"},
+		Tier:    1,
+		Mode:    "sync",
+	}
+
+	res, err := InvokeWithRoot(context.Background(), root, cfg, resolved, "tc-enh080c", CommandFlags{})
+	require.NoError(t, err)
+
+	assert.Equal(t, "complete", res.Status, "single-file automate must still succeed")
+	assert.Equal(t, 1, res.ArtifactCount)
+
+	// Wiring record should exist (CON-023 cutover; single-file path is unchanged).
+	rec, _, err := wiring.Find(root, "tc-enh080c", "bats")
+	require.NoError(t, err)
+	require.NotNil(t, rec, "wiring record should be written for single-file automate")
+	assert.Equal(t, "bats-runner", rec.Adapter)
+}
+
+// TestENH080_CreateMultiFileStillWorks verifies that the guard is automate-only.
+// `create` legitimately emits many <gtms-file> tags (one per test case) and
+// must continue to work unchanged.
+func TestENH080_CreateMultiFileStillWorks(t *testing.T) {
+	skipIfShort(t)
+	root := setupTestProject(t)
+
+	cfg := &config.Config{
+		Project: config.ProjectConfig{Name: "Test", Repo: "org/test"},
+	}
+
+	multiFileCmd := `printf '<gtms-file name="tc-enh080d-one.md">\none\n</gtms-file>\n<gtms-file name="tc-enh080d-two.md">\ntwo\n</gtms-file>\n<gtms-file name="tc-enh080d-three.md">\nthree\n</gtms-file>\n'`
+
+	resolved := &ResolvedAdapter{
+		Command: "create",
+		Name:    "create-many-mock",
+		Config:  &config.AdapterConfig{Mode: "sync", Command: multiFileCmd},
+		Tier:    1,
+		Mode:    "sync",
+	}
+
+	res, err := InvokeWithRoot(context.Background(), root, cfg, resolved, "ENH-REF", CommandFlags{Folder: "enh-ref"})
+	require.NoError(t, err)
+
+	assert.Equal(t, "complete", res.Status, "create with many files must still succeed — guard is automate-only")
+	assert.Equal(t, 3, res.ArtifactCount, "all three streamed files must be captured")
+}
+
+// --- ENH-077: buildFailureLog + Tier 1 log-carry tests ---
+
+func TestBuildFailureLog_BothEmpty(t *testing.T) {
+	assert.Equal(t, "", buildFailureLog("", ""))
+	assert.Equal(t, "", buildFailureLog("\n\n", "\n"))
+}
+
+func TestBuildFailureLog_StdoutOnly(t *testing.T) {
+	got := buildFailureLog("line 1\nline 2\n", "")
+	assert.Equal(t, "line 1\nline 2", got,
+		"trailing newline must be trimmed but internal newlines preserved")
+}
+
+func TestBuildFailureLog_StderrOnly(t *testing.T) {
+	got := buildFailureLog("", "error on line 3\n")
+	assert.Equal(t, "error on line 3", got)
+}
+
+func TestBuildFailureLog_BothStreams_StderrLeads(t *testing.T) {
+	got := buildFailureLog("stdout body\n", "stderr body\n")
+	assert.Equal(t, "stderr:\nstderr body\n\nstdout:\nstdout body", got,
+		"when both streams have content, stderr should lead so the error line appears first")
+}
+
+// TestInvokeWithRoot_Tier1_FailureCarriesLog covers ENH-077: when a Tier 1
+// execute adapter exits non-zero, the captured stdout / stderr should land
+// in the result contract's log: field. Previously the invoker only wrote
+// log: on the success-with-streaming-files branch, so a failed run left
+// the field empty and diagnostic context was lost on `rm -rf .gtms/`.
+func TestInvokeWithRoot_Tier1_FailureCarriesLog(t *testing.T) {
+	skipIfShort(t)
+
+	cases := []struct {
+		name          string
+		failExitCodes []int
+		exitCode      int
+		expectStatus  string
+	}{
+		{
+			name:         "exit 1 no fail-exit-codes — error carries log",
+			exitCode:     1,
+			expectStatus: "error",
+		},
+		{
+			name:          "exit 1 with fail-exit-codes [1] — complete+fail carries log",
+			failExitCodes: []int{1},
+			exitCode:      1,
+			expectStatus:  "complete", // ENH-130: fail-exit-code → complete
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := setupTestProject(t)
+			cfg := &config.Config{
+				Project: config.ProjectConfig{Name: "Test", Repo: "org/test"},
+			}
+
+			// The command emits recognisable strings to both streams before
+			// exiting with the target code.
+			cmd := fmt.Sprintf(`echo "ENH077_STDOUT_LINE"; echo "ENH077_STDERR_LINE" >&2; exit %d`, tc.exitCode)
+			resolved := &ResolvedAdapter{
+				Command: "create",
+				Name:    "mock-tier1-fail",
+				Config: &config.AdapterConfig{
+					Mode:          "sync",
+					Command:       cmd,
+					FailExitCodes: tc.failExitCodes,
+				},
+				Tier: 1,
+				Mode: "sync",
+			}
+
+			res, err := InvokeWithRoot(context.Background(), root, cfg, resolved, "ENH-077", CommandFlags{})
+			require.NoError(t, err)
+			require.NotNil(t, res)
+
+			rc, rcErr := result.Read(result.ResultPath(root, res.TaskID))
+			require.NoError(t, rcErr)
+			assert.Equal(t, tc.expectStatus, rc.Status)
+
+			// Both streams must appear in the contract log, with stderr
+			// leading per buildFailureLog's contract.
+			assert.Contains(t, rc.Log, "ENH077_STDOUT_LINE",
+				"stdout must be preserved in result contract log on %s", tc.expectStatus)
+			assert.Contains(t, rc.Log, "ENH077_STDERR_LINE",
+				"stderr must be preserved in result contract log on %s", tc.expectStatus)
+			stderrPos := strings.Index(rc.Log, "ENH077_STDERR_LINE")
+			stdoutPos := strings.Index(rc.Log, "ENH077_STDOUT_LINE")
+			assert.Less(t, stderrPos, stdoutPos,
+				"stderr should appear before stdout in failure log")
+		})
+	}
+}
+
+// TestInvokeWithRoot_Tier1_SilentFailureOmitsLogKey verifies ENH-077: when
+// an adapter exits non-zero but produced no output on either stream, the
+// result contract does NOT grow an empty `log:` key. Keeping the key out
+// avoids cluttering committed automation records with empty scalars.
+func TestInvokeWithRoot_Tier1_SilentFailureOmitsLogKey(t *testing.T) {
+	skipIfShort(t)
+
+	root := setupTestProject(t)
+	cfg := &config.Config{
+		Project: config.ProjectConfig{Name: "Test", Repo: "org/test"},
+	}
+
+	resolved := &ResolvedAdapter{
+		Command: "create",
+		Name:    "mock-silent-fail",
+		Config:  &config.AdapterConfig{Mode: "sync", Command: "exit 1"},
+		Tier:    1,
+		Mode:    "sync",
+	}
+
+	res, err := InvokeWithRoot(context.Background(), root, cfg, resolved, "ENH-077", CommandFlags{})
+	require.NoError(t, err)
+
+	// The summary will always be populated (from exit code); log should
+	// not be written because both streams were empty.
+	rc, rcErr := result.Read(result.ResultPath(root, res.TaskID))
+	require.NoError(t, rcErr)
+	assert.Equal(t, "error", rc.Status)
+	assert.Empty(t, rc.Log, "silent failure must not grow an empty log key in the contract")
+}
+
+// --- BUG-055: Adapter stderr surfaced as warnings on success path ---
+
+// TestStderrToWarnings validates the helper that converts captured adapter
+// stderr into a slice of warning strings for InvokeResult.Warnings.
+func TestStderrToWarnings(t *testing.T) {
+	cases := []struct {
+		name   string
+		input  string
+		expect []string
+	}{
+		{"empty string", "", nil},
+		{"whitespace only", "   \n  \n  ", nil},
+		{"single line", "WARN: something happened", []string{"WARN: something happened"}},
+		{"multi line", "line one\nline two\nline three", []string{"line one", "line two", "line three"}},
+		{"blank lines filtered", "first\n\n\nsecond\n\nthird", []string{"first", "second", "third"}},
+		{"trailing newlines trimmed", "hello\n\n\n", []string{"hello"}},
+		{"leading newlines trimmed", "\n\nhello", []string{"hello"}},
+		{"lines with internal whitespace", "  WARN: padded  \n  INFO: also padded  ", []string{"WARN: padded", "INFO: also padded"}},
+		{"windows crlf", "line one\r\nline two\r\n", []string{"line one", "line two"}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := stderrToWarnings(tc.input)
+			assert.Equal(t, tc.expect, got)
+		})
+	}
+}
+
+// TestBUG055_Tier1StderrSurfacedOnSuccess verifies that adapter stderr content
+// flows into InvokeResult.Warnings when a Tier 1 adapter exits 0.
+func TestBUG055_Tier1StderrSurfacedOnSuccess(t *testing.T) {
+	skipIfShort(t)
+	root := setupTestProject(t)
+
+	cfg := &config.Config{
+		Project: config.ProjectConfig{Name: "Test", Repo: "org/test"},
+	}
+
+	// Tier 1 command that emits to stderr AND exits 0.
+	// The `echo ... >&2` writes to stderr; `echo ok` writes to stdout.
+	resolved := &ResolvedAdapter{
+		Command: "create",
+		Name:    "stderr-tier1",
+		Config:  &config.AdapterConfig{Mode: "sync", Command: `echo "WARN: from tier1" >&2 && echo "ok"`},
+		Tier:    1,
+		Mode:    "sync",
+	}
+
+	res, err := InvokeWithRoot(context.Background(), root, cfg, resolved, "BUG055-T1", CommandFlags{})
+	require.NoError(t, err)
+	assert.Equal(t, "complete", res.Status)
+
+	// Stderr should appear in warnings
+	found := false
+	for _, w := range res.Warnings {
+		if strings.Contains(w, "WARN: from tier1") {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found, "expected stderr to appear in Warnings, got: %v", res.Warnings)
+}
+
+// TestBUG055_Tier2StderrSurfacedOnSuccess verifies that adapter stderr content
+// flows into InvokeResult.Warnings when a Tier 2 adapter writes a complete
+// result contract and exits 0.
+func TestBUG055_Tier2StderrSurfacedOnSuccess(t *testing.T) {
+	skipIfShort(t)
+	root := setupTestProject(t)
+
+	// Create mock Tier 2 script that writes stderr AND updates the result contract
+	scriptDir := filepath.Join(root, "testdata")
+	require.NoError(t, os.MkdirAll(scriptDir, 0755))
+	script := `#!/bin/bash
+printf 'WARN: noteworthy thing\n' >&2
+cat > "${GTMS_RESULT_FILE}" <<EOF
+task: ${GTMS_TASK_ID}
+command: ${GTMS_COMMAND}
+target: ${GTMS_REFERENCE}
+adapter: stderr-tier2
+mode: sync
+status: complete
+result: pass
+artefact: test-output.md
+attempts: 1
+summary: "Tier 2 completed"
+completed: "2026-05-02T10:00:00Z"
+EOF
+`
+	require.NoError(t, os.WriteFile(filepath.Join(scriptDir, "stderr-adapter.sh"), []byte(script), 0755))
+
+	cfg := &config.Config{
+		Project: config.ProjectConfig{Name: "Test", Repo: "org/test"},
+	}
+
+	resolved := &ResolvedAdapter{
+		Command: "create",
+		Name:    "stderr-tier2",
+		Config:  &config.AdapterConfig{Mode: "sync", Script: "testdata/stderr-adapter.sh"},
+		Tier:    2,
+		Mode:    "sync",
+	}
+
+	res, err := InvokeWithRoot(context.Background(), root, cfg, resolved, "BUG055-T2", CommandFlags{})
+	require.NoError(t, err)
+	assert.Equal(t, "complete", res.Status)
+
+	// Stderr should appear in warnings
+	found := false
+	for _, w := range res.Warnings {
+		if strings.Contains(w, "WARN: noteworthy thing") {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found, "expected stderr to appear in Warnings, got: %v", res.Warnings)
+}
+
+// TestBUG055_ErrorPathStderrNotDuplicated verifies that the error path still
+// surfaces stderr in the summary string (existing behaviour) and does NOT
+// also inject it into Warnings (which would cause double-surfacing).
+func TestBUG055_ErrorPathStderrNotDuplicated(t *testing.T) {
+	skipIfShort(t)
+	root := setupTestProject(t)
+
+	cfg := &config.Config{
+		Project: config.ProjectConfig{Name: "Test", Repo: "org/test"},
+	}
+
+	resolved := &ResolvedAdapter{
+		Command: "create",
+		Name:    "fail-stderr",
+		Config:  &config.AdapterConfig{Mode: "sync", Command: `echo "ERR: something broke" >&2 && exit 1`},
+		Tier:    1,
+		Mode:    "sync",
+	}
+
+	res, err := InvokeWithRoot(context.Background(), root, cfg, resolved, "BUG055-ERR", CommandFlags{})
+	require.NoError(t, err)
+	assert.Equal(t, "error", res.Status)
+
+	// Existing behaviour: stderr is in the summary
+	assert.Contains(t, res.Summary, "ERR: something broke")
+
+	// BUG-055 guard: stderr must NOT appear in Warnings on the error path
+	for _, w := range res.Warnings {
+		assert.NotContains(t, w, "ERR: something broke",
+			"error-path stderr should be in Summary, not duplicated in Warnings")
+	}
+}
+
+// TestBUG055_StderrAndContractWarningsCoexist verifies that stderr warnings
+// and contract-injected warnings (ENH-096) both appear in InvokeResult.Warnings
+// without collision or duplication.
+func TestBUG055_StderrAndContractWarningsCoexist(t *testing.T) {
+	skipIfShort(t)
+	root := setupTestProject(t)
+
+	// Create mock Tier 2 script that writes stderr AND populates warnings in the contract
+	scriptDir := filepath.Join(root, "testdata")
+	require.NoError(t, os.MkdirAll(scriptDir, 0755))
+	script := `#!/bin/bash
+printf 'STDERR-WARN: from stderr channel\n' >&2
+cat > "${GTMS_RESULT_FILE}" <<EOF
+task: ${GTMS_TASK_ID}
+command: ${GTMS_COMMAND}
+target: ${GTMS_REFERENCE}
+adapter: coexist-tier2
+mode: sync
+status: complete
+result: pass
+artefact: test-output.md
+attempts: 1
+summary: "Tier 2 completed with both channels"
+warnings:
+  - "CONTRACT-WARN: from contract channel"
+completed: "2026-05-02T10:00:00Z"
+EOF
+`
+	require.NoError(t, os.WriteFile(filepath.Join(scriptDir, "coexist-adapter.sh"), []byte(script), 0755))
+
+	cfg := &config.Config{
+		Project: config.ProjectConfig{Name: "Test", Repo: "org/test"},
+	}
+
+	resolved := &ResolvedAdapter{
+		Command: "create",
+		Name:    "coexist-tier2",
+		Config:  &config.AdapterConfig{Mode: "sync", Script: "testdata/coexist-adapter.sh"},
+		Tier:    2,
+		Mode:    "sync",
+	}
+
+	res, err := InvokeWithRoot(context.Background(), root, cfg, resolved, "BUG055-COEX", CommandFlags{})
+	require.NoError(t, err)
+	assert.Equal(t, "complete", res.Status)
+
+	// Both channels should be present in Warnings
+	hasContract := false
+	hasStderr := false
+	for _, w := range res.Warnings {
+		if strings.Contains(w, "CONTRACT-WARN: from contract channel") {
+			hasContract = true
+		}
+		if strings.Contains(w, "STDERR-WARN: from stderr channel") {
+			hasStderr = true
+		}
+	}
+	assert.True(t, hasContract, "expected contract warning in Warnings, got: %v", res.Warnings)
+	assert.True(t, hasStderr, "expected stderr warning in Warnings, got: %v", res.Warnings)
+
+	// Contract warnings should come before stderr warnings in the slice
+	contractIdx := -1
+	stderrIdx := -1
+	for i, w := range res.Warnings {
+		if strings.Contains(w, "CONTRACT-WARN") && contractIdx == -1 {
+			contractIdx = i
+		}
+		if strings.Contains(w, "STDERR-WARN") && stderrIdx == -1 {
+			stderrIdx = i
+		}
+	}
+	assert.Less(t, contractIdx, stderrIdx,
+		"contract warnings should come before stderr warnings; contract=%d stderr=%d warnings=%v",
+		contractIdx, stderrIdx, res.Warnings)
+}
+
+// TestBUG055_EmptyStderrNoWarning verifies that when an adapter exits 0 with
+// no stderr output, no spurious empty warning is produced.
+func TestBUG055_EmptyStderrNoWarning(t *testing.T) {
+	skipIfShort(t)
+	root := setupTestProject(t)
+
+	cfg := &config.Config{
+		Project: config.ProjectConfig{Name: "Test", Repo: "org/test"},
+	}
+
+	// Adapter that only writes to stdout, no stderr
+	resolved := &ResolvedAdapter{
+		Command: "create",
+		Name:    "quiet-tier1",
+		Config:  &config.AdapterConfig{Mode: "sync", Command: `echo "clean output"`},
+		Tier:    1,
+		Mode:    "sync",
+	}
+
+	res, err := InvokeWithRoot(context.Background(), root, cfg, resolved, "BUG055-QUIET", CommandFlags{})
+	require.NoError(t, err)
+	assert.Equal(t, "complete", res.Status)
+
+	// Only the expected S1 zero-files warning should be present, not any stderr warnings
+	for _, w := range res.Warnings {
+		assert.NotContains(t, w, "WARN:", "no stderr warning expected for silent adapter")
+	}
 }

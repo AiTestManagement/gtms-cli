@@ -1,0 +1,32 @@
+project:
+  name: "{name}"
+  repo: "{repo}"
+
+guidance: true
+
+adapters:
+  create:
+    skeleton:
+      mode: sync
+      script: gtms/adapters/create-skeleton.sh
+  prime:
+    manual-prime:
+      mode: sync
+      script: gtms/adapters/manual-prime.sh
+      framework: manual
+  execute:
+    manual-execute:
+      mode: sync
+      script: gtms/adapters/manual-execute.sh
+      framework: manual
+    bats-runner:
+      mode: sync
+      script: gtms/adapters/bats-runner.sh
+      framework: bats
+      output-dir: test/acceptance
+      artefact-glob: "test/acceptance/**/{testcase}*.bats"
+
+defaults:
+  create: skeleton
+  prime: manual-prime
+  execute: bats-runner

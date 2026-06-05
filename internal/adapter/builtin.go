@@ -11,16 +11,19 @@ import (
 // This is the Tier 0 (built-in) adapter invocation path.
 // Context is accepted for API consistency but not propagated to reader functions
 // (they are fast filesystem reads, not subprocess calls).
-func InvokeBuiltin(ctx context.Context, command string, args []string, projectRoot string, specDirs []string) (interface{}, error) {
+func InvokeBuiltin(ctx context.Context, command string, args []string, projectRoot string, specDirs []string, defaultFramework string) (interface{}, error) {
 	switch command {
 	case "status":
+		// Built-in dispatcher has no flag context, so strictFramework=false:
+		// it behaves like the no-flag CLI path (config-default fallback).
+		// CLI commands handle their own --framework explicitness (ENH-082).
 		if len(args) > 0 {
-			return reader.PipelineDetail(projectRoot, args[0])
+			return reader.PipelineDetail(projectRoot, args[0], defaultFramework, false)
 		}
-		return reader.PipelineStatus(projectRoot, nil)
+		return reader.PipelineStatus(projectRoot, nil, defaultFramework, false)
 
 	case "gaps":
-		return reader.Gaps(projectRoot, specDirs, nil)
+		return reader.Gaps(projectRoot, nil, defaultFramework, false)
 
 	case "triage":
 		testCaseID := ""

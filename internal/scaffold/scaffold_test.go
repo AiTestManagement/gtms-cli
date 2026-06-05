@@ -45,7 +45,7 @@ func TestInitMinimalPreset(t *testing.T) {
 		ProjectRoot: dir,
 		Name:        "Test Project",
 		Repo:        "org/test-repo",
-		Preset:      PresetMinimal,
+		Preset:      PresetBats,
 		Force:       false,
 	})
 
@@ -57,39 +57,99 @@ func TestInitMinimalPreset(t *testing.T) {
 	assert.Contains(t, result.FilesCreated, "gtms.config")
 
 	// Task directories should exist
-	for _, status := range []string{"pending", "in-progress", "in-review", "complete", "failed"} {
-		assert.DirExists(t, filepath.Join(dir, "test-tasks", status))
-		assert.FileExists(t, filepath.Join(dir, "test-tasks", status, ".gitkeep"))
+	for _, status := range []string{"pending", "in-progress", "in-review", "complete", "error"} {
+		assert.DirExists(t, filepath.Join(dir, "gtms/tasks", status))
+		assert.FileExists(t, filepath.Join(dir, "gtms/tasks", status, ".gitkeep"))
 	}
 
-	// test-cases dir should exist
-	assert.DirExists(t, filepath.Join(dir, "test-cases"))
-	assert.DirExists(t, filepath.Join(dir, "test-cases", "guides"))
+	// cases dir should exist
+	assert.DirExists(t, filepath.Join(dir, "gtms/cases"))
+	assert.DirExists(t, filepath.Join(dir, "gtms/cases", "guides"))
 
 	// automation dirs should exist
-	assert.DirExists(t, filepath.Join(dir, "test-automation", "records"))
-	assert.DirExists(t, filepath.Join(dir, "test-automation", "specs"))
+	// CON-023 / ENH-145: wiring/ replaces the legacy records/ directory.
+	assert.DirExists(t, filepath.Join(dir, "gtms/automation", "wiring"))
+	assert.DirExists(t, filepath.Join(dir, "gtms/automation", "specs"))
 
-	// test-execution dir should exist
-	assert.DirExists(t, filepath.Join(dir, "test-execution"))
+	// execution dir should exist
+	assert.DirExists(t, filepath.Join(dir, "gtms/execution"))
 
 	// Minimal preset should NOT create prompts dir or prompt templates
-	assert.NoDirExists(t, filepath.Join(dir, "test-automation", "prompts"))
-	assert.NoDirExists(t, filepath.Join(dir, "test-cases", "prompts"))
+	assert.NoDirExists(t, filepath.Join(dir, "gtms/automation", "prompts"))
+	assert.NoDirExists(t, filepath.Join(dir, "gtms/cases", "prompts"))
 
-	// No adapter stubs
-	assert.NoDirExists(t, filepath.Join(dir, "adapters"))
+	// ENH-119: the starter test-case template guide ships with every preset
+	// (including minimal) because it documents the skeleton create adapter,
+	// which itself ships under all presets.
+	assert.FileExists(t, filepath.Join(dir, "gtms/cases", "guides", "test-case-template.md"))
+	assert.Contains(t, result.FilesCreated, "gtms/cases/guides/test-case-template.md")
+
+	// Skeleton adapter script should be created under gtms/adapters/ (BUG-053)
+	assert.DirExists(t, filepath.Join(dir, "gtms", "adapters"))
+	assert.FileExists(t, filepath.Join(dir, "gtms", "adapters", "create-skeleton.sh"))
+
+	// Verify skeleton script content
+	skeletonContent, err := os.ReadFile(filepath.Join(dir, "gtms", "adapters", "create-skeleton.sh"))
+	require.NoError(t, err)
+	assert.Contains(t, string(skeletonContent), "#!/bin/sh")
+	assert.Contains(t, string(skeletonContent), "GTMS_OUTPUT_DIR")
+	assert.Contains(t, string(skeletonContent), "GTMS_TC_IDS")
+	assert.Contains(t, string(skeletonContent), "GTMS_REFERENCE")
+	assert.Contains(t, string(skeletonContent), "GTMS_RESULT_FILE")
+	assert.Contains(t, string(skeletonContent), "priority: Medium")
+	assert.Contains(t, string(skeletonContent), "type: Functional")
+	assert.NotContains(t, string(skeletonContent), "status: draft")
+
+	// ENH-127: BATS execute adapter and TAP classifier should be created
+	assert.FileExists(t, filepath.Join(dir, "gtms", "adapters", "bats-runner.sh"))
+	assert.DirExists(t, filepath.Join(dir, "gtms", "adapters", "lib"))
+	assert.FileExists(t, filepath.Join(dir, "gtms", "adapters", "lib", "bats-tap.sh"))
+
+	// Verify BATS runner content
+	batsRunnerContent, err := os.ReadFile(filepath.Join(dir, "gtms", "adapters", "bats-runner.sh"))
+	require.NoError(t, err)
+	assert.Contains(t, string(batsRunnerContent), "#!/bin/bash")
+	assert.Contains(t, string(batsRunnerContent), "GTMS_ARTEFACT_FILE")
+	assert.Contains(t, string(batsRunnerContent), "GTMS_RESULT_FILE")
+	assert.Contains(t, string(batsRunnerContent), "classify_bats_status")
+
+	// Verify TAP classifier content
+	batsTapContent, err := os.ReadFile(filepath.Join(dir, "gtms", "adapters", "lib", "bats-tap.sh"))
+	require.NoError(t, err)
+	assert.Contains(t, string(batsTapContent), "classify_bats_status")
+	assert.Contains(t, string(batsTapContent), "skipped")
+
+	// BUG-027 originally removed VSCode snippets because TC files were
+	// skeleton-generated (not hand-written). CON-020 reverses this:
+	// manual result files ARE hand-edited YAML, so snippet support is
+	// appropriate for the result-file authoring flow.
+	assert.FileExists(t, filepath.Join(dir, ".vscode", "gtms.code-snippets"))
+
+	// Skeleton should use correct frontmatter field names (BUG-027, Findings 6+11)
+	assert.Contains(t, string(skeletonContent), "test_case_id:")
+	assert.NotContains(t, string(skeletonContent), "\nid: ${ID}")
+	assert.Contains(t, string(skeletonContent), "requirement:")
+	assert.NotContains(t, string(skeletonContent), "source: ${GTMS_REFERENCE}")
+
+	// Verify config has skeleton adapter as default
+	cfg, err := config.LoadFromFile(filepath.Join(dir, "gtms.config"))
+	require.NoError(t, err)
+	require.NotNil(t, cfg.Adapters["create"])
+	require.NotNil(t, cfg.Adapters["create"]["skeleton"])
+	assert.Equal(t, "sync", cfg.Adapters["create"]["skeleton"].Mode)
+	assert.Equal(t, "gtms/adapters/create-skeleton.sh", cfg.Adapters["create"]["skeleton"].Script)
+	assert.Equal(t, "skeleton", cfg.Defaults["create"])
 }
 
-func TestInitClaudePreset(t *testing.T) {
+func TestInitManualPreset(t *testing.T) {
 	skipIfShort(t)
 	dir := initGitRepo(t)
 
 	result, err := Init(Options{
 		ProjectRoot: dir,
-		Name:        "Claude Project",
-		Repo:        "org/claude-repo",
-		Preset:      PresetClaude,
+		Name:        "Manual Project",
+		Repo:        "org/manual-repo",
+		Preset:      PresetManual,
 		Force:       false,
 	})
 
@@ -99,72 +159,52 @@ func TestInitClaudePreset(t *testing.T) {
 	// Config file should exist
 	assert.FileExists(t, filepath.Join(dir, "gtms.config"))
 
-	// Prompt templates should be created
-	assert.FileExists(t, filepath.Join(dir, "test-cases", "prompts", "create-standard.md"))
-	assert.FileExists(t, filepath.Join(dir, "test-automation", "prompts", "automate-standard.md"))
+	// Guide file should be created (all presets)
+	assert.FileExists(t, filepath.Join(dir, "gtms/cases", "guides", "test-case-template.md"))
 
-	// Guide file should be created
-	assert.FileExists(t, filepath.Join(dir, "test-cases", "guides", "test-case-template.md"))
+	// Manual preset should NOT create BATS assets
+	assert.NoFileExists(t, filepath.Join(dir, "gtms", "adapters", "bats-runner.sh"))
+	assert.NoDirExists(t, filepath.Join(dir, "gtms", "adapters", "lib"))
 
-	// Verify prompt template content uses {reference} not {requirement}
-	createContent, err := os.ReadFile(filepath.Join(dir, "test-cases", "prompts", "create-standard.md"))
+	// Manual preset should NOT create Playwright assets
+	assert.NoFileExists(t, filepath.Join(dir, "gtms", "adapters", "playwright-runner.sh"))
+
+	// No prompt dirs (no prompt-based presets anymore)
+	assert.NoDirExists(t, filepath.Join(dir, "gtms/cases", "prompts"))
+	assert.NoDirExists(t, filepath.Join(dir, "gtms/automation", "prompts"))
+
+	// Skeleton adapter should exist (all presets)
+	assert.FileExists(t, filepath.Join(dir, "gtms", "adapters", "create-skeleton.sh"))
+
+	// VSCode snippets still created (manual result authoring)
+	assert.FileExists(t, filepath.Join(dir, ".vscode", "gtms.code-snippets"))
+
+	// Verify config: manual-execute as default execute
+	cfg, err := config.LoadFromFile(filepath.Join(dir, "gtms.config"))
 	require.NoError(t, err)
-	assert.Contains(t, string(createContent), "{reference}")
-	assert.Contains(t, string(createContent), "{guides}")
-	assert.NotContains(t, string(createContent), "{requirement}")
+	require.NotNil(t, cfg.Adapters["create"]["skeleton"])
+	assert.Equal(t, "skeleton", cfg.Defaults["create"])
+	assert.Equal(t, "manual-execute", cfg.Defaults["execute"])
 
-	automateContent, err := os.ReadFile(filepath.Join(dir, "test-automation", "prompts", "automate-standard.md"))
-	require.NoError(t, err)
-	assert.Contains(t, string(automateContent), "{testcase_content}")
-	assert.Contains(t, string(automateContent), "{framework}")
+	// Manual-execute adapter registered
+	manualExec := cfg.Adapters["execute"]["manual-execute"]
+	require.NotNil(t, manualExec)
+	assert.Equal(t, "sync", manualExec.Mode)
+	assert.Equal(t, "manual", manualExec.Framework)
 
-	// Verify guide content
-	guideContent, err := os.ReadFile(filepath.Join(dir, "test-cases", "guides", "test-case-template.md"))
-	require.NoError(t, err)
-	assert.Contains(t, string(guideContent), "Test Case Template")
-	assert.Contains(t, string(guideContent), "Required Sections")
-
-	// Files should be tracked in result
-	foundCreate := false
-	foundAutomate := false
-	foundGuide := false
-	for _, f := range result.FilesCreated {
-		if f == "test-cases/prompts/create-standard.md" {
-			foundCreate = true
-		}
-		if f == "test-automation/prompts/automate-standard.md" {
-			foundAutomate = true
-		}
-		if f == "test-cases/guides/test-case-template.md" {
-			foundGuide = true
-		}
-	}
-	assert.True(t, foundCreate, "create template should be in FilesCreated")
-	assert.True(t, foundAutomate, "automate template should be in FilesCreated")
-	assert.True(t, foundGuide, "guide file should be in FilesCreated")
-
-	// README should be created
-	readmePath := filepath.Join(dir, "test-cases", "README.md")
-	assert.FileExists(t, readmePath)
-	readmeContent, err := os.ReadFile(readmePath)
-	require.NoError(t, err)
-	assert.Contains(t, string(readmeContent), "Prompt Template")
-	assert.Contains(t, string(readmeContent), "Section Ordering Rules")
-	assert.Contains(t, string(readmeContent), "{guides}")
-
-	// Claude preset should NOT create adapter stubs
-	assert.NoDirExists(t, filepath.Join(dir, "adapters"))
+	// No bats-runner in manual preset config
+	assert.Nil(t, cfg.Adapters["execute"]["bats-runner"])
 }
 
-func TestInitGitHubPreset(t *testing.T) {
+func TestInitPlaywrightPreset(t *testing.T) {
 	skipIfShort(t)
 	dir := initGitRepo(t)
 
 	result, err := Init(Options{
 		ProjectRoot: dir,
-		Name:        "GitHub Project",
-		Repo:        "org/github-repo",
-		Preset:      PresetGitHub,
+		Name:        "Playwright Project",
+		Repo:        "org/pw-repo",
+		Preset:      PresetPlaywright,
 		Force:       false,
 	})
 
@@ -174,52 +214,45 @@ func TestInitGitHubPreset(t *testing.T) {
 	// Config file should exist
 	assert.FileExists(t, filepath.Join(dir, "gtms.config"))
 
-	// Prompt templates should be created
-	assert.FileExists(t, filepath.Join(dir, "test-cases", "prompts", "create-standard.md"))
-	assert.FileExists(t, filepath.Join(dir, "test-automation", "prompts", "automate-standard.md"))
+	// Guide file should be created (all presets)
+	assert.FileExists(t, filepath.Join(dir, "gtms/cases", "guides", "test-case-template.md"))
 
-	// Guide file should be created
-	assert.FileExists(t, filepath.Join(dir, "test-cases", "guides", "test-case-template.md"))
+	// Playwright preset installs playwright-runner.sh
+	assert.FileExists(t, filepath.Join(dir, "gtms", "adapters", "playwright-runner.sh"))
 
-	// Adapter stubs should be created
-	stubs := []string{
-		"adapters/github-create.sh",
-		"adapters/github-create-status.sh",
-		"adapters/github-automate.sh",
-		"adapters/github-automate-status.sh",
-		"adapters/github-execute.sh",
-		"adapters/github-execute-status.sh",
-	}
-	for _, stub := range stubs {
-		assert.FileExists(t, filepath.Join(dir, filepath.FromSlash(stub)), "missing stub: %s", stub)
-	}
-
-	// Verify stub content
-	createStub, err := os.ReadFile(filepath.Join(dir, "adapters", "github-create.sh"))
+	// Verify playwright runner content
+	pwContent, err := os.ReadFile(filepath.Join(dir, "gtms", "adapters", "playwright-runner.sh"))
 	require.NoError(t, err)
-	assert.Contains(t, string(createStub), "#!/bin/bash")
-	assert.Contains(t, string(createStub), "GTMS_TASK_ID")
-	assert.Contains(t, string(createStub), "GTMS_RESULT_FILE")
-	assert.Contains(t, string(createStub), "GTMS_REFERENCE")
-	assert.Contains(t, string(createStub), "GTMS_GUIDES")
-	assert.NotContains(t, string(createStub), "GTMS_REQUIREMENT")
-	assert.NotContains(t, string(createStub), "GTMS_FORMAT")
+	assert.Contains(t, string(pwContent), "npx playwright test")
+	assert.Contains(t, string(pwContent), "GTMS_RESULT_FILE")
+	assert.Contains(t, string(pwContent), "GTMS_ARTEFACT_FILE")
 
-	// Check file permissions on Unix
-	if runtime.GOOS != "windows" {
-		info, err := os.Stat(filepath.Join(dir, "adapters", "github-create.sh"))
-		require.NoError(t, err)
-		assert.True(t, info.Mode()&0o111 != 0, "stub scripts should be executable")
-	}
+	// Playwright preset should NOT install BATS assets (BUG-111 AC #16)
+	assert.NoFileExists(t, filepath.Join(dir, "gtms", "adapters", "bats-runner.sh"))
+	assert.NoFileExists(t, filepath.Join(dir, "gtms", "adapters", "lib", "bats-tap.sh"))
 
-	// Adapter stubs should be tracked in result
-	foundStubs := 0
-	for _, f := range result.FilesCreated {
-		if strings.HasPrefix(f, "adapters/") {
-			foundStubs++
-		}
-	}
-	assert.Equal(t, 6, foundStubs, "should have 6 adapter stubs in FilesCreated")
+	// Skeleton adapter should be present (all presets)
+	assert.FileExists(t, filepath.Join(dir, "gtms", "adapters", "create-skeleton.sh"))
+
+	// VSCode snippets still created (manual result authoring)
+	assert.FileExists(t, filepath.Join(dir, ".vscode", "gtms.code-snippets"))
+
+	// Verify config: playwright-runner as default execute
+	cfg, err := config.LoadFromFile(filepath.Join(dir, "gtms.config"))
+	require.NoError(t, err)
+	require.NotNil(t, cfg.Adapters["create"]["skeleton"])
+	assert.Equal(t, "skeleton", cfg.Defaults["create"])
+	assert.Equal(t, "playwright-runner", cfg.Defaults["execute"])
+
+	// Playwright-runner adapter registered
+	pwExec := cfg.Adapters["execute"]["playwright-runner"]
+	require.NotNil(t, pwExec)
+	assert.Equal(t, "sync", pwExec.Mode)
+	assert.Equal(t, "playwright", pwExec.Framework)
+	assert.Equal(t, "gtms/adapters/playwright-runner.sh", pwExec.Script)
+
+	// No bats-runner in playwright preset config
+	assert.Nil(t, cfg.Adapters["execute"]["bats-runner"])
 }
 
 func TestInitForceOverwritesConfig(t *testing.T) {
@@ -236,7 +269,7 @@ func TestInitForceOverwritesConfig(t *testing.T) {
 		ProjectRoot: dir,
 		Name:        "New Project",
 		Repo:        "new/repo",
-		Preset:      PresetMinimal,
+		Preset:      PresetBats,
 		Force:       true,
 	})
 
@@ -264,7 +297,7 @@ func TestInitFailsIfConfigExistsWithoutForce(t *testing.T) {
 		ProjectRoot: dir,
 		Name:        "New",
 		Repo:        "new/repo",
-		Preset:      PresetMinimal,
+		Preset:      PresetBats,
 		Force:       false,
 	})
 
@@ -285,7 +318,7 @@ func TestInitInvalidPreset(t *testing.T) {
 	})
 
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "unknown adapter preset")
+	assert.Contains(t, err.Error(), "unknown preset")
 }
 
 func TestInitExistingDirectoriesNoError(t *testing.T) {
@@ -293,11 +326,11 @@ func TestInitExistingDirectoriesNoError(t *testing.T) {
 	dir := initGitRepo(t)
 
 	// Create some directories in advance
-	require.NoError(t, os.MkdirAll(filepath.Join(dir, "test-tasks", "pending"), 0o755))
-	require.NoError(t, os.MkdirAll(filepath.Join(dir, "test-cases"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "gtms/tasks", "pending"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "gtms/cases"), 0o755))
 
 	// Put a file in pending to verify it is not overwritten
-	existingFile := filepath.Join(dir, "test-tasks", "pending", "existing.md")
+	existingFile := filepath.Join(dir, "gtms/tasks", "pending", "existing.md")
 	require.NoError(t, os.WriteFile(existingFile, []byte("keep me"), 0o644))
 
 	// Init should succeed without errors
@@ -305,7 +338,7 @@ func TestInitExistingDirectoriesNoError(t *testing.T) {
 		ProjectRoot: dir,
 		Name:        "Test",
 		Repo:        "org/test",
-		Preset:      PresetMinimal,
+		Preset:      PresetBats,
 		Force:       false,
 	})
 
@@ -322,7 +355,7 @@ func TestInitExistingGitkeepNotOverwritten(t *testing.T) {
 	dir := initGitRepo(t)
 
 	// Create a directory with a .gitkeep that has content
-	pendingDir := filepath.Join(dir, "test-tasks", "pending")
+	pendingDir := filepath.Join(dir, "gtms/tasks", "pending")
 	require.NoError(t, os.MkdirAll(pendingDir, 0o755))
 	gitkeepPath := filepath.Join(pendingDir, ".gitkeep")
 	require.NoError(t, os.WriteFile(gitkeepPath, []byte("custom content"), 0o644))
@@ -331,7 +364,7 @@ func TestInitExistingGitkeepNotOverwritten(t *testing.T) {
 		ProjectRoot: dir,
 		Name:        "Test",
 		Repo:        "org/test",
-		Preset:      PresetMinimal,
+		Preset:      PresetBats,
 		Force:       false,
 	})
 
@@ -351,7 +384,7 @@ func TestConfigValidationMinimalPreset(t *testing.T) {
 		ProjectRoot: dir,
 		Name:        "Validation Test",
 		Repo:        "org/validation",
-		Preset:      PresetMinimal,
+		Preset:      PresetBats,
 		Force:       false,
 	})
 	require.NoError(t, err)
@@ -361,74 +394,70 @@ func TestConfigValidationMinimalPreset(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "Validation Test", cfg.Project.Name)
 	assert.Equal(t, "org/validation", cfg.Project.Repo)
+
+	// ENH-127: minimal preset must scaffold a working out-of-the-box BATS
+	// execute pipeline — bats-runner registered as a Tier 2 execute adapter
+	// and set as the default.
+	bats := cfg.Adapters["execute"]["bats-runner"]
+	require.NotNil(t, bats, "minimal preset should register bats-runner under execute")
+	assert.Equal(t, "sync", bats.Mode)
+	assert.Equal(t, "gtms/adapters/bats-runner.sh", bats.Script)
+	assert.Equal(t, "bats", bats.Framework)
+	assert.Equal(t, "test/acceptance", bats.OutputDir)
+	// ENH-127: minimal preset's defaults.execute is bats-runner (BATS-first
+	// out-of-the-box). ENH-133 originally flipped this to manual-execute but
+	// reverted post-CI: the change collided with ENH-127 and broke 31 BATS
+	// fixtures whose intent was to exercise the shipped bats-runner wrapper.
+	// Manual execute is still available on minimal — opt in via
+	// `--adapter manual-execute` (consistent with claude / github presets).
+	assert.Equal(t, "bats-runner", cfg.Defaults["execute"])
+
+	// ENH-133: manual-execute adapter is registered (opt-in via --adapter
+	// manual-execute). MUST NOT be the default; that's the corrected ENH-133
+	// boundary post-CI.
+	manualExec := cfg.Adapters["execute"]["manual-execute"]
+	require.NotNil(t, manualExec, "minimal preset should register manual-execute under execute")
+	assert.Equal(t, "sync", manualExec.Mode)
+	assert.Equal(t, "gtms/adapters/manual-execute.sh", manualExec.Script)
+	assert.Equal(t, "manual", manualExec.Framework)
 }
 
-func TestConfigValidationClaudePreset(t *testing.T) {
+func TestConfigValidationManualPreset(t *testing.T) {
 	skipIfShort(t)
 	dir := initGitRepo(t)
 
 	_, err := Init(Options{
 		ProjectRoot: dir,
-		Name:        "Claude Validation",
-		Repo:        "org/claude-val",
-		Preset:      PresetClaude,
+		Name:        "Manual Validation",
+		Repo:        "org/manual-val",
+		Preset:      PresetManual,
 		Force:       false,
 	})
 	require.NoError(t, err)
 
 	cfg, err := config.LoadFromFile(filepath.Join(dir, "gtms.config"))
 	require.NoError(t, err)
-	assert.Equal(t, "Claude Validation", cfg.Project.Name)
-	assert.Equal(t, "org/claude-val", cfg.Project.Repo)
+	assert.Equal(t, "Manual Validation", cfg.Project.Name)
+	assert.Equal(t, "org/manual-val", cfg.Project.Repo)
 
 	// Verify adapter structure
-	assert.NotNil(t, cfg.Adapters["create"]["local-claude"])
-	assert.Equal(t, "sync", cfg.Adapters["create"]["local-claude"].Mode)
-	assert.NotEmpty(t, cfg.Adapters["create"]["local-claude"].Command)
-	assert.Equal(t, "test-cases/prompts/create-standard.md", cfg.Adapters["create"]["local-claude"].PromptTemplate)
-	assert.Equal(t, "test-cases/guides/", cfg.Adapters["create"]["local-claude"].GuideDir)
+	assert.NotNil(t, cfg.Adapters["create"]["skeleton"])
+	assert.Equal(t, "sync", cfg.Adapters["create"]["skeleton"].Mode)
 
-	assert.NotNil(t, cfg.Adapters["automate"]["local-claude"])
-	assert.NotNil(t, cfg.Adapters["execute"]["local-runner"])
+	// Manual-execute is the default execute
+	manualExec := cfg.Adapters["execute"]["manual-execute"]
+	require.NotNil(t, manualExec, "manual preset should register manual-execute under execute")
+	assert.Equal(t, "sync", manualExec.Mode)
+	assert.Equal(t, "gtms/adapters/manual-execute.sh", manualExec.Script)
+	assert.Equal(t, "manual", manualExec.Framework)
+
+	// No bats-runner or playwright-runner in manual preset
+	assert.Nil(t, cfg.Adapters["execute"]["bats-runner"])
+	assert.Nil(t, cfg.Adapters["execute"]["playwright-runner"])
 
 	// Verify defaults
-	assert.Equal(t, "local-claude", cfg.Defaults["create"])
-	assert.Equal(t, "local-claude", cfg.Defaults["automate"])
-	assert.Equal(t, "local-runner", cfg.Defaults["execute"])
-}
-
-// TestScaffoldClaude_PromptFilePattern verifies that the claude preset command
-// templates use {prompt_file} for prompt delivery (BUG-005 fix).
-func TestScaffoldClaude_PromptFilePattern(t *testing.T) {
-	skipIfShort(t)
-	dir := initGitRepo(t)
-
-	_, err := Init(Options{
-		ProjectRoot: dir,
-		Name:        "Prompt File Test",
-		Repo:        "org/prompt-file",
-		Preset:      PresetClaude,
-		Force:       false,
-	})
-	require.NoError(t, err)
-
-	content, err := os.ReadFile(filepath.Join(dir, "gtms.config"))
-	require.NoError(t, err)
-
-	configStr := string(content)
-
-	// Command templates should use {prompt_file} for prompt delivery
-	assert.Contains(t, configStr, `{prompt_file}`,
-		"command templates should contain {prompt_file} placeholder")
-
-	// Verify the correct pattern is used
-	assert.Contains(t, configStr, `--append-system-prompt-file {prompt_file}`,
-		"command templates should use {prompt_file} pattern")
-
-	// Config must still pass validation
-	cfg, err := config.LoadFromFile(filepath.Join(dir, "gtms.config"))
-	require.NoError(t, err)
-	assert.NotEmpty(t, cfg.Adapters["create"]["local-claude"].Command)
+	assert.Equal(t, "skeleton", cfg.Defaults["create"])
+	assert.Equal(t, "manual-execute", cfg.Defaults["execute"])
 }
 
 // TestBUG007_CreateTemplateOutputRulesAtEnd verifies that the create prompt template
@@ -461,97 +490,94 @@ func TestBUG007_CreateTemplateOutputRulesAtEnd(t *testing.T) {
 		"template must include closing </output_rules> XML tag")
 }
 
-func TestConfigValidationGitHubPreset(t *testing.T) {
+func TestConfigValidationPlaywrightPreset(t *testing.T) {
 	skipIfShort(t)
 	dir := initGitRepo(t)
 
 	_, err := Init(Options{
 		ProjectRoot: dir,
-		Name:        "GitHub Validation",
-		Repo:        "org/github-val",
-		Preset:      PresetGitHub,
+		Name:        "Playwright Validation",
+		Repo:        "org/pw-val",
+		Preset:      PresetPlaywright,
 		Force:       false,
 	})
 	require.NoError(t, err)
 
 	cfg, err := config.LoadFromFile(filepath.Join(dir, "gtms.config"))
 	require.NoError(t, err)
-	assert.Equal(t, "GitHub Validation", cfg.Project.Name)
-	assert.Equal(t, "org/github-val", cfg.Project.Repo)
+	assert.Equal(t, "Playwright Validation", cfg.Project.Name)
+	assert.Equal(t, "org/pw-val", cfg.Project.Repo)
 
-	// Verify adapter structure
-	gc := cfg.Adapters["create"]["github-create"]
-	require.NotNil(t, gc)
-	assert.Equal(t, "async", gc.Mode)
-	assert.Equal(t, "adapters/github-create.sh", gc.Script)
-	assert.Equal(t, "adapters/github-create-status.sh", gc.StatusScript)
-	assert.Equal(t, "test-cases/prompts/create-standard.md", gc.PromptTemplate)
-	assert.Equal(t, "test-cases/guides/", gc.GuideDir)
+	// Verify playwright-runner adapter registered
+	pw := cfg.Adapters["execute"]["playwright-runner"]
+	require.NotNil(t, pw)
+	assert.Equal(t, "sync", pw.Mode)
+	assert.Equal(t, "playwright", pw.Framework)
+	assert.Equal(t, "gtms/adapters/playwright-runner.sh", pw.Script)
 
-	ga := cfg.Adapters["automate"]["github-automate"]
-	require.NotNil(t, ga)
-	assert.Equal(t, "async", ga.Mode)
+	// Manual-execute also registered (all presets)
+	manualExec := cfg.Adapters["execute"]["manual-execute"]
+	require.NotNil(t, manualExec, "playwright preset should register manual-execute under execute")
+	assert.Equal(t, "sync", manualExec.Mode)
+	assert.Equal(t, "manual", manualExec.Framework)
 
-	ge := cfg.Adapters["execute"]["github-actions"]
-	require.NotNil(t, ge)
-	assert.Equal(t, "async", ge.Mode)
+	// No bats-runner in playwright preset
+	assert.Nil(t, cfg.Adapters["execute"]["bats-runner"])
 
 	// Verify defaults
-	assert.Equal(t, "github-create", cfg.Defaults["create"])
-	assert.Equal(t, "github-automate", cfg.Defaults["automate"])
-	assert.Equal(t, "github-actions", cfg.Defaults["execute"])
+	assert.Equal(t, "skeleton", cfg.Defaults["create"])
+	assert.Equal(t, "playwright-runner", cfg.Defaults["execute"])
 }
 
 func TestCreateDirectoriesReturnsCorrectList(t *testing.T) {
 	skipIfShort(t)
 	dir := initGitRepo(t)
 
-	dirs, err := CreateDirectories(dir, PresetMinimal)
+	dirs, err := CreateDirectories(dir, PresetBats)
 	require.NoError(t, err)
 
 	expected := []string{
-		"test-tasks/pending",
-		"test-tasks/in-progress",
-		"test-tasks/in-review",
-		"test-tasks/complete",
-		"test-tasks/failed",
-		"test-cases",
-		"test-cases/guides",
-		"test-automation/records",
-		"test-automation/specs",
-		"test-execution",
+		"gtms/tasks/pending",
+		"gtms/tasks/in-progress",
+		"gtms/tasks/in-review",
+		"gtms/tasks/complete",
+		"gtms/tasks/error",
+		"gtms/cases",
+		"gtms/cases/guides",
+		"gtms/automation/wiring",
+		"gtms/automation/specs",
+		"gtms/scripts",
+		"gtms/execution",
+		"gtms/manual/records",
+		"gtms/manual/templates",
+		"gtms/schemas",
+		"gtms/adapters",
 	}
 	assert.Equal(t, expected, dirs)
 }
 
-func TestCreateDirectoriesClaudeIncludesPrompts(t *testing.T) {
+// BUG-111: No preset creates prompt dirs anymore -- prompts were claude/github specific.
+// All presets create gtms/adapters/ for common adapter scripts.
+func TestCreateDirectoriesAllPresetsIncludeAdapters(t *testing.T) {
 	skipIfShort(t)
-	dir := initGitRepo(t)
-
-	dirs, err := CreateDirectories(dir, PresetClaude)
-	require.NoError(t, err)
-
-	assert.Contains(t, dirs, "test-cases/prompts")
-	assert.Contains(t, dirs, "test-automation/prompts")
-}
-
-func TestCreateDirectoriesGitHubIncludesAdapters(t *testing.T) {
-	skipIfShort(t)
-	dir := initGitRepo(t)
-
-	dirs, err := CreateDirectories(dir, PresetGitHub)
-	require.NoError(t, err)
-
-	assert.Contains(t, dirs, "test-cases/prompts")
-	assert.Contains(t, dirs, "test-automation/prompts")
-	assert.Contains(t, dirs, "adapters")
+	for _, preset := range ValidPresets() {
+		t.Run(preset, func(t *testing.T) {
+			dir := initGitRepo(t)
+			dirs, err := CreateDirectories(dir, preset)
+			require.NoError(t, err)
+			assert.Contains(t, dirs, "gtms/adapters")
+			// No prompt dirs for any preset
+			assert.NotContains(t, dirs, "gtms/cases/prompts")
+			assert.NotContains(t, dirs, "gtms/automation/prompts")
+		})
+	}
 }
 
 func TestWriteConfigContent(t *testing.T) {
 	skipIfShort(t)
 	dir := initGitRepo(t)
 
-	path, err := WriteConfig(dir, "My Project", "org/my-repo", PresetMinimal)
+	path, err := WriteConfig(dir, "My Project", "org/my-repo", PresetBats)
 	require.NoError(t, err)
 	assert.Equal(t, filepath.Join(dir, "gtms.config"), path)
 
@@ -570,7 +596,7 @@ func TestWritePromptTemplatesContent(t *testing.T) {
 	assert.Len(t, files, 2)
 
 	// Verify create template uses {reference} not {requirement}
-	createContent, err := os.ReadFile(filepath.Join(dir, "test-cases", "prompts", "create-standard.md"))
+	createContent, err := os.ReadFile(filepath.Join(dir, "gtms/cases", "prompts", "create-standard.md"))
 	require.NoError(t, err)
 	assert.Contains(t, string(createContent), "{reference}")
 	assert.NotContains(t, string(createContent), "{requirement}")
@@ -583,82 +609,105 @@ func TestWriteStarterGuides(t *testing.T) {
 	files, err := WriteStarterGuides(dir)
 	require.NoError(t, err)
 	assert.Len(t, files, 1)
-	assert.Equal(t, "test-cases/guides/test-case-template.md", files[0])
+	assert.Equal(t, "gtms/cases/guides/test-case-template.md", files[0])
 
 	// Verify content
-	content, err := os.ReadFile(filepath.Join(dir, "test-cases", "guides", "test-case-template.md"))
+	content, err := os.ReadFile(filepath.Join(dir, "gtms/cases", "guides", "test-case-template.md"))
 	require.NoError(t, err)
 	assert.Contains(t, string(content), "Test Case Template")
-	assert.Contains(t, string(content), "Required Sections")
+	assert.Contains(t, string(content), "## Test Objective")
+	assert.Contains(t, string(content), "## Test Steps")
 	assert.Contains(t, string(content), "Principles")
 }
 
-func TestWriteAdapterStubsContent(t *testing.T) {
+// BUG-111: WriteAdapterStubs removed (github stubs no longer exist).
+// Replaced by installPresetAssets for preset-owned adapter files.
+func TestInstallPresetAssetsBats(t *testing.T) {
 	skipIfShort(t)
 	dir := initGitRepo(t)
-
-	files, err := WriteAdapterStubs(dir)
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "gtms", "adapters"), 0o755))
+	result := &Result{}
+	err := installPresetAssets(dir, PresetBats, result)
 	require.NoError(t, err)
-	assert.Len(t, files, 6)
+	assert.FileExists(t, filepath.Join(dir, "gtms", "adapters", "bats-runner.sh"))
+	assert.FileExists(t, filepath.Join(dir, "gtms", "adapters", "lib", "bats-tap.sh"))
+	assert.Contains(t, result.FilesCreated, "gtms/adapters/bats-runner.sh")
+	assert.Contains(t, result.FilesCreated, "gtms/adapters/lib/bats-tap.sh")
+}
 
-	// Each file should exist and contain bash shebang
-	for _, f := range files {
-		content, err := os.ReadFile(filepath.Join(dir, filepath.FromSlash(f)))
-		require.NoError(t, err)
-		assert.True(t, strings.HasPrefix(string(content), "#!/bin/bash"), "stub %s should start with shebang", f)
-	}
+func TestInstallPresetAssetsManualEmpty(t *testing.T) {
+	skipIfShort(t)
+	dir := initGitRepo(t)
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "gtms", "adapters"), 0o755))
+	result := &Result{}
+	err := installPresetAssets(dir, PresetManual, result)
+	require.NoError(t, err)
+	assert.Empty(t, result.FilesCreated, "manual preset should not install extra assets")
+}
+
+func TestInstallPresetAssetsPlaywright(t *testing.T) {
+	skipIfShort(t)
+	dir := initGitRepo(t)
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "gtms", "adapters"), 0o755))
+	result := &Result{}
+	err := installPresetAssets(dir, PresetPlaywright, result)
+	require.NoError(t, err)
+	assert.FileExists(t, filepath.Join(dir, "gtms", "adapters", "playwright-runner.sh"))
+	assert.Contains(t, result.FilesCreated, "gtms/adapters/playwright-runner.sh")
+	// No BATS assets
+	assert.NoFileExists(t, filepath.Join(dir, "gtms", "adapters", "bats-runner.sh"))
 }
 
 func TestValidPresets(t *testing.T) {
-	assert.True(t, IsValidPreset("minimal"))
-	assert.True(t, IsValidPreset("claude"))
-	assert.True(t, IsValidPreset("github"))
+	assert.True(t, IsValidPreset("manual"))
+	assert.True(t, IsValidPreset("bats"))
+	assert.True(t, IsValidPreset("playwright"))
+	assert.False(t, IsValidPreset("minimal"))
+	assert.False(t, IsValidPreset("claude"))
+	assert.False(t, IsValidPreset("github"))
 	assert.False(t, IsValidPreset("invalid"))
 	assert.False(t, IsValidPreset(""))
 }
 
 func TestIntegrationFullInit(t *testing.T) {
 	skipIfShort(t)
-	// Create a temp directory and git init
 	dir := initGitRepo(t)
 
-	// Run full Init with claude preset
+	// Run full Init with bats preset (replaces old claude integration test)
 	result, err := Init(Options{
 		ProjectRoot: dir,
 		Name:        "Integration Test",
 		Repo:        "org/integration",
-		Preset:      PresetClaude,
+		Preset:      PresetBats,
 		Force:       false,
 	})
 
 	require.NoError(t, err)
 	require.NotNil(t, result)
 
-	// Verify all directories exist
+	// Verify core directories exist
 	expectedDirs := []string{
-		"test-tasks/pending",
-		"test-tasks/in-progress",
-		"test-tasks/in-review",
-		"test-tasks/complete",
-		"test-tasks/failed",
-		"test-cases",
-		"test-cases/guides",
-		"test-cases/prompts",
-		"test-automation/records",
-		"test-automation/specs",
-		"test-automation/prompts",
-		"test-execution",
+		"gtms/tasks/pending",
+		"gtms/tasks/in-progress",
+		"gtms/tasks/in-review",
+		"gtms/tasks/complete",
+		"gtms/tasks/error",
+		"gtms/cases",
+		"gtms/cases/guides",
+		"gtms/automation/wiring",
+		"gtms/automation/specs",
+		"gtms/execution",
 	}
 	for _, d := range expectedDirs {
 		assert.DirExists(t, filepath.Join(dir, filepath.FromSlash(d)), "missing dir: %s", d)
 	}
 
-	// Verify all expected files
+	// Verify expected files
 	expectedFiles := []string{
 		"gtms.config",
-		"test-cases/prompts/create-standard.md",
-		"test-automation/prompts/automate-standard.md",
-		"test-cases/guides/test-case-template.md",
+		"gtms/cases/guides/test-case-template.md",
+		"gtms/adapters/bats-runner.sh",
+		"gtms/adapters/lib/bats-tap.sh",
 	}
 	for _, f := range expectedFiles {
 		assert.FileExists(t, filepath.Join(dir, filepath.FromSlash(f)), "missing file: %s", f)
@@ -669,12 +718,13 @@ func TestIntegrationFullInit(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "Integration Test", cfg.Project.Name)
 	assert.Equal(t, "org/integration", cfg.Project.Repo)
-	assert.Equal(t, "local-claude", cfg.Defaults["create"])
+	assert.Equal(t, "skeleton", cfg.Defaults["create"])
+	assert.Equal(t, "bats-runner", cfg.Defaults["execute"])
 
 	// Verify result has accurate tracking
 	assert.Equal(t, filepath.Join(dir, "gtms.config"), result.ConfigPath)
 	assert.True(t, len(result.DirsCreated) >= 8, "should have at least 8 dirs created")
-	assert.True(t, len(result.FilesCreated) >= 5, "should have at least 5 files created (config + 2 templates + 1 guide + 1 README)")
+	assert.True(t, len(result.FilesCreated) >= 5, "should have at least 5 files created")
 }
 
 // ENH-010: YAML injection tests -- project names with special characters
@@ -707,7 +757,7 @@ func TestInitWithDoubleQuoteInName(t *testing.T) {
 		ProjectRoot: dir,
 		Name:        `My "Quoted" Project`,
 		Repo:        "org/repo",
-		Preset:      PresetMinimal,
+		Preset:      PresetBats,
 		Force:       false,
 	})
 	require.NoError(t, err)
@@ -725,7 +775,7 @@ func TestInitWithSingleQuoteInName(t *testing.T) {
 		ProjectRoot: dir,
 		Name:        "Bill's Project",
 		Repo:        "org/repo",
-		Preset:      PresetMinimal,
+		Preset:      PresetBats,
 		Force:       false,
 	})
 	require.NoError(t, err)
@@ -743,7 +793,7 @@ func TestInitWithColonInName(t *testing.T) {
 		ProjectRoot: dir,
 		Name:        "Project: Alpha",
 		Repo:        "org/repo",
-		Preset:      PresetMinimal,
+		Preset:      PresetBats,
 		Force:       false,
 	})
 	require.NoError(t, err)
@@ -761,7 +811,7 @@ func TestInitWithDoubleQuoteInNameClaudePreset(t *testing.T) {
 		ProjectRoot: dir,
 		Name:        `My "Quoted" Project`,
 		Repo:        `org/"special"`,
-		Preset:      PresetClaude,
+		Preset:      PresetManual,
 		Force:       false,
 	})
 	require.NoError(t, err)
@@ -772,15 +822,15 @@ func TestInitWithDoubleQuoteInNameClaudePreset(t *testing.T) {
 	assert.Equal(t, `org/"special"`, cfg.Project.Repo)
 }
 
-func TestIntegrationGitHubFullInit(t *testing.T) {
+func TestIntegrationPlaywrightFullInit(t *testing.T) {
 	skipIfShort(t)
 	dir := initGitRepo(t)
 
 	result, err := Init(Options{
 		ProjectRoot: dir,
-		Name:        "GitHub Integration",
-		Repo:        "org/github-int",
-		Preset:      PresetGitHub,
+		Name:        "PW Integration",
+		Repo:        "org/pw-int",
+		Preset:      PresetPlaywright,
 		Force:       false,
 	})
 
@@ -790,16 +840,1148 @@ func TestIntegrationGitHubFullInit(t *testing.T) {
 	// Verify config loads and validates
 	cfg, err := config.LoadFromFile(filepath.Join(dir, "gtms.config"))
 	require.NoError(t, err)
-	assert.Equal(t, "GitHub Integration", cfg.Project.Name)
-	assert.Equal(t, "github-create", cfg.Defaults["create"])
+	assert.Equal(t, "PW Integration", cfg.Project.Name)
+	assert.Equal(t, "skeleton", cfg.Defaults["create"])
+	assert.Equal(t, "playwright-runner", cfg.Defaults["execute"])
 
-	// Verify adapter stubs exist
-	assert.FileExists(t, filepath.Join(dir, "adapters", "github-create.sh"))
-	assert.FileExists(t, filepath.Join(dir, "adapters", "github-execute-status.sh"))
+	// Verify playwright runner exists
+	assert.FileExists(t, filepath.Join(dir, "gtms", "adapters", "playwright-runner.sh"))
 
 	// Verify guide file exists
-	assert.FileExists(t, filepath.Join(dir, "test-cases", "guides", "test-case-template.md"))
+	assert.FileExists(t, filepath.Join(dir, "gtms/cases", "guides", "test-case-template.md"))
 
-	// Total files: 1 config + 2 templates + 1 guide + 1 README + 6 stubs = 11
-	assert.Equal(t, 11, len(result.FilesCreated))
+	// Total files: 1 sentinel + 1 config + 1 guide + 1 skeleton + 1 agent-skeleton
+	// + 1 playwright-runner + 1 manual-template + 1 schema + 1 manual-prime
+	// + 1 manual-execute + 1 tasks-readme + 1 guidance + 1 vscode-settings
+	// + 1 vscode-extensions + 1 vscode-snippets = 15
+	assert.Equal(t, 15, len(result.FilesCreated),
+		"playwright preset should create 15 files; got: %v", result.FilesCreated)
+}
+
+func TestInitCreatesGuidanceYAML(t *testing.T) {
+	skipIfShort(t)
+	dir := initGitRepo(t)
+
+	result, err := Init(Options{
+		ProjectRoot: dir,
+		Name:        "Guidance Test",
+		Repo:        "org/guidance",
+		Preset:      PresetBats,
+		Force:       false,
+	})
+
+	require.NoError(t, err)
+
+	// .gtms/guidance.yaml should be created
+	guidancePath := filepath.Join(dir, ".gtms", "guidance.yaml")
+	assert.FileExists(t, guidancePath)
+
+	// Should be tracked in FilesCreated
+	assert.Contains(t, result.FilesCreated, ".gtms/guidance.yaml")
+}
+
+func TestInitSkipsExistingGuidanceYAML(t *testing.T) {
+	skipIfShort(t)
+	dir := initGitRepo(t)
+
+	// Pre-create .gtms/guidance.yaml with custom content
+	gtmsDir := filepath.Join(dir, ".gtms")
+	require.NoError(t, os.MkdirAll(gtmsDir, 0755))
+	customContent := "create: |\n  custom guidance\n"
+	require.NoError(t, os.WriteFile(filepath.Join(gtmsDir, "guidance.yaml"), []byte(customContent), 0644))
+
+	result, err := Init(Options{
+		ProjectRoot: dir,
+		Name:        "Skip Test",
+		Repo:        "org/skip",
+		Preset:      PresetBats,
+		Force:       false,
+	})
+
+	require.NoError(t, err)
+
+	// Should be in FilesSkipped, not FilesCreated
+	assert.Contains(t, result.FilesSkipped, ".gtms/guidance.yaml")
+	assert.NotContains(t, result.FilesCreated, ".gtms/guidance.yaml")
+
+	// Original content should be preserved
+	content, err := os.ReadFile(filepath.Join(gtmsDir, "guidance.yaml"))
+	require.NoError(t, err)
+	assert.Equal(t, customContent, string(content))
+}
+
+// --- Demo seeding tests ---
+
+func TestDemoSeedFreshProject(t *testing.T) {
+	skipIfShort(t)
+	dir := initGitRepo(t)
+
+	// Run minimal init first (DemoSeed requires existing config)
+	_, err := Init(Options{
+		ProjectRoot: dir,
+		Name:        "Demo Test",
+		Repo:        "org/demo",
+		Preset:      PresetBats,
+		Force:       false,
+	})
+	require.NoError(t, err)
+
+	// Seed demo data
+	result, err := DemoSeed(dir)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	// Verify demo files created
+	assert.FileExists(t, filepath.Join(dir, "_demo", "login-feature.md"))
+	assert.FileExists(t, filepath.Join(dir, "_demo", "adapters", "create-demo.sh"))
+	assert.FileExists(t, filepath.Join(dir, "_demo", "adapters", "automate-demo-sh.sh"))
+	assert.FileExists(t, filepath.Join(dir, "_demo", "adapters", "automate-demo-cmd.sh"))
+	assert.FileExists(t, filepath.Join(dir, "gtms/cases", "guides", "getting-started-with-ai.md"))
+
+	// Verify files tracked in result
+	assert.Contains(t, result.FilesCreated, "_demo/login-feature.md")
+	assert.Contains(t, result.FilesCreated, "_demo/adapters/create-demo.sh")
+	assert.Contains(t, result.FilesCreated, "_demo/adapters/automate-demo-sh.sh")
+	assert.Contains(t, result.FilesCreated, "_demo/adapters/automate-demo-cmd.sh")
+	assert.Contains(t, result.FilesCreated, "gtms/cases/guides/getting-started-with-ai.md")
+	assert.True(t, result.ConfigModified)
+	assert.True(t, result.GuidanceModified)
+}
+
+func TestDemoSeedConfigValidation(t *testing.T) {
+	skipIfShort(t)
+	dir := initGitRepo(t)
+
+	_, err := Init(Options{
+		ProjectRoot: dir,
+		Name:        "Demo Validation",
+		Repo:        "org/demo-val",
+		Preset:      PresetBats,
+		Force:       false,
+	})
+	require.NoError(t, err)
+
+	_, err = DemoSeed(dir)
+	require.NoError(t, err)
+
+	// Config must pass validation after demo merge
+	cfg, err := config.LoadFromFile(filepath.Join(dir, "gtms.config"))
+	require.NoError(t, err)
+
+	// Verify demo adapters exist
+	assert.NotNil(t, cfg.Adapters["create"]["demo"])
+	assert.Equal(t, "sync", cfg.Adapters["create"]["demo"].Mode)
+	assert.Equal(t, "_demo/adapters/create-demo.sh", cfg.Adapters["create"]["demo"].Script)
+
+	assert.NotNil(t, cfg.Adapters["automate"]["demo-sh"])
+	assert.Equal(t, "sync", cfg.Adapters["automate"]["demo-sh"].Mode)
+
+	assert.NotNil(t, cfg.Adapters["automate"]["demo-cmd"])
+	assert.Equal(t, "sync", cfg.Adapters["automate"]["demo-cmd"].Mode)
+
+	assert.NotNil(t, cfg.Adapters["execute"]["demo-sh"])
+	assert.Equal(t, "sync", cfg.Adapters["execute"]["demo-sh"].Mode)
+	assert.Equal(t, "sh {artefact_file}", cfg.Adapters["execute"]["demo-sh"].Command)
+
+	assert.NotNil(t, cfg.Adapters["execute"]["demo-cmd"])
+	assert.Equal(t, "sync", cfg.Adapters["execute"]["demo-cmd"].Mode)
+	assert.Equal(t, "cmd /c {artefact_file}", cfg.Adapters["execute"]["demo-cmd"].Command)
+
+	// Verify DemoSeeded flag is set
+	assert.True(t, cfg.DemoSeeded)
+
+	// Verify defaults were NOT modified by demo seed (skeleton default from minimal preset preserved)
+	assert.Equal(t, "skeleton", cfg.Defaults["create"], "demo should preserve existing skeleton default")
+}
+
+func TestDemoSeedExistingProjectPreservesAdapters(t *testing.T) {
+	skipIfShort(t)
+	dir := initGitRepo(t)
+
+	// Init with bats preset (has existing adapters)
+	_, err := Init(Options{
+		ProjectRoot: dir,
+		Name:        "Existing Adapters",
+		Repo:        "org/existing",
+		Preset:      PresetBats,
+		Force:       false,
+	})
+	require.NoError(t, err)
+
+	_, err = DemoSeed(dir)
+	require.NoError(t, err)
+
+	cfg, err := config.LoadFromFile(filepath.Join(dir, "gtms.config"))
+	require.NoError(t, err)
+
+	// Original adapters should still exist
+	assert.NotNil(t, cfg.Adapters["create"]["skeleton"], "existing create adapter should be preserved")
+	assert.NotNil(t, cfg.Adapters["execute"]["bats-runner"], "existing execute adapter should be preserved")
+
+	// Demo adapters should also exist
+	assert.NotNil(t, cfg.Adapters["create"]["demo"])
+	assert.NotNil(t, cfg.Adapters["automate"]["demo-sh"])
+	assert.NotNil(t, cfg.Adapters["execute"]["demo-sh"])
+
+	// Defaults should still point to original adapters
+	assert.Equal(t, "skeleton", cfg.Defaults["create"])
+	assert.Equal(t, "bats-runner", cfg.Defaults["execute"])
+}
+
+func TestDemoSeedCreatesBackups(t *testing.T) {
+	skipIfShort(t)
+	dir := initGitRepo(t)
+
+	_, err := Init(Options{
+		ProjectRoot: dir,
+		Name:        "Backup Test",
+		Repo:        "org/backup",
+		Preset:      PresetBats,
+		Force:       false,
+	})
+	require.NoError(t, err)
+
+	_, err = DemoSeed(dir)
+	require.NoError(t, err)
+
+	// Backup of config should exist
+	assert.FileExists(t, filepath.Join(dir, "gtms.config.bak"))
+
+	// Backup of guidance should exist
+	assert.FileExists(t, filepath.Join(dir, ".gtms", "guidance.yaml.bak"))
+}
+
+func TestDemoSeedGuidanceUpdated(t *testing.T) {
+	skipIfShort(t)
+	dir := initGitRepo(t)
+
+	_, err := Init(Options{
+		ProjectRoot: dir,
+		Name:        "Guidance Test",
+		Repo:        "org/guidance",
+		Preset:      PresetBats,
+		Force:       false,
+	})
+	require.NoError(t, err)
+
+	_, err = DemoSeed(dir)
+	require.NoError(t, err)
+
+	// Read guidance.yaml and check init key was updated
+	content, err := os.ReadFile(filepath.Join(dir, ".gtms", "guidance.yaml"))
+	require.NoError(t, err)
+	assert.Contains(t, string(content), "login-feature.md")
+	assert.Contains(t, string(content), "--adapter demo")
+}
+
+func TestDemoAdapterScriptsHaveShebang(t *testing.T) {
+	skipIfShort(t)
+	dir := initGitRepo(t)
+
+	_, err := Init(Options{
+		ProjectRoot: dir,
+		Name:        "Shebang Test",
+		Repo:        "org/shebang",
+		Preset:      PresetBats,
+		Force:       false,
+	})
+	require.NoError(t, err)
+
+	_, err = DemoSeed(dir)
+	require.NoError(t, err)
+
+	scripts := []string{
+		"_demo/adapters/create-demo.sh",
+		"_demo/adapters/automate-demo-sh.sh",
+		"_demo/adapters/automate-demo-cmd.sh",
+	}
+	for _, s := range scripts {
+		content, err := os.ReadFile(filepath.Join(dir, filepath.FromSlash(s)))
+		require.NoError(t, err, "reading %s", s)
+		assert.True(t, strings.HasPrefix(string(content), "#!/bin/sh"), "script %s should start with #!/bin/sh", s)
+	}
+
+	// Check permissions on Unix
+	if runtime.GOOS != "windows" {
+		for _, s := range scripts {
+			info, err := os.Stat(filepath.Join(dir, filepath.FromSlash(s)))
+			require.NoError(t, err)
+			assert.True(t, info.Mode()&0o111 != 0, "script %s should be executable", s)
+		}
+	}
+}
+
+func TestDemoSeedSkipsExistingFiles(t *testing.T) {
+	skipIfShort(t)
+	dir := initGitRepo(t)
+
+	_, err := Init(Options{
+		ProjectRoot: dir,
+		Name:        "Skip Demo",
+		Repo:        "org/skip-demo",
+		Preset:      PresetBats,
+		Force:       false,
+	})
+	require.NoError(t, err)
+
+	// Pre-create one demo file with custom content
+	demoDir := filepath.Join(dir, "_demo")
+	require.NoError(t, os.MkdirAll(demoDir, 0o755))
+	customContent := "# My custom requirement\n"
+	require.NoError(t, os.WriteFile(filepath.Join(demoDir, "login-feature.md"), []byte(customContent), 0o644))
+
+	result, err := DemoSeed(dir)
+	require.NoError(t, err)
+
+	// login-feature.md should be skipped
+	assert.Contains(t, result.FilesSkipped, "_demo/login-feature.md")
+	assert.NotContains(t, result.FilesCreated, "_demo/login-feature.md")
+
+	// Verify custom content preserved
+	content, err := os.ReadFile(filepath.Join(demoDir, "login-feature.md"))
+	require.NoError(t, err)
+	assert.Equal(t, customContent, string(content))
+
+	// Other demo files should still be created
+	assert.Contains(t, result.FilesCreated, "_demo/adapters/create-demo.sh")
+}
+
+func TestDemoRequirementContent(t *testing.T) {
+	// Pure unit test — no git needed
+	assert.Contains(t, demoLoginRequirement, "Login Feature")
+	assert.Contains(t, demoLoginRequirement, "REQ-LOGIN-001")
+	assert.Contains(t, demoLoginRequirement, "REQ-LOGIN-002")
+	assert.Contains(t, demoLoginRequirement, "REQ-LOGIN-003")
+}
+
+func TestDemoCreateScriptContent(t *testing.T) {
+	// Pure unit test
+	assert.Contains(t, demoCreateScript, "GTMS_OUTPUT_DIR")
+	assert.Contains(t, demoCreateScript, "GTMS_TC_IDS")
+	assert.Contains(t, demoCreateScript, "GTMS_RESULT_FILE")
+	assert.Contains(t, demoCreateScript, "login-valid-credentials")
+	assert.Contains(t, demoCreateScript, "login-invalid-password")
+	assert.Contains(t, demoCreateScript, "login-empty-fields")
+}
+
+// --- REV-061: Skeleton script uses GTMS_TC_NAME ---
+
+func TestSkeletonCreateScript_UsesGTMS_TC_NAME(t *testing.T) {
+	// Verify the skeleton template correctly references GTMS_TC_NAME
+	assert.Contains(t, skeletonCreateScript, "${GTMS_TC_NAME}")
+	assert.Contains(t, skeletonCreateScript, "GTMS_TC_NAME")
+	// Should use the name in the filename
+	assert.Contains(t, skeletonCreateScript, "${ID}-${GTMS_TC_NAME}.md")
+}
+
+// --- ENH-135: BUG-027 Finding 1 reversed (CON-020) ---
+
+func TestVSCodeSnippetsShipped(t *testing.T) {
+	// BUG-027 originally removed snippets for skeleton TC files.
+	// CON-020 reverses this: manual result files are hand-edited YAML,
+	// so snippet support is appropriate for the result-file authoring flow.
+	assert.Contains(t, vscodeGtmsSnippets, "gtms-pass")
+	assert.Contains(t, vscodeGtmsSnippets, "gtms-fail")
+	assert.Contains(t, vscodeGtmsSnippets, "gtms-skip")
+	assert.Contains(t, vscodeGtmsSnippets, "gtms-step-pass")
+	assert.Contains(t, vscodeGtmsSnippets, "gtms-step-fail")
+	assert.Contains(t, vscodeGtmsSnippets, "gtms-step-skip")
+}
+
+// --- ENH-107: ensureGitignore baseline coverage ---
+
+func TestEnsureGitignore_CreatesFileWhenAbsent(t *testing.T) {
+	dir := t.TempDir()
+
+	action, err := ensureGitignore(dir)
+	require.NoError(t, err)
+	assert.Equal(t, GitignoreCreated, action)
+
+	content, err := os.ReadFile(filepath.Join(dir, ".gitignore"))
+	require.NoError(t, err)
+	expected := ".gtms/\ngtms/execution/attachments/\ngtms/execution/logs/\n"
+	assert.Equal(t, expected, string(content))
+}
+
+func TestEnsureGitignore_AppendsEntryWhenMissing(t *testing.T) {
+	dir := t.TempDir()
+
+	// Pre-create .gitignore without any GTMS entries
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".gitignore"), []byte("node_modules/\n"), 0o644))
+
+	action, err := ensureGitignore(dir)
+	require.NoError(t, err)
+	assert.Equal(t, GitignoreAppended, action)
+
+	content, err := os.ReadFile(filepath.Join(dir, ".gitignore"))
+	require.NoError(t, err)
+	assert.Contains(t, string(content), "node_modules/\n")
+	assert.Contains(t, string(content), ".gtms/\n")
+	assert.Contains(t, string(content), "gtms/execution/attachments/\n")
+	assert.Contains(t, string(content), "gtms/execution/logs/\n")
+}
+
+func TestEnsureGitignore_IdempotentWhenPresent(t *testing.T) {
+	dir := t.TempDir()
+
+	original := "node_modules/\n.gtms/\ngtms/execution/attachments/\ngtms/execution/logs/\nbuild/\n"
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".gitignore"), []byte(original), 0o644))
+
+	action, err := ensureGitignore(dir)
+	require.NoError(t, err)
+	assert.Equal(t, GitignoreUnchanged, action)
+
+	content, err := os.ReadFile(filepath.Join(dir, ".gitignore"))
+	require.NoError(t, err)
+	assert.Equal(t, original, string(content), "file should be unchanged when entries already present")
+}
+
+func TestEnsureGitignore_HandlesCRLF(t *testing.T) {
+	dir := t.TempDir()
+
+	// CRLF line endings with all GTMS entries already present
+	crlf := "node_modules/\r\n.gtms/\r\ngtms/execution/attachments/\r\ngtms/execution/logs/\r\nbuild/\r\n"
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".gitignore"), []byte(crlf), 0o644))
+
+	action, err := ensureGitignore(dir)
+	require.NoError(t, err)
+	assert.Equal(t, GitignoreUnchanged, action)
+
+	content, err := os.ReadFile(filepath.Join(dir, ".gitignore"))
+	require.NoError(t, err)
+	// Should be idempotent — no duplicate entries
+	assert.Equal(t, crlf, string(content), "file should be unchanged when entries already present (CRLF)")
+}
+
+func TestEnsureGitignore_IdempotentWithWhitespace(t *testing.T) {
+	dir := t.TempDir()
+
+	// .gitignore with whitespace around the GTMS entries
+	original := "  .gtms/  \n  gtms/execution/attachments/  \n  gtms/execution/logs/  \n"
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".gitignore"), []byte(original), 0o644))
+
+	action, err := ensureGitignore(dir)
+	require.NoError(t, err)
+	assert.Equal(t, GitignoreUnchanged, action)
+
+	content, err := os.ReadFile(filepath.Join(dir, ".gitignore"))
+	require.NoError(t, err)
+	assert.Equal(t, original, string(content), "file should be unchanged when entries present with whitespace")
+}
+
+// TestEnsureGitignore_SentinelOnlyLeftUnchanged guards the ENH-108 contract:
+// a project that pre-dates ENH-109 (only the .gtms/ sentinel in .gitignore,
+// none of the gtms/execution/ entries that ENH-109 added) must be treated as
+// already managed and left byte-for-byte unchanged on `gtms init`. Adding the
+// newer entries silently would break ENH-108's idempotency tests in
+// test/acceptance/gitignore-action-reporting/.
+func TestEnsureGitignore_SentinelOnlyLeftUnchanged(t *testing.T) {
+	dir := t.TempDir()
+
+	original := "node_modules/\n.gtms/\ndist/\n"
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".gitignore"), []byte(original), 0o644))
+
+	action, err := ensureGitignore(dir)
+	require.NoError(t, err)
+	assert.Equal(t, GitignoreUnchanged, action)
+
+	content, err := os.ReadFile(filepath.Join(dir, ".gitignore"))
+	require.NoError(t, err)
+	assert.Equal(t, original, string(content), "file should be unchanged when the .gtms/ sentinel is present, even if newer entries are absent")
+}
+
+// --- ENH-107: Sentinel preservation (S5, D9) ---
+
+func TestInitForce_PreservesSentinelContent(t *testing.T) {
+	skipIfShort(t)
+	dir := initGitRepo(t)
+
+	// First init
+	_, err := Init(Options{
+		ProjectRoot: dir,
+		Name:        "Sentinel Test",
+		Repo:        "org/sentinel",
+		Preset:      PresetBats,
+		Force:       false,
+	})
+	require.NoError(t, err)
+
+	// Write non-empty sentinel content
+	sentinelPath := filepath.Join(dir, "gtms", ".gtms-root")
+	customContent := "version: 1\n"
+	require.NoError(t, os.WriteFile(sentinelPath, []byte(customContent), 0o644))
+
+	// Re-init with --force
+	_, err = Init(Options{
+		ProjectRoot: dir,
+		Name:        "Sentinel Test",
+		Repo:        "org/sentinel",
+		Preset:      PresetBats,
+		Force:       true,
+	})
+	require.NoError(t, err)
+
+	// Sentinel content must survive byte-for-byte
+	content, err := os.ReadFile(sentinelPath)
+	require.NoError(t, err)
+	assert.Equal(t, customContent, string(content), "non-empty sentinel must survive --force")
+}
+
+// --- ENH-107: S3 deliberate reconstruct ---
+
+func TestInit_S3_ExistingGtmsPreservesSubdirs(t *testing.T) {
+	skipIfShort(t)
+	dir := initGitRepo(t)
+
+	// Pre-create gtms/cases/ with a file (simulates S3: existing gtms/ without config)
+	casesDir := filepath.Join(dir, "gtms", "cases")
+	require.NoError(t, os.MkdirAll(casesDir, 0o755))
+	existingFile := filepath.Join(casesDir, "foo.md")
+	require.NoError(t, os.WriteFile(existingFile, []byte("keep me"), 0o644))
+
+	// Run init (no config exists, no flat layout)
+	result, err := Init(Options{
+		ProjectRoot: dir,
+		Name:        "S3 Test",
+		Repo:        "org/s3",
+		Preset:      PresetBats,
+		Force:       false,
+	})
+	require.NoError(t, err)
+
+	// Existing file must be untouched
+	content, err := os.ReadFile(existingFile)
+	require.NoError(t, err)
+	assert.Equal(t, "keep me", string(content))
+
+	// Sentinel should be in FilesRestored (not FilesCreated) because gtms/ pre-existed
+	assert.Contains(t, result.FilesRestored, "gtms/.gtms-root",
+		"sentinel should be in FilesRestored when gtms/ pre-existed")
+	assert.NotContains(t, result.FilesCreated, "gtms/.gtms-root",
+		"sentinel should NOT be in FilesCreated when gtms/ pre-existed")
+}
+
+// --- BUG-111: Preset output-dir verification ---
+
+func TestPlaywrightPresetEmitsOutputDir(t *testing.T) {
+	skipIfShort(t)
+	dir := initGitRepo(t)
+
+	_, err := Init(Options{
+		ProjectRoot: dir,
+		Name:        "OutputDir PW",
+		Repo:        "org/od-pw",
+		Preset:      PresetPlaywright,
+		Force:       false,
+	})
+	require.NoError(t, err)
+
+	cfg, err := config.LoadFromFile(filepath.Join(dir, "gtms.config"))
+	require.NoError(t, err)
+
+	// execute.playwright-runner should have output-dir
+	pw := cfg.Adapters["execute"]["playwright-runner"]
+	require.NotNil(t, pw)
+	assert.Equal(t, "gtms/scripts/playwright", pw.OutputDir)
+	assert.Equal(t, "playwright", pw.Framework)
+}
+
+func TestBatsPresetEmitsOutputDir(t *testing.T) {
+	skipIfShort(t)
+	dir := initGitRepo(t)
+
+	_, err := Init(Options{
+		ProjectRoot: dir,
+		Name:        "OutputDir BATS",
+		Repo:        "org/od-bats",
+		Preset:      PresetBats,
+		Force:       false,
+	})
+	require.NoError(t, err)
+
+	cfg, err := config.LoadFromFile(filepath.Join(dir, "gtms.config"))
+	require.NoError(t, err)
+
+	// execute.bats-runner should have output-dir
+	bats := cfg.Adapters["execute"]["bats-runner"]
+	require.NotNil(t, bats)
+	assert.Equal(t, "test/acceptance", bats.OutputDir)
+	assert.Equal(t, "bats", bats.Framework)
+}
+
+func TestMinimalPresetSkeletonHasNoOutputDir(t *testing.T) {
+	skipIfShort(t)
+	dir := initGitRepo(t)
+
+	_, err := Init(Options{
+		ProjectRoot: dir,
+		Name:        "OutputDir Minimal",
+		Repo:        "org/od-minimal",
+		Preset:      PresetBats,
+		Force:       false,
+	})
+	require.NoError(t, err)
+
+	// ENH-127: the minimal preset's bats-runner adapter has
+	// `output-dir: test/acceptance`, but the create.skeleton adapter
+	// must NOT carry an output-dir. Verify per-adapter rather than
+	// globally on the file.
+	cfg, err := config.LoadFromFile(filepath.Join(dir, "gtms.config"))
+	require.NoError(t, err)
+	skeleton := cfg.Adapters["create"]["skeleton"]
+	require.NotNil(t, skeleton)
+	assert.Empty(t, skeleton.OutputDir, "create.skeleton should not declare output-dir")
+}
+
+// ENH-132: Manual prime scaffold tests
+
+func TestInitMinimalPreset_ManualScaffold(t *testing.T) {
+	skipIfShort(t)
+	dir := initGitRepo(t)
+
+	result, err := Init(Options{
+		ProjectRoot: dir,
+		Name:        "Manual Test",
+		Repo:        "org/manual-test",
+		Preset:      PresetBats,
+		Force:       false,
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	// Manual directories should exist
+	assert.DirExists(t, filepath.Join(dir, "gtms", "manual", "records"))
+	assert.DirExists(t, filepath.Join(dir, "gtms", "manual", "templates"))
+	assert.DirExists(t, filepath.Join(dir, "gtms", "schemas"))
+
+	// Manual result template should be created
+	templatePath := filepath.Join(dir, "gtms", "manual", "templates", "manual-result.template.yaml")
+	assert.FileExists(t, templatePath)
+	templateContent, err := os.ReadFile(templatePath)
+	require.NoError(t, err)
+	assert.Contains(t, string(templateContent), "yaml-language-server")
+	assert.Contains(t, string(templateContent), "GTMS contract")
+	assert.Contains(t, string(templateContent), "OVERALL RESULT")
+	assert.Contains(t, string(templateContent), "Optional metadata")
+	assert.Contains(t, string(templateContent), "Steps (optional)")
+	assert.Contains(t, string(templateContent), "${TESTCASE}")
+	assert.Contains(t, string(templateContent), "${TESTCASE_HASH}")
+	assert.Contains(t, string(templateContent), "framework: manual")
+	assert.Contains(t, string(templateContent), "result:")
+	assert.Contains(t, string(templateContent), "steps:")
+	assert.Contains(t, string(templateContent), "${BRANCH}")
+
+	// Schema should be created
+	schemaPath := filepath.Join(dir, "gtms", "schemas", "manual-result.schema.json")
+	assert.FileExists(t, schemaPath)
+	schemaContent, err := os.ReadFile(schemaPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(schemaContent), `"test_case_id"`)
+	assert.Contains(t, string(schemaContent), `"test_case_hash"`)
+	assert.Contains(t, string(schemaContent), `"framework"`)
+	assert.Contains(t, string(schemaContent), `"result"`)
+	assert.Contains(t, string(schemaContent), `"^[a-f0-9]{16}$"`)
+	assert.Contains(t, string(schemaContent), `"additionalProperties": true`)
+
+	// Manual-prime adapter script should be created
+	primePath := filepath.Join(dir, "gtms", "adapters", "manual-prime.sh")
+	assert.FileExists(t, primePath)
+	primeContent, err := os.ReadFile(primePath)
+	require.NoError(t, err)
+	assert.Contains(t, string(primeContent), "#!/bin/sh")
+	assert.Contains(t, string(primeContent), "GTMS_TESTCASE_HASH")
+	assert.Contains(t, string(primeContent), "GTMS_TEMPLATE_FILE")
+	assert.Contains(t, string(primeContent), "GTMS_OUTPUT_FILE")
+	assert.Contains(t, string(primeContent), "status: complete")
+	assert.Contains(t, string(primeContent), "result: pass")
+
+	// VSCode settings and extensions should be created
+	assert.FileExists(t, filepath.Join(dir, ".vscode", "settings.json"))
+	settingsContent, err := os.ReadFile(filepath.Join(dir, ".vscode", "settings.json"))
+	require.NoError(t, err)
+	assert.Contains(t, string(settingsContent), "yaml.schemas")
+	assert.Contains(t, string(settingsContent), "manual-result.schema.json")
+
+	assert.FileExists(t, filepath.Join(dir, ".vscode", "extensions.json"))
+	extContent, err := os.ReadFile(filepath.Join(dir, ".vscode", "extensions.json"))
+	require.NoError(t, err)
+	assert.Contains(t, string(extContent), "redhat.vscode-yaml")
+
+	// Config should include manual-prime adapter under adapters.prime (ENH-150)
+	cfg, err := config.LoadFromFile(filepath.Join(dir, "gtms.config"))
+	require.NoError(t, err)
+	manualPrime := cfg.Adapters["prime"]["manual-prime"]
+	require.NotNil(t, manualPrime, "manual-prime adapter should be in config under adapters.prime")
+	assert.Equal(t, "sync", manualPrime.Mode)
+	assert.Equal(t, "manual", manualPrime.Framework)
+	assert.Contains(t, manualPrime.Script, "manual-prime.sh")
+
+	// Template must NOT contain attempts: (per ENH-118)
+	assert.NotContains(t, string(templateContent), "attempts:")
+
+	// Files should be tracked in result
+	assert.Contains(t, result.FilesCreated, "gtms/manual/templates/manual-result.template.yaml")
+	assert.Contains(t, result.FilesCreated, "gtms/schemas/manual-result.schema.json")
+	assert.Contains(t, result.FilesCreated, "gtms/adapters/manual-prime.sh")
+	assert.Contains(t, result.FilesCreated, ".vscode/settings.json")
+	assert.Contains(t, result.FilesCreated, ".vscode/extensions.json")
+}
+
+func TestInitMinimalPreset_VSCodeSettingsPreserved(t *testing.T) {
+	skipIfShort(t)
+	dir := initGitRepo(t)
+
+	// Pre-create .vscode/settings.json with custom content
+	vscodeDir := filepath.Join(dir, ".vscode")
+	require.NoError(t, os.MkdirAll(vscodeDir, 0o755))
+	existing := `{"editor.fontSize": 14}`
+	require.NoError(t, os.WriteFile(filepath.Join(vscodeDir, "settings.json"), []byte(existing), 0o644))
+
+	result, err := Init(Options{
+		ProjectRoot: dir,
+		Name:        "Preserve Settings",
+		Repo:        "org/preserve",
+		Preset:      PresetBats,
+		Force:       false,
+	})
+
+	require.NoError(t, err)
+
+	// Existing settings.json should NOT be overwritten
+	content, err := os.ReadFile(filepath.Join(vscodeDir, "settings.json"))
+	require.NoError(t, err)
+	assert.Equal(t, existing, string(content), "existing .vscode/settings.json must not be overwritten")
+
+	// Should appear in skipped, not created
+	assert.Contains(t, result.FilesSkipped, ".vscode/settings.json")
+	assert.NotContains(t, result.FilesCreated, ".vscode/settings.json")
+}
+
+func TestInitMinimalPreset_VSCodeExtensionsPreserved(t *testing.T) {
+	skipIfShort(t)
+	dir := initGitRepo(t)
+
+	// Pre-create .vscode/extensions.json with custom content
+	vscodeDir := filepath.Join(dir, ".vscode")
+	require.NoError(t, os.MkdirAll(vscodeDir, 0o755))
+	existing := `{"recommendations": ["ms-python.python"]}`
+	require.NoError(t, os.WriteFile(filepath.Join(vscodeDir, "extensions.json"), []byte(existing), 0o644))
+
+	result, err := Init(Options{
+		ProjectRoot: dir,
+		Name:        "Preserve Extensions",
+		Repo:        "org/preserve",
+		Preset:      PresetBats,
+		Force:       false,
+	})
+
+	require.NoError(t, err)
+
+	// Existing extensions.json should NOT be overwritten
+	content, err := os.ReadFile(filepath.Join(vscodeDir, "extensions.json"))
+	require.NoError(t, err)
+	assert.Equal(t, existing, string(content), "existing .vscode/extensions.json must not be overwritten")
+
+	// Should appear in skipped, not created
+	assert.Contains(t, result.FilesSkipped, ".vscode/extensions.json")
+	assert.NotContains(t, result.FilesCreated, ".vscode/extensions.json")
+}
+
+func TestManualResultTemplate_NoInlineValueHints(t *testing.T) {
+	// CON-020 Decision 3: no inline value-hint comments on field lines
+	// (collide with ENH-E snippet expansion)
+	assert.NotContains(t, manualResultTemplate, "# pass | fail | skip",
+		"template must not have inline value-hint comments per CON-020 Decision 3")
+	assert.NotContains(t, manualResultTemplate, "# RFC3339",
+		"template must not have inline value-hint comments per CON-020 Decision 3")
+}
+
+func TestManualResultTemplate_FourSectionModel(t *testing.T) {
+	// BUG-077: four sections — GTMS contract → OVERALL RESULT → Optional metadata → Steps
+	assert.Contains(t, manualResultTemplate, "GTMS contract")
+	assert.Contains(t, manualResultTemplate, "OVERALL RESULT")
+	assert.Contains(t, manualResultTemplate, "Optional metadata")
+	assert.Contains(t, manualResultTemplate, "Steps (optional)")
+
+	// Verify section order
+	contractIdx := strings.Index(manualResultTemplate, "GTMS contract")
+	resultIdx := strings.Index(manualResultTemplate, "OVERALL RESULT")
+	optionalIdx := strings.Index(manualResultTemplate, "Optional metadata")
+	stepsIdx := strings.Index(manualResultTemplate, "Steps (optional)")
+	assert.Greater(t, resultIdx, contractIdx, "OVERALL RESULT section should come after GTMS contract")
+	assert.Greater(t, optionalIdx, resultIdx, "Optional metadata should come after OVERALL RESULT")
+	assert.Greater(t, stepsIdx, optionalIdx, "Steps section should come after Optional metadata")
+}
+
+// --- BUG-077: Template and snippet consistency tests ---
+
+func TestBUG077_TemplateHasStepsKey(t *testing.T) {
+	assert.Contains(t, manualResultTemplate, "\nsteps:",
+		"template must contain a steps: key for step snippet expansion")
+}
+
+func TestBUG077_SnippetsValueFirst(t *testing.T) {
+	// Result snippets must not re-emit the result: key (Issue 3)
+	assert.NotContains(t, vscodeGtmsSnippets, `"result: pass"`,
+		"gtms-pass snippet must not contain 'result: pass' — template owns the key")
+	assert.NotContains(t, vscodeGtmsSnippets, `"result: fail"`,
+		"gtms-fail snippet must not contain 'result: fail' — template owns the key")
+	assert.NotContains(t, vscodeGtmsSnippets, `"result: skip"`,
+		"gtms-skip snippet must not contain 'result: skip' — template owns the key")
+}
+
+func TestBUG077_StepSnippetIndentation(t *testing.T) {
+	// Step snippets must carry two-space indentation (Issues 1, 2)
+	assert.Contains(t, vscodeGtmsSnippets, `"  - step:`,
+		"gtms-step-pass snippet body must start with two-space indented list item")
+	assert.Contains(t, vscodeGtmsSnippets, `"    name:`,
+		"gtms-step-pass snippet body must have four-space indented name field")
+}
+
+func TestBUG077_SnippetDescriptionsNoNotesSection(t *testing.T) {
+	// No snippet description should reference "notes section" (Issue 1)
+	assert.NotContains(t, vscodeGtmsSnippets, "notes section",
+		"no snippet description should reference the non-existent 'notes section'")
+}
+
+func TestBUG077_DefectIsList(t *testing.T) {
+	// defect: must be a YAML list, not a scalar (Issue 8)
+	assert.Contains(t, vscodeGtmsSnippets, `"defect:"`,
+		"gtms-fail snippet must emit defect: as a key")
+	assert.Contains(t, vscodeGtmsSnippets, `"  - ${2:JIRA-XXX}"`,
+		"gtms-fail snippet must emit defect as a list item")
+}
+
+func TestBUG077_SchemaEnumeratesSnippetFields(t *testing.T) {
+	// Schema must enumerate snippet-emitted fields (Target State Section 4)
+	assert.Contains(t, manualResultSchema, `"executed_by"`)
+	assert.Contains(t, manualResultSchema, `"executed_at"`)
+	assert.Contains(t, manualResultSchema, `"steps"`)
+	assert.Contains(t, manualResultSchema, `"defect"`)
+	assert.Contains(t, manualResultSchema, `"skip_reason"`)
+}
+
+func TestBUG077_SchemaResultAcceptsNull(t *testing.T) {
+	// result type must accept null so freshly-stamped files are schema-valid
+	assert.Contains(t, manualResultSchema, `"null"`,
+		"result type must include null for freshly-stamped templates")
+	assert.Contains(t, manualResultSchema, `["string", "null"]`,
+		"result type should be a union of string and null")
+}
+
+// --- ENH-135: Companion-file and new scaffold tests ---
+
+func TestInitCompanionSnippetForExistingSettings(t *testing.T) {
+	skipIfShort(t)
+	dir := initGitRepo(t)
+
+	// Pre-create .vscode/settings.json with custom content
+	vscodeDir := filepath.Join(dir, ".vscode")
+	require.NoError(t, os.MkdirAll(vscodeDir, 0o755))
+	customContent := `{"editor.fontSize": 14}`
+	require.NoError(t, os.WriteFile(filepath.Join(vscodeDir, "settings.json"), []byte(customContent), 0o644))
+
+	result, err := Init(Options{
+		ProjectRoot: dir,
+		Name:        "Companion Test",
+		Repo:        "org/companion",
+		Preset:      PresetBats,
+	})
+	require.NoError(t, err)
+
+	// Original file should be untouched
+	content, err := os.ReadFile(filepath.Join(vscodeDir, "settings.json"))
+	require.NoError(t, err)
+	assert.Equal(t, customContent, string(content))
+
+	// Companion snippet should exist
+	assert.FileExists(t, filepath.Join(vscodeDir, "gtms-settings.json.snippet"))
+
+	// Result tracking
+	assert.Contains(t, result.FilesSkipped, ".vscode/settings.json")
+	assert.Contains(t, result.FilesCreated, ".vscode/gtms-settings.json.snippet")
+
+	// Warning about merging
+	foundWarning := false
+	for _, w := range result.Warnings {
+		if strings.Contains(w, "settings.json already exists") && strings.Contains(w, "gtms-settings.json.snippet") {
+			foundWarning = true
+			break
+		}
+	}
+	assert.True(t, foundWarning, "should warn about merging settings.json snippet")
+}
+
+func TestInitCompanionSnippetForExistingExtensions(t *testing.T) {
+	skipIfShort(t)
+	dir := initGitRepo(t)
+
+	// Pre-create .vscode/extensions.json with custom content
+	vscodeDir := filepath.Join(dir, ".vscode")
+	require.NoError(t, os.MkdirAll(vscodeDir, 0o755))
+	customContent := `{"recommendations": ["ms-python.python"]}`
+	require.NoError(t, os.WriteFile(filepath.Join(vscodeDir, "extensions.json"), []byte(customContent), 0o644))
+
+	result, err := Init(Options{
+		ProjectRoot: dir,
+		Name:        "Companion Test",
+		Repo:        "org/companion",
+		Preset:      PresetBats,
+	})
+	require.NoError(t, err)
+
+	// Original file should be untouched
+	content, err := os.ReadFile(filepath.Join(vscodeDir, "extensions.json"))
+	require.NoError(t, err)
+	assert.Equal(t, customContent, string(content))
+
+	// Companion snippet should exist
+	assert.FileExists(t, filepath.Join(vscodeDir, "gtms-extensions.json.snippet"))
+
+	// Result tracking
+	assert.Contains(t, result.FilesSkipped, ".vscode/extensions.json")
+	assert.Contains(t, result.FilesCreated, ".vscode/gtms-extensions.json.snippet")
+
+	// Warning about merging
+	foundWarning := false
+	for _, w := range result.Warnings {
+		if strings.Contains(w, "extensions.json already exists") && strings.Contains(w, "gtms-extensions.json.snippet") {
+			foundWarning = true
+			break
+		}
+	}
+	assert.True(t, foundWarning, "should warn about merging extensions.json snippet")
+}
+
+func TestInitFreshVSCodeSettingsNoCompanion(t *testing.T) {
+	skipIfShort(t)
+	dir := initGitRepo(t)
+
+	result, err := Init(Options{
+		ProjectRoot: dir,
+		Name:        "Fresh Test",
+		Repo:        "org/fresh",
+		Preset:      PresetBats,
+	})
+	require.NoError(t, err)
+
+	// Fresh settings.json should exist
+	assert.FileExists(t, filepath.Join(dir, ".vscode", "settings.json"))
+
+	// No companion snippet
+	assert.NoFileExists(t, filepath.Join(dir, ".vscode", "gtms-settings.json.snippet"))
+
+	// settings.json should be in FilesCreated, not FilesSkipped
+	assert.Contains(t, result.FilesCreated, ".vscode/settings.json")
+	assert.NotContains(t, result.FilesSkipped, ".vscode/settings.json")
+}
+
+func TestInitRenamedParentWarning(t *testing.T) {
+	skipIfShort(t)
+	dir := initGitRepo(t)
+
+	// Create a renamed parent with sentinel BEFORE init
+	renamedDir := filepath.Join(dir, "testing")
+	require.NoError(t, os.MkdirAll(renamedDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(renamedDir, ".gtms-root"), []byte(""), 0o644))
+
+	result, err := Init(Options{
+		ProjectRoot: dir,
+		Name:        "Renamed Test",
+		Repo:        "org/renamed",
+		Preset:      PresetBats,
+	})
+	require.NoError(t, err)
+
+	// Should have a renamed-parent warning
+	foundWarning := false
+	for _, w := range result.Warnings {
+		if strings.Contains(w, "renamed parent directory") && strings.Contains(w, "testing") {
+			foundWarning = true
+			break
+		}
+	}
+	assert.True(t, foundWarning, "should warn about renamed parent directory")
+}
+
+func TestInitShipsTasksReadme(t *testing.T) {
+	skipIfShort(t)
+	dir := initGitRepo(t)
+
+	result, err := Init(Options{
+		ProjectRoot: dir,
+		Name:        "Tasks README Test",
+		Repo:        "org/tasks-readme",
+		Preset:      PresetBats,
+	})
+	require.NoError(t, err)
+
+	readmePath := filepath.Join(dir, "gtms", "tasks", ".README.md")
+	assert.FileExists(t, readmePath)
+
+	content, err := os.ReadFile(readmePath)
+	require.NoError(t, err)
+	assert.Contains(t, string(content), "GTMS-managed state")
+	assert.Contains(t, string(content), "do not edit by hand")
+
+	assert.Contains(t, result.FilesCreated, "gtms/tasks/.README.md")
+}
+
+func TestInitShipsSnippetsFile(t *testing.T) {
+	skipIfShort(t)
+	dir := initGitRepo(t)
+
+	result, err := Init(Options{
+		ProjectRoot: dir,
+		Name:        "Snippets Test",
+		Repo:        "org/snippets",
+		Preset:      PresetBats,
+	})
+	require.NoError(t, err)
+
+	snippetsPath := filepath.Join(dir, ".vscode", "gtms.code-snippets")
+	assert.FileExists(t, snippetsPath)
+
+	content, err := os.ReadFile(snippetsPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(content), "gtms-pass")
+	assert.Contains(t, string(content), "gtms-fail")
+	assert.Contains(t, string(content), "gtms-skip")
+	assert.Contains(t, string(content), "gtms-step-pass")
+
+	assert.Contains(t, result.FilesCreated, ".vscode/gtms.code-snippets")
+}
+
+func TestInitWorkspaceRootNote(t *testing.T) {
+	skipIfShort(t)
+	dir := initGitRepo(t)
+
+	result, err := Init(Options{
+		ProjectRoot: dir,
+		Name:        "Workspace Test",
+		Repo:        "org/workspace",
+		Preset:      PresetBats,
+	})
+	require.NoError(t, err)
+
+	// ENH-135: workspace-root informational message lives in Notes,
+	// not Warnings (tc-12d29771 + tc-9e4fd6d9 contract).
+	foundNote := false
+	for _, n := range result.Notes {
+		if strings.Contains(n, "workspace") &&
+			strings.Contains(n, ".vscode/settings.json") &&
+			strings.Contains(n, "yaml-language-server") &&
+			strings.Contains(n, "fallback") {
+			foundNote = true
+			break
+		}
+	}
+	assert.True(t, foundNote, "should have workspace-root informational note in result.Notes")
+
+	// And the same message must NOT have leaked into Warnings.
+	for _, w := range result.Warnings {
+		if strings.Contains(w, "assumes VSCode is opened at this directory") {
+			t.Errorf("workspace-root note must live in Notes, not Warnings: %q", w)
+		}
+	}
+}
+
+// --- BUG-080: DefaultGuidanceYAML must include a prime: block ---
+
+func TestDefaultGuidanceYAML_ContainsPrimeBlock(t *testing.T) {
+	assert.Contains(t, DefaultGuidanceYAML, "prime:",
+		"DefaultGuidanceYAML must include a 'prime:' block for manual pipeline guidance")
+	assert.Contains(t, DefaultGuidanceYAML, "manual-execute",
+		"prime guidance block should reference manual-execute adapter")
+}
+
+func TestInitRedHatYAMLNote(t *testing.T) {
+	skipIfShort(t)
+	dir := initGitRepo(t)
+
+	result, err := Init(Options{
+		ProjectRoot: dir,
+		Name:        "YAML Ext Test",
+		Repo:        "org/yaml-ext",
+		Preset:      PresetBats,
+	})
+	require.NoError(t, err)
+
+	// Should have Red Hat YAML extension note
+	foundNote := false
+	for _, w := range result.Warnings {
+		if strings.Contains(w, "Red Hat YAML extension") && strings.Contains(w, "redhat.vscode-yaml") {
+			foundNote = true
+			break
+		}
+	}
+	assert.True(t, foundNote, "should have Red Hat YAML extension recommendation")
+}
+
+// --- ENH-119: Richer skeleton body golden test ---
+
+func TestSkeletonCreateScript_RicherBodySections(t *testing.T) {
+	// Verify the skeleton script contains the seven preferred H2 headings
+	// in the correct order and uses expected-observation vocabulary.
+	expectedHeadings := []string{
+		"## Test Objective",
+		"## Preconditions",
+		"## Test Data",
+		"## Test Steps",
+		"## Expected Final Outcome",
+		"## Postconditions",
+		"## Notes",
+	}
+	for _, h := range expectedHeadings {
+		assert.Contains(t, skeletonCreateScript, h,
+			"skeleton should contain heading: %s", h)
+	}
+
+	// Verify expected-observation vocabulary
+	assert.Contains(t, skeletonCreateScript, "Expected observation:")
+
+	// Verify old vocabulary is gone
+	assert.NotContains(t, skeletonCreateScript, "**Expected:**")
+
+	// Verify no execution-outcome enum values in YAML context
+	// (The word "pass" appears in "result: pass" for the handoff contract,
+	// which is correct. Check the heredoc body between the frontmatter
+	// closing --- and TCEOF does not contain bare "pass"/"fail"/"skip" values.)
+	// We check that the TC body section (between --- and TCEOF) does not
+	// have ": pass", ": fail", or ": skip" as YAML values.
+	// The handoff contract section is separate and allowed to use result: pass.
+	assert.NotContains(t, skeletonCreateScript, "status: pass")
+	assert.NotContains(t, skeletonCreateScript, "status: fail")
+	assert.NotContains(t, skeletonCreateScript, "status: skip")
+}
+
+func TestStarterGuideContent_ENH119_RicherSections(t *testing.T) {
+	// Verify the template guide contains all seven section headings
+	expectedHeadings := []string{
+		"## Test Objective",
+		"## Preconditions",
+		"## Test Data",
+		"## Test Steps",
+		"## Expected Final Outcome",
+		"## Postconditions",
+		"## Notes",
+	}
+	for _, h := range expectedHeadings {
+		assert.Contains(t, starterGuideContent, h,
+			"guide should contain heading: %s", h)
+	}
+
+	// Each heading should be followed by at least one line of guidance text
+	// (not just a bare heading). Check for key guidance phrases.
+	assert.Contains(t, starterGuideContent, "State what specific behaviour")
+	assert.Contains(t, starterGuideContent, "List every condition")
+	assert.Contains(t, starterGuideContent, "Provide exact values")
+	assert.Contains(t, starterGuideContent, "Each step is one atomic action")
+	assert.Contains(t, starterGuideContent, "overall success criteria")
+	assert.Contains(t, starterGuideContent, "expected system state")
+	assert.Contains(t, starterGuideContent, "Optional section for context")
+
+	// Guide should include the Expected observation format example
+	assert.Contains(t, starterGuideContent, "Expected observation")
 }

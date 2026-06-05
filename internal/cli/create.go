@@ -4,13 +4,19 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strings"
 
-	"github.com/spf13/cobra"
+	"github.com/adrg/frontmatter"
 	"github.com/aitestmanagement/gtms-cli/internal/adapter"
 	"github.com/aitestmanagement/gtms-cli/internal/git"
+	"github.com/aitestmanagement/gtms-cli/internal/layout"
 	"github.com/aitestmanagement/gtms-cli/internal/output"
-	"github.com/aitestmanagement/gtms-cli/internal/task"
+	"github.com/spf13/cobra"
 )
+
+// validNamePattern matches only safe characters for the test case name argument.
+var validNamePattern = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 
 // newCreateCmd builds the 'gtms create' command with its flags and subcommands.
 func newCreateCmd() *cobra.Command {
@@ -20,62 +26,19 @@ func newCreateCmd() *cobra.Command {
 	var referenceFlag string
 
 	cmd := &cobra.Command{
-		Use:   "create <folder>",
+		Use:   "create <folder> [name]",
 		Short: "Create test cases from requirements",
-		Long: `Create test cases by delegating to a configured adapter.
-
-The <folder> argument specifies where test case files will be created,
-relative to the test-cases/ directory. GTMS creates the folder automatically.
-
-INPUT LAYERS:
-
-  Config (gtms.config → adapters.create.<name>):
-    prompt-template  Path to the prompt template file. Uses {reference},
-                     {focus}, {context}, {guides} placeholders that GTMS
-                     fills before passing to the adapter.
-    guide-dir        Directory of .md files. GTMS reads all .md files
-                     (sorted alphabetically), concatenates them, and
-                     injects the content as {guides} in the prompt
-                     template. Use for test case standards, templates,
-                     and writing conventions.
-    command/script   How the adapter runs. Tier 1: command template with
-                     {variable} substitution. Tier 2: script receiving
-                     GTMS_* environment variables.
-
-  CLI Flags:
-    <folder>         Target folder under test-cases/ where files will be
-                     created. Examples: bug-022, payments/checkout.
-    --reference      Optional reference identifier (e.g. REQ-001, BUG-022).
-                     Becomes {reference} in templates and $GTMS_REFERENCE
-                     for Tier 2 scripts.
-    --focus          Narrows scope within the source. Becomes {focus}
-                     in templates and $GTMS_FOCUS for scripts.
-    --context-file   Path to a context file. GTMS reads the file and
-                     injects its content as {context} in templates and
-                     $GTMS_CONTEXT for scripts. Essential when using
-                     --allowedTools "" with local requirement files.
-    --adapter        Override the default adapter for this invocation.
-
-  Guides (from guide-dir):
-    All .md files in the configured guide-dir are automatically embedded
-    into every create invocation. This ensures consistent quality
-    standards without relying on the AI to discover reference files.
-
-DATA FLOW:
-
-  1. GTMS reads guide-dir .md files → concatenated as {guides}
-  2. GTMS reads prompt-template → fills {reference}, {focus}, {context}, {guides}
-  3. Assembled prompt passed to adapter:
-     Tier 1: substituted into command template as {prompt}
-     Tier 2: exported as GTMS_* environment variables
-  4. Adapter generates test case files in test-cases/<folder>/
-  5. GTMS creates task file, result contract, and reports outcome
+		Long: `Create test cases by delegating to a configured adapter. The adapter
+receives a prompt assembled from your template, guides, and CLI flags, then
+generates test case specs in gtms/cases/<folder>/. See USER-GUIDE.md for details
+on prompt assembly, input layers, and data flow.
 
 Examples:
   gtms create bug-022 --context-file PRPs/bugs/BUG-022.md --reference BUG-022
   gtms create payments/checkout --reference REQ-123 --focus "guest checkout"
-  gtms create sprint-14 --adapter github-create`,
-		Args: cobra.ExactArgs(1),
+  gtms create sprint-14 --adapter github-create
+  gtms create login user-can-login  — create a named test case skeleton`,
+		Args: cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			cfg := GetConfig()
@@ -99,18 +62,6 @@ Examples:
 				return err
 			}
 
-			// Validate: no duplicate active task for this folder
-			existing, err := task.FindByTarget(root, "create", folder)
-			if err != nil {
-				return fmt.Errorf("checking for existing tasks: %w", err)
-			}
-			if existing != nil {
-				msg := fmt.Sprintf("A create task for %s already exists: test-tasks/%s/%s-create-%s.md",
-					folder, existing.Status, existing.ID, existing.Target)
-				output.Errorf(msg, "Wait for the existing task to complete or remove it.")
-				return output.AsDisplayed(fmt.Errorf(msg))
-			}
-
 			// Read context file if provided
 			var contextContent string
 			var absContextPath string
@@ -131,6 +82,14 @@ Examples:
 				contextContent = string(data)
 			}
 
+			// Warn if --reference looks like a file path but doesn't exist
+			if referenceFlag != "" && looksLikeFilePath(referenceFlag) {
+				if _, err := os.Stat(referenceFlag); os.IsNotExist(err) {
+					output.Warnf(fmt.Sprintf("Reference looks like a file path but does not exist: %s", sanitizeForError(referenceFlag)))
+					fmt.Fprintf(os.Stderr, "    Proceeding anyway — the adapter will receive this value as-is.\n")
+				}
+			}
+
 			// Resolve adapter
 			resolved, err := adapter.Resolve(cfg, "create", adapterFlag)
 			if err != nil {
@@ -143,15 +102,27 @@ Examples:
 					resolved.Name, resolved.Tier, resolved.Mode)
 			}
 
-			// Auto-create the target folder under test-cases/ (only when adapter doesn't override output-dir)
+			// Auto-create the target folder under gtms/cases/ (only when adapter doesn't override output-dir)
 			if resolved.Config.OutputDir == "" {
-				outputDir := filepath.Join(root, "test-cases", folder)
+				paths := layout.Current()
+				outputDir := filepath.Join(root, paths.Cases, folder)
 				if err := os.MkdirAll(outputDir, 0755); err != nil {
 					return fmt.Errorf("creating output directory: %w", err)
 				}
-				fmt.Fprintf(os.Stderr, "  → Target folder: test-cases/%s/\n", folder)
+				fmt.Printf("  → Target folder: %s/%s/\n", paths.Cases, folder)
 			} else {
-				fmt.Fprintf(os.Stderr, "  → Output directory: %s (from adapter config)\n", resolved.Config.OutputDir)
+				fmt.Printf("  → Output directory: %s (from adapter config)\n", resolved.Config.OutputDir)
+			}
+
+			// Extract and validate optional name from second positional arg
+			var nameArg string
+			if len(args) > 1 {
+				nameArg = args[1]
+				if !validNamePattern.MatchString(nameArg) {
+					msg := fmt.Sprintf("Invalid name '%s'. Only letters, numbers, dashes, and underscores are allowed.", nameArg)
+					output.Errorf(msg, "Use a name like: user-can-login")
+					return output.AsDisplayed(fmt.Errorf(msg))
+				}
 			}
 
 			// Invoke adapter
@@ -162,6 +133,7 @@ Examples:
 				Context:     contextContent,
 				Folder:      folder,
 				Reference:   referenceFlag,
+				Name:        nameArg,
 			}
 
 			// Start spinner for sync adapters
@@ -183,7 +155,15 @@ Examples:
 			}
 
 			// Format output
-			formatCreateOutput(result)
+			formatCreateOutput(result, root)
+
+			// Propagate adapter-level failures (e.g. BUG-038 spec validation
+			// errors) as a non-zero exit code for CI observability. The error
+			// message has already been rendered via formatCreateOutput, so use
+			// output.AsDisplayed to suppress cobra's "Error:" re-print.
+			if result != nil && result.Status == "error" {
+				return output.AsDisplayed(fmt.Errorf("%s", result.Summary))
+			}
 
 			return nil
 		},
@@ -202,37 +182,56 @@ Examples:
 
 // validateFolderStructure checks that the required GTMS directories exist.
 func validateFolderStructure(root string) error {
-	required := []string{"test-tasks", "test-cases"}
+	paths := layout.Current()
+	required := []string{paths.Tasks, paths.Cases}
 	for _, dir := range required {
 		path := filepath.Join(root, dir)
 		if _, err := os.Stat(path); os.IsNotExist(err) {
 			msg := fmt.Sprintf("Required directory '%s' not found.", dir)
-			output.Errorf(msg, "Create the GTMS folder structure: test-tasks/, test-cases/, test-automation/")
+			output.Errorf(msg, fmt.Sprintf("Create the GTMS folder structure: %s/, %s/, %s/", paths.Tasks, paths.Cases, paths.Automation))
 			return output.AsDisplayed(fmt.Errorf(msg))
 		}
 	}
 	return nil
 }
 
+// maxInlineCount is the maximum number of test cases listed inline in create output.
+// Beyond this threshold, only the first maxInlineCount are shown with a "...and N more" hint.
+const maxInlineCount = 5
+
+// maxTitleLen is the maximum length of a test case title before truncation.
+const maxTitleLen = 72
+
 // formatCreateOutput prints the result of a create command.
-func formatCreateOutput(res *adapter.InvokeResult) {
+// ENH-120: headline surfaces artefacts (TC IDs), not internal task filenames.
+func formatCreateOutput(res *adapter.InvokeResult, projectRoot string) {
 	if res.Status == "error" {
 		output.Errorf(
 			fmt.Sprintf("Task failed: %s", res.Filename),
 			res.Summary,
 		)
+		printCommandGuidance("create", whatHappenedCreate(res))
 		return
 	}
 
-	if len(res.Warnings) > 0 && res.ArtifactCount == 0 {
-		fmt.Fprintf(os.Stderr, "  %s Task completed with warnings: %s\n", output.IconWarning, res.Filename)
+	// ENH-120: artefact-focused headline — surface TC IDs, not task filenames.
+	if len(res.ArtifactPaths) > 0 {
+		printCreatedHeadline(res.ArtifactPaths, res.Target, projectRoot)
+	} else if len(res.Warnings) > 0 && res.ArtifactCount == 0 {
+		fmt.Printf("  %s Completed with warnings for %s\n", output.IconWarning, res.Target)
 	} else if res.ArtifactCount > 0 {
-		fmt.Printf("  %s Task created: %s (%d files)\n", output.IconComplete, res.Filename, res.ArtifactCount)
+		fmt.Printf("  %s Created %d files for %s\n", output.IconComplete, res.ArtifactCount, res.Target)
 	} else {
-		fmt.Printf("  %s Task created: %s\n", output.IconComplete, res.Filename)
+		fmt.Printf("  %s Created test case for %s\n", output.IconComplete, res.Target)
 	}
+
 	fmt.Printf("    Adapter: %s (%s)\n", res.Adapter, res.Mode)
-	fmt.Printf("    Branch: %s\n", res.Branch)
+
+	// ENH-120: task ID and branch demoted to verbose-only output
+	if IsVerbose() {
+		fmt.Fprintf(os.Stderr, "    Task: %s\n", res.TaskID)
+		fmt.Fprintf(os.Stderr, "    Branch: %s\n", res.Branch)
+	}
 
 	if res.Mode == "async" {
 		fmt.Println("    Check progress: gtms create status")
@@ -241,4 +240,112 @@ func formatCreateOutput(res *adapter.InvokeResult) {
 	for _, w := range res.Warnings {
 		output.Warnf(w)
 	}
+
+	printCommandGuidance("create", whatHappenedCreate(res))
+}
+
+// tcInfo holds a test case ID and title extracted from frontmatter.
+type tcInfo struct {
+	id    string
+	title string
+}
+
+// printCreatedHeadline renders the artefact-focused headline for create output.
+// ENH-120: the headline IS the TC list — TC IDs are the primary content,
+// not a secondary detail. For bulk creates exceeding maxInlineCount, a truncated
+// list with a follow-up hint is shown.
+func printCreatedHeadline(paths []string, target string, projectRoot string) {
+	entries := make([]tcInfo, 0, len(paths))
+	for _, relPath := range paths {
+		id, title := readTCFrontmatter(projectRoot, relPath)
+		if id != "" {
+			entries = append(entries, tcInfo{id: id, title: title})
+		}
+	}
+	if len(entries) == 0 {
+		fmt.Printf("  %s Created test case for %s\n", output.IconComplete, target)
+		return
+	}
+
+	n := len(entries)
+	layoutPaths := layout.Current()
+	casesDir := fmt.Sprintf("%s/%s", layoutPaths.Cases, target)
+	if n <= maxInlineCount {
+		label := "test case"
+		if n > 1 {
+			label = "test cases"
+		}
+		fmt.Printf("  %s Created %d %s in %s/:\n", output.IconComplete, n, label, casesDir)
+		for _, e := range entries {
+			fmt.Printf("      %s  %s\n", e.id, truncateTitle(e.title))
+		}
+	} else {
+		fmt.Printf("  %s Created %d test cases in %s/:\n", output.IconComplete, n, casesDir)
+		for _, e := range entries[:maxInlineCount] {
+			fmt.Printf("      %s  %s\n", e.id, truncateTitle(e.title))
+		}
+		fmt.Printf("      ...and %d more. Run `gtms status %s` to see all.\n", n-maxInlineCount, target)
+	}
+}
+
+// readTCFrontmatter reads a test case file and extracts its test_case_id and title.
+// On any error, it falls back to extracting the tc-id from the filename.
+func readTCFrontmatter(projectRoot, relPath string) (id, title string) {
+	// Extract tc-id from filename as fallback
+	base := filepath.Base(relPath)
+	fallbackID := extractTCIDFromFilename(base)
+
+	absPath := filepath.Join(projectRoot, relPath)
+	f, err := os.Open(absPath)
+	if err != nil {
+		return fallbackID, "(no frontmatter)"
+	}
+	defer f.Close()
+
+	var fm struct {
+		ID    string `yaml:"test_case_id"`
+		Title string `yaml:"title"`
+		Name  string `yaml:"name"`
+	}
+	_, err = frontmatter.Parse(f, &fm)
+	if err != nil || fm.ID == "" {
+		return fallbackID, "(no frontmatter)"
+	}
+
+	// Prefer `title:`; fall back to `name:` when title is empty so the
+	// skeleton adapter (which writes `name:` only) doesn't surface as
+	// "(untitled)" in the create headline. ENH-121 finding #4.
+	title = fm.Title
+	if title == "" {
+		title = fm.Name
+	}
+	if title == "" {
+		title = "(untitled)"
+	}
+	return strings.ToLower(fm.ID), title
+}
+
+// tcIDPattern matches tc-XXXXXXXX in a filename.
+var tcIDPattern = regexp.MustCompile(`(tc-[0-9a-fA-F]{8})`)
+
+// extractTCIDFromFilename extracts a tc-XXXXXXXX pattern from a filename.
+// Returns the filename base (without extension) if no pattern is found.
+func extractTCIDFromFilename(filename string) string {
+	if m := tcIDPattern.FindString(filename); m != "" {
+		return strings.ToLower(m)
+	}
+	ext := filepath.Ext(filename)
+	if ext != "" {
+		return strings.TrimSuffix(filename, ext)
+	}
+	return filename
+}
+
+// truncateTitle shortens a title to maxTitleLen characters, appending "..."
+// if truncation occurred.
+func truncateTitle(title string) string {
+	if len(title) <= maxTitleLen {
+		return title
+	}
+	return title[:maxTitleLen-3] + "..."
 }

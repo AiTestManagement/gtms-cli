@@ -24,7 +24,7 @@ Branch: {branch}`
 	vars := map[string]string{
 		"requirement": "JIRA-456",
 		"format":      "markdown",
-		"output_dir":  "test-cases/",
+		"output_dir":  "gtms/cases/",
 		"branch":      "feature/create-JIRA-456",
 	}
 
@@ -32,7 +32,7 @@ Branch: {branch}`
 	require.NoError(t, err)
 	assert.Contains(t, result, "requirement JIRA-456")
 	assert.Contains(t, result, "Output format: markdown")
-	assert.Contains(t, result, "Output to: test-cases/")
+	assert.Contains(t, result, "Output to: gtms/cases/")
 	assert.Contains(t, result, "Branch: feature/create-JIRA-456")
 }
 

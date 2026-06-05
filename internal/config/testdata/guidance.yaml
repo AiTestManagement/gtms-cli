@@ -1,0 +1,15 @@
+init: |
+  gtms init --demo               — seed demo data for learning the pipeline
+  gtms create <folder>           — create test cases from your own requirements
+
+create: |
+  gtms status <folder>             — see the pipeline dashboard (e.g. folder = _demo)
+  gtms automate <tc-id>          — automate a test case
+
+automate: |
+  gtms execute <tc-id>           — run the automated test
+  gtms status <tc-id>            — see detail for this test case
+
+execute: |
+  gtms status                    — see the pipeline dashboard
+  gtms gaps                      — check for coverage gaps

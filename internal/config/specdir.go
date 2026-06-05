@@ -7,7 +7,7 @@ import (
 
 // CollectSpecDirs gathers all spec directories from the config.
 // For adapters with OutputDir set, it uses that value.
-// For adapters without OutputDir, it uses the convention: test-automation/specs/{adapter-name}/
+// For adapters without OutputDir, it uses the convention: gtms/automation/specs/{adapter-name}/
 // Returns a deduplicated, sorted list.
 func CollectSpecDirs(cfg *Config) []string {
 	seen := make(map[string]bool)
@@ -17,7 +17,7 @@ func CollectSpecDirs(cfg *Config) []string {
 			if ac.OutputDir != "" {
 				seen[ac.OutputDir] = true
 			} else {
-				seen[fmt.Sprintf("test-automation/specs/%s/", name)] = true
+				seen[fmt.Sprintf("gtms/automation/specs/%s/", name)] = true
 			}
 		}
 	}

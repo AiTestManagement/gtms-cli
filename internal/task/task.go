@@ -1,5 +1,5 @@
 // Package task manages task file CRUD and state machine transitions.
-// Task files are markdown with YAML frontmatter stored under test-tasks/{status}/.
+// Task files are markdown with YAML frontmatter stored under gtms/tasks/{status}/.
 package task
 
 import (
@@ -11,26 +11,30 @@ import (
 
 	"github.com/adrg/frontmatter"
 	"gopkg.in/yaml.v3"
+
+	"github.com/aitestmanagement/gtms-cli/internal/layout"
 )
 
 // TaskFile represents a GTMS task file with YAML frontmatter.
 type TaskFile struct {
-	ID        string `yaml:"id"`
-	Type      string `yaml:"type"`                // create, automate, execute
-	Target    string `yaml:"target"`              // requirement ID or test case ID
-	Adapter   string `yaml:"adapter"`
-	Status    string `yaml:"status"`              // pending, in-progress, in-review, complete, failed
-	Created   string `yaml:"created"`             // ISO 8601
-	Branch    string `yaml:"branch"`
-	Error     string `yaml:"error,omitempty"`
-	Reference string `yaml:"reference,omitempty"`  // create: --reference flag value; automate: test case source path
-	Framework string `yaml:"framework,omitempty"` // automate only
+	ID          string `yaml:"id"`
+	Type        string `yaml:"type"`   // create, automate, execute
+	Target      string `yaml:"target"` // requirement ID or test case ID
+	Adapter     string `yaml:"adapter"`
+	Status      string `yaml:"status"`  // pending, in-progress, in-review, complete, error
+	Created     string `yaml:"created"` // ISO 8601
+	Branch      string `yaml:"branch"`
+	Error       string `yaml:"error,omitempty"`
+	Reference   string `yaml:"reference,omitempty"`   // create: --reference flag value; automate: test case source path
+	Framework   string `yaml:"framework,omitempty"`   // automate only
+	Environment string `yaml:"environment,omitempty"` // ENH-125: target environment (--env flag); rides task → record
+	ExecutedBy  string `yaml:"executed_by,omitempty"` // ENH-125: resolved identity (--executed-by | env var | git user.name); rides task → record
 }
 
 // ValidStatuses lists all valid task status values.
-var ValidStatuses = []string{"pending", "in-progress", "in-review", "complete", "failed"}
+var ValidStatuses = []string{"pending", "in-progress", "in-review", "complete", "error"}
 
-// Create writes a new task file to test-tasks/{status}/ with YAML frontmatter and body content.
+// Create writes a new task file to gtms/tasks/{status}/ with YAML frontmatter and body content.
 // Returns the filepath of the created file.
 func Create(projectRoot string, tf *TaskFile, body string) (string, error) {
 	if tf.ID == "" {
@@ -45,12 +49,15 @@ func Create(projectRoot string, tf *TaskFile, body string) (string, error) {
 	if tf.Status == "" {
 		tf.Status = "pending"
 	}
+	if !isValidStatus(tf.Status) {
+		return "", fmt.Errorf("invalid status: %s", tf.Status)
+	}
 	if tf.Created == "" {
 		tf.Created = time.Now().UTC().Format(time.RFC3339)
 	}
 
 	// Ensure the status directory exists
-	dir := filepath.Join(projectRoot, "test-tasks", tf.Status)
+	dir := filepath.Join(layout.TasksDir(projectRoot), tf.Status)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return "", fmt.Errorf("creating task directory: %w", err)
 	}
@@ -105,8 +112,9 @@ func Move(projectRoot string, tf *TaskFile, newStatus string) error {
 
 	// Build old and new paths
 	filename := tf.Filename()
-	oldPath := filepath.Join(projectRoot, "test-tasks", oldStatus, filename)
-	newDir := filepath.Join(projectRoot, "test-tasks", newStatus)
+	tasksDir := layout.TasksDir(projectRoot)
+	oldPath := filepath.Join(tasksDir, oldStatus, filename)
+	newDir := filepath.Join(tasksDir, newStatus)
 	newPath := filepath.Join(newDir, filename)
 
 	// Ensure new directory exists
@@ -158,8 +166,9 @@ func List(projectRoot string, statuses ...string) ([]*TaskFile, error) {
 
 	var results []*TaskFile
 
+	tasksDir := layout.TasksDir(projectRoot)
 	for _, status := range statuses {
-		dir := filepath.Join(projectRoot, "test-tasks", status)
+		dir := filepath.Join(tasksDir, status)
 		if _, err := os.Stat(dir); os.IsNotExist(err) {
 			continue
 		}

@@ -17,6 +17,7 @@ const (
 	IconPending    = "\u25CB" // empty circle
 	IconError      = "\u2717" // X mark
 	IconWarning    = "\u26A0" // warning triangle
+	IconSkipped    = "\u2298" // circled division slash (⊘) — runtime-skipped test
 )
 
 // StatusIcon returns the appropriate icon for a given status string.
@@ -28,7 +29,7 @@ func StatusIcon(status string) string {
 		return IconInProgress
 	case "pending":
 		return IconPending
-	case "failed", "error":
+	case "error":
 		return IconError
 	case "warning":
 		return IconWarning
@@ -87,6 +88,33 @@ func FprintError(w io.Writer, message string, hint string) {
 	fmt.Fprintf(w, "%s %s\n", IconError, message)
 	if hint != "" {
 		fmt.Fprintf(w, "    %s\n", hint)
+	}
+}
+
+// Dim writes text wrapped in ANSI dim/faint escape codes (\033[2m...\033[0m)
+// when the writer is a terminal. When piped or redirected, writes plain text.
+func Dim(w io.Writer, text string) {
+	if IsTTY(w) {
+		fmt.Fprintf(w, "\033[2m%s\033[0m", text)
+	} else {
+		fmt.Fprint(w, text)
+	}
+}
+
+// Dimf writes a formatted string wrapped in ANSI dim/faint escape codes
+// when the writer is a terminal. When piped or redirected, writes plain text.
+func Dimf(w io.Writer, format string, args ...interface{}) {
+	text := fmt.Sprintf(format, args...)
+	Dim(w, text)
+}
+
+// Dimln writes text followed by a newline, wrapped in ANSI dim/faint escape
+// codes when the writer is a terminal. When piped or redirected, writes plain text.
+func Dimln(w io.Writer, text string) {
+	if IsTTY(w) {
+		fmt.Fprintf(w, "\033[2m%s\033[0m\n", text)
+	} else {
+		fmt.Fprintln(w, text)
 	}
 }
 

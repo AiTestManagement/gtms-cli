@@ -29,7 +29,8 @@ func InvokeTier2(ctx context.Context, ac *AdapterContext, scriptPath string) (*I
 		"GTMS_TESTCASE_CONTENT="+ac.TestCaseContent,
 		"GTMS_OUTPUT_DIR="+ac.OutputDir,
 		"GTMS_OUTPUT_SUBDIR="+ac.OutputSubdir,
-		"GTMS_SPEC_FILE="+ac.SpecFile,
+		"GTMS_ARTEFACT_FILE="+ac.ArtefactFile,
+		"GTMS_TESTCASE_FILE="+ac.TestCaseFile,
 		"GTMS_PROMPT_TEMPLATE="+ac.PromptTemplate,
 		"GTMS_BRANCH="+ac.Branch,
 		"GTMS_REPO="+ac.Repo,
@@ -43,18 +44,50 @@ func InvokeTier2(ctx context.Context, ac *AdapterContext, scriptPath string) (*I
 		"GTMS_PROMPT_FILE="+ac.PromptFile,
 		"GTMS_ENVIRONMENT="+ac.Environment,
 		"GTMS_TC_IDS="+ac.TestCaseIDs,
+		"GTMS_TC_NAME="+ac.TestCaseName,
+		"GTMS_TESTCASE_HASH="+ac.TestCaseHash,
+		"GTMS_TC_TITLE="+ac.TCTitle,
+		"GTMS_TC_REQUIREMENT="+ac.TCRequirement,
+		"GTMS_TC_PRIORITY="+ac.TCPriority,
+		"GTMS_TC_TYPE="+ac.TCType,
+		"GTMS_TEMPLATE_FILE="+ac.TemplateFile,
+		"GTMS_OUTPUT_FILE="+ac.OutputFile,
+		"GTMS_RESULT_TEMPLATE="+ac.ResultTemplate,
+		"GTMS_RESULT_VALUE="+ac.ResultValue,
+		"GTMS_RESULT_TESTCASE="+ac.ResultTestCase,
+		"GTMS_RESULT_TESTCASE_HASH="+ac.ResultTestCaseHash,
+		"GTMS_RESULT_FRAMEWORK="+ac.ResultFramework,
 	)
 
-	// Verify sh is available; Tier 2 scripts require a POSIX shell (ENH-009)
-	if _, shErr := lookPath("sh"); shErr != nil {
+	// ENH-132: Export GTMS_FORCE for manual-prime overwrite safety
+	if ac.Force {
+		env = append(env, "GTMS_FORCE=true")
+	}
+
+	// Resolve sh: use PATH first, fall back to Git for Windows install locations
+	// on Windows (BUG-030). The resolved absolute path is threaded through to
+	// exec.CommandContext — passing the bare string "sh" would re-trigger PATH
+	// lookup at spawn time and defeat the fallback.
+	shPath, shErr := resolveSh()
+	if shErr != nil {
 		if runtime.GOOS == "windows" {
-			return nil, fmt.Errorf("adapter script requires a POSIX shell (sh/bash) which is not available on this system; install Git Bash or WSL to run Tier 2 adapter scripts on Windows")
+			return nil, fmt.Errorf("adapter script requires a POSIX shell (sh/bash) which is not available on this system; install Git for Windows (standard location) or add sh to PATH to run Tier 2 adapter scripts on Windows")
 		}
 		return nil, fmt.Errorf("POSIX shell (sh) not found on PATH; Tier 2 adapter scripts require sh")
 	}
 
+	// On Windows, prepend Git for Windows coreutils directories (usr\bin,
+	// mingw64\bin, bin) to the child's PATH. Without this, sh.exe runs but
+	// cannot find mkdir, cat, cp, rm etc. when GTMS was invoked from
+	// PowerShell or cmd.exe (BUG-030 part 2). Safe no-op if these dirs are
+	// already on PATH — exec.Command resolves left-to-right so duplicates
+	// are harmless.
+	if runtime.GOOS == "windows" {
+		env = prependPathEntries(env, gitBashDirsFromShPath(shPath))
+	}
+
 	// Execute script via sh
-	cmd := exec.CommandContext(ctx, "sh", scriptPath)
+	cmd := exec.CommandContext(ctx, shPath, scriptPath)
 	cmd.Env = env
 	if ac.ProjectRoot != "" {
 		cmd.Dir = ac.ProjectRoot
@@ -65,7 +98,7 @@ func InvokeTier2(ctx context.Context, ac *AdapterContext, scriptPath string) (*I
 		cmd.Stdin = strings.NewReader(ac.AssembledPrompt)
 	}
 
-	return runAdapterProcess(cmd, filepath.Join(ac.OutputDir, ac.OutputSubdir))
+	return runAdapterProcess(cmd, filepath.Join(ac.OutputDir, ac.OutputSubdir), ac.Force)
 }
 
 // minimalEnv returns a minimal set of environment variables for Tier 2 script execution.

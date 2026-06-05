@@ -11,27 +11,27 @@ import (
 func TestScanSpecFiles_FindsIDs(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, root, filepath.Join("specs", "checkout.spec.ts"),
-		`@test "tc-a1b2c3d: some test" { echo ok }`)
+		`@test "tc-a1b2c3d0: some test" { echo ok }`)
 
 	result, err := ScanSpecFiles(root, []string{"specs/"})
 	require.NoError(t, err)
 
-	assert.Contains(t, result, "tc-a1b2c3d")
-	require.Len(t, result["tc-a1b2c3d"], 1)
-	assert.Equal(t, "specs/checkout.spec.ts", result["tc-a1b2c3d"][0])
+	assert.Contains(t, result, "tc-a1b2c3d0")
+	require.Len(t, result["tc-a1b2c3d0"], 1)
+	assert.Equal(t, "specs/checkout.spec.ts", result["tc-a1b2c3d0"][0])
 }
 
 func TestScanSpecFiles_CaseInsensitive(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, root, filepath.Join("specs", "upper.spec.ts"),
-		`test("TC-A1B2C3D: upper case")`)
+		`test("TC-A1B2C3D0: upper case")`)
 
 	result, err := ScanSpecFiles(root, []string{"specs/"})
 	require.NoError(t, err)
 
 	// Should normalise to lowercase
-	assert.Contains(t, result, "tc-a1b2c3d")
-	assert.NotContains(t, result, "TC-A1B2C3D")
+	assert.Contains(t, result, "tc-a1b2c3d0")
+	assert.NotContains(t, result, "TC-A1B2C3D0")
 }
 
 func TestScanSpecFiles_MultipleIDsPerFile(t *testing.T) {
@@ -68,7 +68,7 @@ func TestScanSpecFiles_SkipsMissingDirs(t *testing.T) {
 
 func TestScanSpecFiles_WordBoundaryRejectsLongerHex(t *testing.T) {
 	root := t.TempDir()
-	// TC-a1b2c3d4e5 is too long (10 hex chars) — should NOT match as TC-a1b2c3d
+	// TC-a1b2c3d4e5 is too long (10 hex chars) — should NOT match as TC-a1b2c3d4
 	writeFile(t, root, filepath.Join("specs", "long.spec.ts"),
 		`test("tc-a1b2c3d4e5: overly long hex id")`)
 

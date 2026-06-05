@@ -21,7 +21,7 @@ type streamResult struct {
 // opening tag, between closing and opening tags, or after the last closing tag) becomes
 // the Summary. Only one file block is in memory at a time. If outputDir is empty, all
 // output is treated as summary (no file extraction).
-func parseStreamingOutput(reader io.Reader, outputDir string) (*streamResult, error) {
+func parseStreamingOutput(reader io.Reader, outputDir string, force bool) (*streamResult, error) {
 	scanner := bufio.NewScanner(reader)
 	scanner.Buffer(make([]byte, 0, 64*1024), 10*1024*1024) // max 10MB per line
 
@@ -39,7 +39,7 @@ func parseStreamingOutput(reader io.Reader, outputDir string) (*streamResult, er
 			if inFile && isXMLFileClose(line) {
 				// Write current file block if we have a valid filename
 				if currentFile != "" && currentBuf.Len() > 0 {
-					path, err := writeFileBlock(outputDir, currentFile, currentBuf.String())
+					path, err := writeFileBlock(outputDir, currentFile, currentBuf.String(), force)
 					if err != nil {
 						return nil, fmt.Errorf("writing file %s: %w", currentFile, err)
 					}
@@ -63,7 +63,7 @@ func parseStreamingOutput(reader io.Reader, outputDir string) (*streamResult, er
 					fmt.Fprintf(os.Stderr, "warning: skipping unsafe filename: %s\n", filename)
 					// If we were in a file block, write it before skipping this delimiter
 					if inFile && currentFile != "" && currentBuf.Len() > 0 {
-						path, err := writeFileBlock(outputDir, currentFile, currentBuf.String())
+						path, err := writeFileBlock(outputDir, currentFile, currentBuf.String(), force)
 						if err != nil {
 							return nil, fmt.Errorf("writing file %s: %w", currentFile, err)
 						}
@@ -81,7 +81,7 @@ func parseStreamingOutput(reader io.Reader, outputDir string) (*streamResult, er
 
 				// Write previous file block if we were in one
 				if inFile && currentFile != "" && currentBuf.Len() > 0 {
-					path, err := writeFileBlock(outputDir, currentFile, currentBuf.String())
+					path, err := writeFileBlock(outputDir, currentFile, currentBuf.String(), force)
 					if err != nil {
 						return nil, fmt.Errorf("writing file %s: %w", currentFile, err)
 					}
@@ -118,7 +118,7 @@ func parseStreamingOutput(reader io.Reader, outputDir string) (*streamResult, er
 
 	// Write last file block if complete (skip if filename is empty — discarded block)
 	if inFile && currentFile != "" && currentBuf.Len() > 0 {
-		path, err := writeFileBlock(outputDir, currentFile, currentBuf.String())
+		path, err := writeFileBlock(outputDir, currentFile, currentBuf.String(), force)
 		if err != nil {
 			return nil, fmt.Errorf("writing file %s: %w", currentFile, err)
 		}
@@ -186,14 +186,18 @@ func isSafeFilename(name string) bool {
 
 // writeFileBlock writes content to outputDir/filename, creating the directory if needed.
 // Returns the absolute path of the written file, or ("", nil) if the file already exists
-// (duplicate guard — warns on stderr and skips to avoid overwriting existing content).
-func writeFileBlock(outputDir, filename, content string) (string, error) {
+// and force is false (duplicate guard — warns on stderr and skips to avoid overwriting
+// existing content). When force is true, existing files are overwritten (BUG-031).
+func writeFileBlock(outputDir, filename, content string, force bool) (string, error) {
 	path := filepath.Join(outputDir, filename)
 
 	// Duplicate guard: warn and skip if file already exists (ENH-042)
-	if _, err := os.Stat(path); err == nil {
-		fmt.Fprintf(os.Stderr, "warning: skipping duplicate file: %s\n", filename)
-		return "", nil
+	// Bypassed when force is true — user explicitly requested overwrite (BUG-031)
+	if !force {
+		if _, err := os.Stat(path); err == nil {
+			fmt.Fprintf(os.Stderr, "warning: skipping duplicate file: %s\n", filename)
+			return "", nil
+		}
 	}
 
 	// MkdirAll the parent directory — handles both the base outputDir

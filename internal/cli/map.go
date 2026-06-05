@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	"github.com/aitestmanagement/gtms-cli/internal/config"
 	"github.com/aitestmanagement/gtms-cli/internal/output"
 	"github.com/aitestmanagement/gtms-cli/internal/reader"
 )
@@ -16,9 +17,10 @@ func newMapCmd() *cobra.Command {
 	var detail bool
 	var jsonOut bool
 	var recursive bool
+	var framework string
 
 	cmd := &cobra.Command{
-		Use:   "map [folder-or-tc-id]",
+		Use:   "map [test-case-id | folder]",
 		Short: "Show test cases grouped by requirement",
 		Long: `Show which test cases cover each requirement and their pipeline progress.
 
@@ -27,20 +29,30 @@ finds what's missing), 'map' groups test cases by the requirement they trace
 to — answering "what am I actually testing?"
 
   gtms map                      — slug view, all requirements
-  gtms map bug-022              — scoped to test-cases/bug-022/
+  gtms map bug-022              — scoped to gtms/cases/bug-022/
   gtms map --detail             — full titles, all requirements
   gtms map tc-a1b2c3d           — full detail for one test case in its requirement group
   gtms map --json               — machine-readable JSON output
-  gtms map -r                   — include test cases from subdirectories`,
+  gtms map -r                   — include test cases from subdirectories
+  gtms map --framework bats     — filter by automation framework`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			root := GetProjectRoot()
+			cfg := GetConfig()
+			defaultFw := config.DefaultFramework(cfg)
+			if framework != "" {
+				defaultFw = framework
+			}
+			// ENH-082: explicit --framework enables strict per-TC selection;
+			// config-default fallback is unchanged.
+			strict := framework != ""
 
 			if len(args) > 0 {
 				arg := strings.ToLower(args[0])
-				if isTestCaseID(arg) && strings.HasPrefix(arg, "tc-") {
+				arg = normaliseTarget(arg)
+				if isTestCaseID(arg) {
 					// TC ID → detail view (no scope)
-					return runMap(os.Stdout, root, nil, detail, arg, jsonOut)
+					return runMap(os.Stdout, root, nil, detail, arg, jsonOut, defaultFw, strict)
 				}
 				// Not a TC ID → treat as folder scope for overview
 				folder, err := validateFolderArg(arg)
@@ -49,31 +61,39 @@ to — answering "what am I actually testing?"
 					return output.AsDisplayed(err)
 				}
 				scope := buildScopeFromArg(root, folder, recursive)
-				return runMap(os.Stdout, root, scope, detail, "", jsonOut)
+				return runMap(os.Stdout, root, scope, detail, "", jsonOut, defaultFw, strict)
 			}
 
-			// No arg → root-level scope
-			scope := buildScopeFromArg(root, "", recursive)
-			return runMap(os.Stdout, root, scope, detail, "", jsonOut)
+			// No arg → full recursive scan (scope=nil)
+			return runMap(os.Stdout, root, nil, detail, "", jsonOut, defaultFw, strict)
 		},
 	}
 
 	cmd.Flags().BoolVar(&detail, "detail", false, "Show full titles in two-line format")
-	cmd.Flags().BoolVar(&jsonOut, "json", false, "Output raw MapReport as JSON")
+	cmd.Flags().BoolVar(&jsonOut, "json", false, "Output as JSON")
 	cmd.Flags().BoolVarP(&recursive, "recursive", "r", false, "Include test cases from subdirectories")
+	cmd.Flags().StringVar(&framework, "framework", "", "Filter by automation framework")
 
 	return cmd
 }
 
 // runMap displays the traceability map in the requested format.
-func runMap(w io.Writer, projectRoot string, scope *reader.ScopeInfo, detail bool, detailID string, jsonOut bool) error {
-	report, err := reader.Map(projectRoot, scope)
+// ENH-082: strictFramework is true when the user supplied --framework explicitly,
+// causing per-TC entries to render em-dashes for TCs without a matching wiring
+// record instead of falling back to a different framework.
+func runMap(w io.Writer, projectRoot string, scope *reader.ScopeInfo, detail bool, detailID string, jsonOut bool, defaultFramework string, strictFramework bool) error {
+	report, err := reader.Map(projectRoot, scope, defaultFramework, strictFramework)
 	if err != nil {
 		return err
 	}
 
-	// JSON mode: always output valid JSON, even if empty
+	// JSON mode: always output valid JSON, even if empty.
+	// BUG-081: when a TC ID was supplied, honour it on the JSON path too —
+	// mirror the text-mode group-preserving semantic from writeMapSingleTC.
 	if jsonOut {
+		if detailID != "" {
+			return writeMapSingleTCJSON(w, report, detailID)
+		}
 		return writeMapJSON(w, report)
 	}
 
@@ -90,6 +110,8 @@ func runMap(w io.Writer, projectRoot string, scope *reader.ScopeInfo, detail boo
 	// Empty project check (non-JSON modes only)
 	if len(report.Groups) == 0 && len(report.Unlinked) == 0 {
 		fmt.Fprintln(w, "No test cases found.")
+		fmt.Fprintln(w)
+		output.Dimln(w, "Next: gtms create <folder> --reference <doc>  \u2014 create your first test cases")
 		return nil
 	}
 
@@ -112,6 +134,80 @@ func writeMapJSON(w io.Writer, report *reader.MapReport) error {
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	return enc.Encode(report)
+}
+
+// writeMapSingleTCJSON emits a TC-scoped, group-preserving filtered MapReport.
+// BUG-081: mirrors the text-mode semantic of writeMapSingleTC — when the TC
+// belongs to a requirement group, the group is preserved with all sibling
+// TCs intact; when the TC is unlinked, only that entry is returned. Unknown
+// TC IDs error out (no silent empty payload).
+func writeMapSingleTCJSON(w io.Writer, report *reader.MapReport, detailID string) error {
+	for _, grp := range report.Groups {
+		for _, entry := range grp.TestCases {
+			if entry.TestCaseID == detailID {
+				filtered := &reader.MapReport{
+					Groups:   []reader.RequirementGroup{grp},
+					Unlinked: []reader.MapEntry{},
+					Summary: reader.MapSummary{
+						TotalRequirements: 1,
+						TotalTestCases:    len(grp.TestCases),
+						Automated:         countAutomated(grp.TestCases),
+						Executed:          countExecuted(grp.TestCases),
+						UnlinkedCount:     0,
+					},
+				}
+				return writeMapJSON(w, filtered)
+			}
+		}
+	}
+	for _, entry := range report.Unlinked {
+		if entry.TestCaseID == detailID {
+			single := []reader.MapEntry{entry}
+			filtered := &reader.MapReport{
+				Groups:   []reader.RequirementGroup{},
+				Unlinked: single,
+				Summary: reader.MapSummary{
+					TotalRequirements: 0,
+					TotalTestCases:    1,
+					Automated:         countAutomated(single),
+					Executed:          countExecuted(single),
+					UnlinkedCount:     1,
+				},
+			}
+			return writeMapJSON(w, filtered)
+		}
+	}
+	// BUG-081: not-found is an argument-validation error, not render output —
+	// emit to stderr so JSON consumers can `2>/dev/null | jq` cleanly, in
+	// line with the rest of the GTMS CLI's argument-error convention.
+	output.Errorf(fmt.Sprintf("Test case %s not found.", detailID), "")
+	return output.AsDisplayed(fmt.Errorf("test case %s not found", detailID))
+}
+
+// countAutomated mirrors reader.Map summary logic exactly: an entry counts as
+// automated when its AutomateStatus is "complete" or "developed". Keeping this
+// in lockstep with internal/reader/map.go ensures the filtered summary block
+// matches what the full-project summary would have reported for the same set.
+func countAutomated(entries []reader.MapEntry) int {
+	n := 0
+	for _, e := range entries {
+		if e.AutomateStatus == "complete" || e.AutomateStatus == "developed" {
+			n++
+		}
+	}
+	return n
+}
+
+// countExecuted mirrors reader.Map summary logic: an entry counts as executed
+// when LastResult is anything other than "none" (pass / fail / error / skipped).
+func countExecuted(entries []reader.MapEntry) int {
+	n := 0
+	for _, e := range entries {
+		if e.LastResult != "none" {
+			n++
+		}
+	}
+	return n
 }
 
 // writeMapDefault renders the default slug-based view.
@@ -150,12 +246,17 @@ func writeSlugEntry(w io.Writer, entry reader.MapEntry, slugWidth int) {
 	if slug == "" {
 		slug = entry.TestCaseID
 	}
+	execIcon := formatExecuteIcon(entry)
+	// BUG-079: append drift text marker when manual result has drifted.
+	if entry.DriftDetected {
+		execIcon += " [drift]"
+	}
 	fmt.Fprintf(w, "  %s  %-*s  CREATE %s  AUTOMATE %s  EXECUTE %s\n",
 		entry.TestCaseID,
 		slugWidth, slug,
 		formatMapStageIcon(entry.CreateStatus),
 		formatMapStageIcon(entry.AutomateStatus),
-		formatExecuteIcon(entry),
+		execIcon,
 	)
 }
 
@@ -253,7 +354,11 @@ func writeMapSingleTC(w io.Writer, report *reader.MapReport, detailID string) er
 		}
 	}
 
-	output.FprintError(w, fmt.Sprintf("Test case %s not found.", detailID), "")
+	// BUG-081 (extended to text mode): the not-found error was previously
+	// written to the passed writer (= os.Stdout from runMap). Move it to
+	// stderr so it matches the JSON branch above and the rest of the CLI's
+	// argument-error convention.
+	output.Errorf(fmt.Sprintf("Test case %s not found.", detailID), "")
 	return output.AsDisplayed(fmt.Errorf("test case %s not found", detailID))
 }
 
@@ -265,11 +370,16 @@ func writeDetailEntry(w io.Writer, prefix string, entry reader.MapEntry) {
 	}
 	fmt.Fprintf(w, "%s%s  %s\n", prefix, entry.TestCaseID, title)
 	indent := strings.Repeat(" ", len(entry.TestCaseID)+4)
+	execIcon := formatExecuteIcon(entry)
+	// BUG-079: append drift text marker when manual result has drifted.
+	if entry.DriftDetected {
+		execIcon += " [drift]"
+	}
 	fmt.Fprintf(w, "%sCREATE %s  AUTOMATE %s  EXECUTE %s\n",
 		indent,
 		formatMapStageIcon(entry.CreateStatus),
 		formatMapStageIcon(entry.AutomateStatus),
-		formatExecuteIcon(entry),
+		execIcon,
 	)
 }
 
@@ -295,8 +405,8 @@ func writeKeyAndSummary(w io.Writer, report *reader.MapReport) {
 
 // writeKey writes the symbol key line.
 func writeKey(w io.Writer) {
-	fmt.Fprintf(w, "\nKEY: %s complete  %s in progress  %s pending  \u2014 not started  %s failed\n",
-		output.IconComplete, output.IconInProgress, output.IconPending, output.IconError)
+	fmt.Fprintf(w, "\nKEY: %s complete  %s in progress  %s pending  \u2014 not started  %s failed  %s skipped  %s stale\n",
+		output.IconComplete, output.IconInProgress, output.IconPending, output.IconError, output.IconSkipped, output.IconWarning)
 }
 
 // formatMapStageIcon returns the icon for a pipeline stage status.
@@ -311,6 +421,8 @@ func formatMapStageIcon(status string) string {
 		return output.IconPending
 	case "developed":
 		return output.IconComplete
+	case "manual":
+		return "manual"
 	case "none":
 		return "\u2014" // em dash
 	default:
@@ -319,21 +431,66 @@ func formatMapStageIcon(status string) string {
 }
 
 // formatExecuteIcon returns the EXECUTE column icon, folding in the last result.
+// Appends ⚠ when the artefact has been modified since the last execution.
 func formatExecuteIcon(entry reader.MapEntry) string {
+	// CON-023 / ENH-146 - Phase 3D fix-pass: precedence is explicit at
+	// one place. Active task-derived ExecuteStatus values are checked
+	// FIRST so applyTaskStatus' final overlay can never be masked by a
+	// worst-of-frameworks LastResult bump:
+	//
+	//   1. ExecuteStatus="in-progress"  -> always wins (active run).
+	//   2. ExecuteStatus="error"        -> always wins (task-derived
+	//                                      error OR terminal adapter
+	//                                      failure).
+	//   3. ExecuteStatus="pending"
+	//      AND LastResult=="none"       -> pending wins ONLY when no
+	//                                      terminal result exists. The
+	//                                      important contract sits in
+	//                                      applyTaskStatus: a queued
+	//                                      pending task must never
+	//                                      hide a real terminal result.
+	//                                      Expressing the gate here too
+	//                                      keeps the renderer defensive
+	//                                      and consistent with the data
+	//                                      layer.
+	//   4. LastResult terminal values   -> pass/fail/error/skipped icons.
+	//   5. Default                      -> em-dash (covers
+	//                                      ExecuteStatus="none" and any
+	//                                      unrecognised state).
+	var icon string
 	switch {
-	case entry.LastResult == "pass":
-		return output.IconComplete
-	case entry.LastResult == "fail":
-		return output.IconError
+	// 1-3: active task-derived states.
 	case entry.ExecuteStatus == "in-progress":
-		return output.IconInProgress
-	case entry.ExecuteStatus == "pending":
-		return output.IconPending
-	case entry.ExecuteStatus == "none":
-		return "\u2014" // em dash
+		icon = output.IconInProgress
+	case entry.ExecuteStatus == "error":
+		icon = output.IconWarning
+	case entry.ExecuteStatus == "pending" && entry.LastResult == "none":
+		icon = output.IconPending
+	// 4: terminal LastResult.
+	case entry.LastResult == "pass":
+		icon = output.IconComplete
+	case entry.LastResult == "fail":
+		icon = output.IconError
+	case entry.LastResult == "error":
+		// Defensive: legacyExecuteStatus already maps result=error to
+		// ExecuteStatus=error so this branch is rarely reached. Kept
+		// for direct-from-overlay paths where ExecuteStatus stayed
+		// "none" but LastResult bubbled "error" up.
+		icon = output.IconWarning
+	case entry.LastResult == "skipped":
+		// ENH-127: runtime-skipped tests render \u2298 in the EXECUTE column on
+		// the traceability map, matching how `gtms status` already renders
+		// them. Without this case the LastResult drops through to the
+		// em-dash default and a skipped TC mis-displays as "not started".
+		icon = output.IconSkipped
+	// 5: not started / unrecognised.
 	default:
-		return "\u2014"
+		icon = "\u2014" // em dash
 	}
+	if entry.Stale {
+		icon += " " + output.IconWarning
+	}
+	return icon
 }
 
 // pluralTestCases returns "1 test case" or "N test cases".

@@ -1,0 +1,13 @@
+project:
+  name: "ENH-078 Zero"
+  repo: org/test
+
+adapters:
+  execute:
+    tier1-bad:
+      mode: sync
+      command: 'bats {artefact_file}'
+      fail-exit-codes: [0]
+
+defaults:
+  execute: tier1-bad

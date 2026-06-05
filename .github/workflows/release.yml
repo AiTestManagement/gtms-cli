@@ -46,24 +46,21 @@ jobs:
           GOARCH: ${{ matrix.goarch }}
         run: |
           VERSION="${GITHUB_REF#refs/tags/}"
-          OUTPUT="gtms-${VERSION}-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}"
-          go build -ldflags "-X github.com/aitestmanagement/gtms-cli/internal/cli.Version=${VERSION}" -o "${OUTPUT}" ./cmd/gtms
+          go build -ldflags "-X github.com/aitestmanagement/gtms-cli/internal/cli.Version=${VERSION}" -o "gtms${{ matrix.ext }}" ./cmd/gtms
 
       - name: Package (unix)
         if: matrix.goos != 'windows'
         run: |
           VERSION="${GITHUB_REF#refs/tags/}"
-          BINARY="gtms-${VERSION}-${{ matrix.goos }}-${{ matrix.goarch }}"
           ARCHIVE="gtms-${VERSION}-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz"
-          tar czf "${ARCHIVE}" "${BINARY}"
+          tar czf "${ARCHIVE}" gtms
 
       - name: Package (windows)
         if: matrix.goos == 'windows'
         run: |
           VERSION="${GITHUB_REF#refs/tags/}"
-          BINARY="gtms-${VERSION}-${{ matrix.goos }}-${{ matrix.goarch }}.exe"
           ARCHIVE="gtms-${VERSION}-${{ matrix.goos }}-${{ matrix.goarch }}.zip"
-          zip "${ARCHIVE}" "${BINARY}"
+          zip "${ARCHIVE}" gtms.exe
 
       - name: Upload release assets
         uses: softprops/action-gh-release@v2
@@ -71,3 +68,166 @@ jobs:
           files: |
             gtms-*.tar.gz
             gtms-*.zip
+
+  scan-windows-binaries:
+    name: VirusTotal scan (Windows)
+    needs: release
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    continue-on-error: true
+    permissions:
+      contents: read
+      issues: write
+
+    steps:
+      - name: Extract version
+        id: version
+        run: echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+
+      - name: Download Windows binaries from release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.tag }}
+        run: |
+          mkdir -p downloads
+          gh release download "$VERSION" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --pattern "gtms-*-windows-*.zip" \
+            --dir downloads
+          ls -la downloads/
+
+      - name: Extract binaries
+        run: |
+          mkdir -p bins
+          for zip in downloads/gtms-*-windows-*.zip; do
+            base=$(basename "$zip" .zip)
+            arch=${base##*-}
+            mkdir -p "bins/$arch"
+            unzip -o "$zip" -d "bins/$arch"
+          done
+          ls -la bins/*/
+
+      - name: Upload binaries to VirusTotal
+        env:
+          VT_API_KEY: ${{ secrets.VIRUSTOTAL_API_KEY }}
+        run: |
+          mkdir -p vt-reports
+          for binpath in bins/*/gtms.exe; do
+            arch=$(basename "$(dirname "$binpath")")
+            echo "Uploading windows/$arch to VirusTotal..."
+            RESPONSE=$(curl -sS -X POST \
+              "https://www.virustotal.com/api/v3/files" \
+              -H "x-apikey: $VT_API_KEY" \
+              -F "file=@$binpath")
+            ANALYSIS_ID=$(echo "$RESPONSE" | jq -r '.data.id // empty')
+            if [ -z "$ANALYSIS_ID" ]; then
+              echo "::warning::VirusTotal upload failed for windows/$arch"
+              echo "$RESPONSE" | jq .
+              continue
+            fi
+            echo "$ANALYSIS_ID" > "vt-reports/$arch.id"
+            echo "windows/$arch analysis ID: $ANALYSIS_ID"
+          done
+
+      - name: Poll analyses and fetch results
+        env:
+          VT_API_KEY: ${{ secrets.VIRUSTOTAL_API_KEY }}
+        run: |
+          for id_file in vt-reports/*.id; do
+            [ -f "$id_file" ] || continue
+            arch=$(basename "$id_file" .id)
+            ANALYSIS_ID=$(cat "$id_file")
+            echo "Polling windows/$arch (analysis $ANALYSIS_ID)..."
+            for i in $(seq 1 40); do
+              STATUS=$(curl -sS \
+                -H "x-apikey: $VT_API_KEY" \
+                "https://www.virustotal.com/api/v3/analyses/$ANALYSIS_ID" \
+                | jq -r '.data.attributes.status // "unknown"')
+              echo "  attempt $i: $STATUS"
+              if [ "$STATUS" = "completed" ]; then break; fi
+              sleep 15
+            done
+            curl -sS \
+              -H "x-apikey: $VT_API_KEY" \
+              "https://www.virustotal.com/api/v3/analyses/$ANALYSIS_ID" \
+              > "vt-reports/$arch.json"
+          done
+
+      - name: Build issue body
+        env:
+          VERSION: ${{ steps.version.outputs.tag }}
+        run: |
+          TOTAL_FLAGGED=0
+          {
+            echo "## VirusTotal scan — ${VERSION}"
+            echo ""
+            echo "Automated scan triggered by \`release.yml\` on tag push. Scanned binaries: \`gtms.exe\` (windows/amd64, windows/arm64)."
+            echo ""
+            for report in vt-reports/*.json; do
+              [ -f "$report" ] || continue
+              arch=$(basename "$report" .json)
+              ANALYSIS_ID=$(cat "vt-reports/$arch.id")
+              SHA256=$(jq -r '.meta.file_info.sha256 // empty' "$report")
+              if [ -n "$SHA256" ]; then
+                PERMALINK="https://www.virustotal.com/gui/file/$SHA256"
+              else
+                PERMALINK="https://www.virustotal.com/gui/file-analysis/$ANALYSIS_ID"
+              fi
+              MALICIOUS=$(jq -r '.data.attributes.stats.malicious // 0' "$report")
+              SUSPICIOUS=$(jq -r '.data.attributes.stats.suspicious // 0' "$report")
+              UNDETECTED=$(jq -r '.data.attributes.stats.undetected // 0' "$report")
+              FLAGGED=$((MALICIOUS + SUSPICIOUS))
+              TOTAL_FLAGGED=$((TOTAL_FLAGGED + FLAGGED))
+              echo "### windows/$arch"
+              echo ""
+              echo "- **Analysis**: $PERMALINK"
+              echo "- **Engines**: $MALICIOUS malicious, $SUSPICIOUS suspicious, $UNDETECTED clean"
+              echo ""
+              if [ "$FLAGGED" -gt 0 ]; then
+                echo "**Flagging engines:**"
+                echo ""
+                jq -r '.data.attributes.results
+                  | to_entries[]
+                  | select(.value.category == "malicious" or .value.category == "suspicious")
+                  | "- **\(.key)** (\(.value.category)): \(.value.result // "—")"' "$report"
+                echo ""
+              else
+                echo "All engines reported clean. ✓"
+                echo ""
+              fi
+            done
+            echo "---"
+            echo ""
+            echo "### Runbook actions"
+            echo ""
+            if [ "$TOTAL_FLAGGED" -gt 0 ]; then
+              echo "**Submit false-positive reports** to Tier 1 vendors (always, every release):"
+              echo "- Microsoft Defender — https://www.microsoft.com/en-us/wdsi/filesubmission"
+              echo "- Norton — https://submit.norton.com/"
+              echo ""
+              echo "If any Tier 2 engines (ESET, Kaspersky, Bitdefender, Avast/AVG) are flagged above, submit per each vendor's false-positive form. Tier 3 vendors (McAfee/Trellix, Sophos, Trend Micro, others) are reactive only — submit only if a user reports a block."
+            else
+              echo "No flagging engines. Close this issue — no submission action required."
+            fi
+          } > issue-body.md
+          echo "=== ISSUE BODY ==="
+          cat issue-body.md
+          echo "=================="
+          echo "TOTAL_FLAGGED=$TOTAL_FLAGGED" >> "$GITHUB_ENV"
+
+      - name: Open AV review issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.tag }}
+        run: |
+          if [ "${TOTAL_FLAGGED:-0}" -gt 0 ]; then
+            TITLE="AV review: $VERSION — VirusTotal flagged ${TOTAL_FLAGGED} engine(s)"
+          else
+            TITLE="AV review: $VERSION — VirusTotal scan clean"
+          fi
+          gh issue create \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$TITLE" \
+            --label "av-review" \
+            --assignee "bechlin" \
+            --body-file issue-body.md

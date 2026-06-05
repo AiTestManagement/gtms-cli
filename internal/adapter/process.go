@@ -13,7 +13,7 @@ import (
 // runAdapterProcess executes an already-configured exec.Cmd, streams its stdout
 // through the file-delimiter parser, and returns the invocation result.
 // Both Tier 1 and Tier 2 adapters delegate here after building their command.
-func runAdapterProcess(cmd *exec.Cmd, outputDir string) (*InvocationResult, error) {
+func runAdapterProcess(cmd *exec.Cmd, outputDir string, force bool) (*InvocationResult, error) {
 	// Configure graceful cancellation behaviour.
 	// Must be set BEFORE cmd.Start().
 	cmd.Cancel = func() error {
@@ -39,7 +39,7 @@ func runAdapterProcess(cmd *exec.Cmd, outputDir string) (*InvocationResult, erro
 	}
 
 	// Stream and parse stdout
-	streamRes, parseErr := parseStreamingOutput(stdout, outputDir)
+	streamRes, parseErr := parseStreamingOutput(stdout, outputDir, force)
 
 	// Wait for process to complete (AFTER reading all stdout)
 	waitErr := cmd.Wait()

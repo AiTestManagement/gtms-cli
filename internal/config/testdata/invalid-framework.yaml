@@ -1,0 +1,11 @@
+project:
+  name: Framework Test
+  repo: org/framework-test
+adapters:
+  automate:
+    claude-bats:
+      mode: sync
+      framework: bats/v2
+      command: 'echo automate'
+defaults:
+  automate: claude-bats

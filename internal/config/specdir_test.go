@@ -47,7 +47,7 @@ func TestCollectSpecDirs_DefaultWhenNoOutputDir(t *testing.T) {
 	}
 
 	dirs := CollectSpecDirs(cfg)
-	assert.Contains(t, dirs, "test-automation/specs/playwright/")
+	assert.Contains(t, dirs, "gtms/automation/specs/playwright/")
 	assert.Len(t, dirs, 1)
 }
 
@@ -80,7 +80,7 @@ func TestCollectSpecDirs_MixedExplicitAndDefault(t *testing.T) {
 
 	dirs := CollectSpecDirs(cfg)
 	assert.Contains(t, dirs, "tests/e2e/")
-	assert.Contains(t, dirs, "test-automation/specs/cypress/")
+	assert.Contains(t, dirs, "gtms/automation/specs/cypress/")
 	assert.Len(t, dirs, 2)
 }
 

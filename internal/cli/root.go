@@ -9,6 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/aitestmanagement/gtms-cli/internal/config"
+	"github.com/aitestmanagement/gtms-cli/internal/layout"
 	"github.com/aitestmanagement/gtms-cli/internal/output"
 )
 
@@ -54,6 +55,16 @@ Each command delegates to a pluggable adapter registered in gtms.config.`,
 		}
 		projectRoot = root
 
+		// ENH-098: discover the sentinel-marked parent directory and
+		// initialize layout defaults to reflect its actual name. This
+		// supports renamed parents (e.g. user did "git mv gtms/ testing/").
+		parentName, err := config.FindParentDir(root)
+		if err != nil {
+			output.Errorf(err.Error(), "")
+			return output.AsDisplayed(err)
+		}
+		layout.InitFromParent(parentName)
+
 		// Load config
 		cfg, err := config.Load(root)
 		if err != nil {
@@ -61,6 +72,13 @@ Each command delegates to a pluggable adapter registered in gtms.config.`,
 			return output.AsDisplayed(err)
 		}
 		appConfig = cfg
+
+		// ENH-078: surface non-fatal config warnings (e.g. fail-exit-codes
+		// set on a Tier 2 adapter) on stderr so users notice them once at
+		// load time without breaking the run.
+		for _, w := range cfg.Warnings {
+			fmt.Fprintf(os.Stderr, "⚠ %s\n", w)
+		}
 
 		if verbose {
 			fmt.Fprintf(os.Stderr, "Project root: %s\n", projectRoot)
@@ -78,13 +96,18 @@ func init() {
 
 	// Register subcommands
 	rootCmd.AddCommand(newCreateCmd())
+	rootCmd.AddCommand(newDeleteCmd())
 	rootCmd.AddCommand(newAutomateCmd())
 	rootCmd.AddCommand(newExecuteCmd())
 	rootCmd.AddCommand(newStatusCmd())
 	rootCmd.AddCommand(newGapsCmd())
 	rootCmd.AddCommand(newTriageCmd())
 	rootCmd.AddCommand(newMapCmd())
+	rootCmd.AddCommand(newLinkCmd())
+	rootCmd.AddCommand(newListCmd())
+	rootCmd.AddCommand(newResetCmd())
 	rootCmd.AddCommand(newInitCmd())
+	rootCmd.AddCommand(newPrimeCmd())
 	rootCmd.AddCommand(newVersionCmd())
 }
 

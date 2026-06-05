@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 	"github.com/aitestmanagement/gtms-cli/internal/config"
@@ -20,8 +21,8 @@ func newCreateStatusCmd() *cobra.Command {
 		Short: "Show status of create tasks",
 		Long: `Show the status of create tasks.
 
-  gtms create status             — list all create tasks
-  gtms create status JIRA-456    — detail for a specific target`,
+  gtms create status              — list all create tasks
+  gtms create status my-feature   — detail for a specific target`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
@@ -141,6 +142,37 @@ func runCreateStatusDetail(ctx context.Context, w io.Writer, projectRoot string,
 		if rc.Completed != "" {
 			fmt.Fprintf(w, "Completed: %s\n", rc.Completed)
 		}
+
+		// ENH-096 Gap 1: list generated TC ids + titles when the task is complete
+		if tf.Status == "complete" && rc.Artefact != "" {
+			paths := strings.Split(rc.Artefact, ",")
+			for i := range paths {
+				paths[i] = strings.TrimSpace(paths[i])
+			}
+			entries := make([]tcInfo, 0, len(paths))
+			for _, relPath := range paths {
+				id, title := readTCFrontmatter(projectRoot, relPath)
+				if id != "" {
+					entries = append(entries, tcInfo{id: id, title: title})
+				}
+			}
+			if len(entries) > 0 {
+				n := len(entries)
+				label := "test case"
+				if n > 1 {
+					label = "test cases"
+				}
+				fmt.Fprintf(w, "    Created %d %s:\n", n, label)
+				for _, e := range entries {
+					fmt.Fprintf(w, "      %s  %s\n", e.id, truncateTitle(e.title))
+				}
+			}
+		}
+
+		// ENH-096 Gap 3: surface adapter-injected warnings from the result contract
+		for _, warn := range rc.Warnings {
+			fmt.Fprintf(w, "  %s %s\n", output.IconWarning, warn)
+		}
 	}
 
 	return nil
@@ -156,8 +188,8 @@ func formatTaskStatus(status string) string {
 		return icon + " In Progress"
 	case "pending":
 		return icon + " Pending"
-	case "failed":
-		return icon + " Failed"
+	case "error":
+		return icon + " Error"
 	case "in-review":
 		return icon + " In Review"
 	default:

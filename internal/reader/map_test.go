@@ -12,26 +12,26 @@ func TestMap_GroupsByRequirement(t *testing.T) {
 	root := t.TempDir()
 
 	// 2 test cases for REQ-A, 1 for REQ-B
-	writeFile(t, root, filepath.Join("test-cases", "tc-aaa1111-login-happy.md"), `---
+	writeFile(t, root, filepath.Join("gtms/cases", "tc-aaa1111-login-happy.md"), `---
 test_case_id: tc-aaa1111
 title: Login Happy Path
 requirement: REQ-A
 ---
 `)
-	writeFile(t, root, filepath.Join("test-cases", "tc-aaa2222-login-error.md"), `---
+	writeFile(t, root, filepath.Join("gtms/cases", "tc-aaa2222-login-error.md"), `---
 test_case_id: tc-aaa2222
 title: Login Error Path
 requirement: REQ-A
 ---
 `)
-	writeFile(t, root, filepath.Join("test-cases", "tc-bbb1111-checkout-flow.md"), `---
+	writeFile(t, root, filepath.Join("gtms/cases", "tc-bbb1111-checkout-flow.md"), `---
 test_case_id: tc-bbb1111
 title: Checkout Flow
 requirement: REQ-B
 ---
 `)
 
-	report, err := Map(root, nil)
+	report, err := Map(root, nil, "", false)
 	require.NoError(t, err)
 	require.NotNil(t, report)
 
@@ -57,20 +57,20 @@ requirement: REQ-B
 func TestMap_UnlinkedTestCases(t *testing.T) {
 	root := t.TempDir()
 
-	writeFile(t, root, filepath.Join("test-cases", "tc-aaa1111-linked.md"), `---
+	writeFile(t, root, filepath.Join("gtms/cases", "tc-aaa1111-linked.md"), `---
 test_case_id: tc-aaa1111
 title: Linked Test
 requirement: REQ-A
 ---
 `)
-	writeFile(t, root, filepath.Join("test-cases", "tc-bbb1111-orphan.md"), `---
+	writeFile(t, root, filepath.Join("gtms/cases", "tc-bbb1111-orphan.md"), `---
 test_case_id: tc-bbb1111
 title: Unlinked Test
 requirement: ""
 ---
 `)
 
-	report, err := Map(root, nil)
+	report, err := Map(root, nil, "", false)
 	require.NoError(t, err)
 
 	assert.Len(t, report.Groups, 1)
@@ -83,14 +83,14 @@ requirement: ""
 func TestMap_SlugDerivation(t *testing.T) {
 	root := t.TempDir()
 
-	writeFile(t, root, filepath.Join("test-cases", "tc-a1b2c3d-tier1-sync-happy-path.md"), `---
+	writeFile(t, root, filepath.Join("gtms/cases", "tc-a1b2c3d-tier1-sync-happy-path.md"), `---
 test_case_id: tc-a1b2c3d
 title: Tier 1 Sync Happy Path Test
 requirement: REQ-1
 ---
 `)
 
-	report, err := Map(root, nil)
+	report, err := Map(root, nil, "", false)
 	require.NoError(t, err)
 	require.Len(t, report.Groups, 1)
 	require.Len(t, report.Groups[0].TestCases, 1)
@@ -104,14 +104,14 @@ func TestMap_SlugDerivation_ShortFilename(t *testing.T) {
 	// Test case where filename has no slug portion (e.g. "tc-001.md")
 	root := t.TempDir()
 
-	writeFile(t, root, filepath.Join("test-cases", "tc-001.md"), `---
+	writeFile(t, root, filepath.Join("gtms/cases", "tc-001.md"), `---
 test_case_id: tc-001
 title: Short Filename Test
 requirement: REQ-1
 ---
 `)
 
-	report, err := Map(root, nil)
+	report, err := Map(root, nil, "", false)
 	require.NoError(t, err)
 	require.Len(t, report.Groups, 1)
 	require.Len(t, report.Groups[0].TestCases, 1)
@@ -123,7 +123,7 @@ requirement: REQ-1
 func TestMap_EmptyProject(t *testing.T) {
 	root := t.TempDir()
 
-	report, err := Map(root, nil)
+	report, err := Map(root, nil, "", false)
 	require.NoError(t, err)
 	require.NotNil(t, report)
 
@@ -139,24 +139,21 @@ func TestMap_EmptyProject(t *testing.T) {
 func TestMap_WithAutomation(t *testing.T) {
 	root := t.TempDir()
 
-	writeFile(t, root, filepath.Join("test-cases", "tc-aaa1111-automated.md"), `---
+	writeFile(t, root, filepath.Join("gtms/cases", "tc-aaa1111-automated.md"), `---
 test_case_id: tc-aaa1111
 title: Automated Test
 requirement: REQ-1
 ---
 `)
-	writeFile(t, root, filepath.Join("test-automation", "records", "tc-aaa1111.automation.md"), `---
-testcase: tc-aaa1111
-framework: playwright
-status: accepted
-artefact: test-automation/specs/tc-aaa1111.spec.ts
-adapter: local-claude
-attempts: 1
-cycle: 1
----
-`)
+	seedLegacyRecord(t, root, legacyRecord{
+		TC:        "tc-aaa1111",
+		Framework: "playwright",
+		Adapter:   "local-claude",
+		Artefact:  "gtms/automation/specs/tc-aaa1111.spec.ts",
+		Attempts:  1,
+	})
 
-	report, err := Map(root, nil)
+	report, err := Map(root, nil, "", false)
 	require.NoError(t, err)
 	require.Len(t, report.Groups, 1)
 
@@ -167,23 +164,20 @@ cycle: 1
 func TestMap_WithExecution(t *testing.T) {
 	root := t.TempDir()
 
-	writeFile(t, root, filepath.Join("test-cases", "tc-aaa1111-executed.md"), `---
+	writeFile(t, root, filepath.Join("gtms/cases", "tc-aaa1111-executed.md"), `---
 test_case_id: tc-aaa1111
 title: Executed Test
 requirement: REQ-1
 ---
 `)
-	writeFile(t, root, filepath.Join("test-automation", "records", "tc-aaa1111.automation.md"), `---
-testcase: tc-aaa1111
-framework: playwright
-status: accepted
-last-formal-result: pass
-attempts: 1
-cycle: 1
----
-`)
+	seedLegacyRecord(t, root, legacyRecord{
+		TC:        "tc-aaa1111",
+		Framework: "playwright",
+		Result:    "pass",
+		Attempts:  1,
+	})
 
-	report, err := Map(root, nil)
+	report, err := Map(root, nil, "", false)
 	require.NoError(t, err)
 	require.Len(t, report.Groups, 1)
 
@@ -195,23 +189,20 @@ cycle: 1
 func TestMap_ExecuteStatusReflectsResult(t *testing.T) {
 	root := t.TempDir()
 
-	writeFile(t, root, filepath.Join("test-cases", "tc-aaa1111-failing.md"), `---
+	writeFile(t, root, filepath.Join("gtms/cases", "tc-aaa1111-failing.md"), `---
 test_case_id: tc-aaa1111
 title: Failing Test
 requirement: REQ-1
 ---
 `)
-	writeFile(t, root, filepath.Join("test-automation", "records", "tc-aaa1111.automation.md"), `---
-testcase: tc-aaa1111
-framework: playwright
-status: accepted
-last-formal-result: fail
-attempts: 2
-cycle: 1
----
-`)
+	seedLegacyRecord(t, root, legacyRecord{
+		TC:        "tc-aaa1111",
+		Framework: "playwright",
+		Result:    "fail",
+		Attempts:  2,
+	})
 
-	report, err := Map(root, nil)
+	report, err := Map(root, nil, "", false)
 	require.NoError(t, err)
 	require.Len(t, report.Groups, 1)
 
@@ -220,49 +211,93 @@ cycle: 1
 	assert.Equal(t, "complete", entry.ExecuteStatus)
 }
 
+func TestMap_ExecuteStatusReflectsSkippedResult(t *testing.T) {
+	root := t.TempDir()
+
+	writeFile(t, root, filepath.Join("gtms/cases", "tc-aaa1111-skipped.md"), `---
+test_case_id: tc-aaa1111
+title: Skipped Test
+requirement: REQ-1
+---
+`)
+	seedLegacyRecord(t, root, legacyRecord{
+		TC:        "tc-aaa1111",
+		Framework: "bats",
+		Result:    "skipped",
+		Attempts:  1,
+	})
+
+	report, err := Map(root, nil, "", false)
+	require.NoError(t, err)
+	require.Len(t, report.Groups, 1)
+
+	entry := report.Groups[0].TestCases[0]
+	assert.Equal(t, "skipped", entry.LastResult)
+	assert.Equal(t, "skipped", entry.ExecuteStatus)
+}
+
+func TestMap_ExecuteStatusCompleteForPass(t *testing.T) {
+	root := t.TempDir()
+
+	writeFile(t, root, filepath.Join("gtms/cases", "tc-aaa1111-passing.md"), `---
+test_case_id: tc-aaa1111
+title: Passing Test
+requirement: REQ-1
+---
+`)
+	seedLegacyRecord(t, root, legacyRecord{
+		TC:        "tc-aaa1111",
+		Framework: "bats",
+		Result:    "pass",
+		Attempts:  1,
+	})
+
+	report, err := Map(root, nil, "", false)
+	require.NoError(t, err)
+	require.Len(t, report.Groups, 1)
+
+	entry := report.Groups[0].TestCases[0]
+	assert.Equal(t, "pass", entry.LastResult)
+	assert.Equal(t, "complete", entry.ExecuteStatus)
+}
+
 func TestMap_Summary(t *testing.T) {
 	root := t.TempDir()
 
 	// 2 test cases across 2 requirements
-	writeFile(t, root, filepath.Join("test-cases", "tc-aaa1111-first.md"), `---
+	writeFile(t, root, filepath.Join("gtms/cases", "tc-aaa1111-first.md"), `---
 test_case_id: tc-aaa1111
 title: First Test
 requirement: REQ-A
 ---
 `)
-	writeFile(t, root, filepath.Join("test-cases", "tc-bbb1111-second.md"), `---
+	writeFile(t, root, filepath.Join("gtms/cases", "tc-bbb1111-second.md"), `---
 test_case_id: tc-bbb1111
 title: Second Test
 requirement: REQ-B
 ---
 `)
 	// 1 unlinked
-	writeFile(t, root, filepath.Join("test-cases", "tc-ccc1111-unlinked.md"), `---
+	writeFile(t, root, filepath.Join("gtms/cases", "tc-ccc1111-unlinked.md"), `---
 test_case_id: tc-ccc1111
 title: Unlinked
 ---
 `)
 
 	// 2 with automation
-	writeFile(t, root, filepath.Join("test-automation", "records", "tc-aaa1111.automation.md"), `---
-testcase: tc-aaa1111
-framework: playwright
-status: accepted
-last-formal-result: pass
-attempts: 1
-cycle: 1
----
-`)
-	writeFile(t, root, filepath.Join("test-automation", "records", "tc-bbb1111.automation.md"), `---
-testcase: tc-bbb1111
-framework: playwright
-status: accepted
-attempts: 1
-cycle: 1
----
-`)
+	seedLegacyRecord(t, root, legacyRecord{
+		TC:        "tc-aaa1111",
+		Framework: "playwright",
+		Result:    "pass",
+		Attempts:  1,
+	})
+	seedLegacyRecord(t, root, legacyRecord{
+		TC:        "tc-bbb1111",
+		Framework: "playwright",
+		Attempts:  1,
+	})
 
-	report, err := Map(root, nil)
+	report, err := Map(root, nil, "", false)
 	require.NoError(t, err)
 
 	assert.Equal(t, 2, report.Summary.TotalRequirements)
@@ -275,15 +310,15 @@ cycle: 1
 func TestMap_ActiveTaskOverride(t *testing.T) {
 	root := t.TempDir()
 
-	writeFile(t, root, filepath.Join("test-cases", "tc-aaa1111-pending.md"), `---
+	writeFile(t, root, filepath.Join("gtms/cases", "tc-aaa1111-pending.md"), `---
 test_case_id: tc-aaa1111
 title: Pending Automate
 requirement: REQ-1
 ---
 `)
 	// Pending automate task but no automation record
-	mkdirAll(t, root, filepath.Join("test-tasks", "pending"))
-	writeFile(t, root, filepath.Join("test-tasks", "pending", "task-x1y2z3a-automate-tc-aaa1111.md"), `---
+	mkdirAll(t, root, filepath.Join("gtms/tasks", "pending"))
+	writeFile(t, root, filepath.Join("gtms/tasks", "pending", "task-x1y2z3a-automate-tc-aaa1111.md"), `---
 id: task-x1y2z3a
 type: automate
 target: tc-aaa1111
@@ -294,7 +329,7 @@ branch: feature/automate
 ---
 `)
 
-	report, err := Map(root, nil)
+	report, err := Map(root, nil, "", false)
 	require.NoError(t, err)
 	require.Len(t, report.Groups, 1)
 
@@ -305,24 +340,21 @@ branch: feature/automate
 func TestMap_ActiveTaskOverride_InProgress(t *testing.T) {
 	root := t.TempDir()
 
-	writeFile(t, root, filepath.Join("test-cases", "tc-aaa1111-active.md"), `---
+	writeFile(t, root, filepath.Join("gtms/cases", "tc-aaa1111-active.md"), `---
 test_case_id: tc-aaa1111
 title: Active Automate
 requirement: REQ-1
 ---
 `)
-	// Automation record shows complete (status: accepted)
-	writeFile(t, root, filepath.Join("test-automation", "records", "tc-aaa1111.automation.md"), `---
-testcase: tc-aaa1111
-framework: playwright
-status: accepted
-attempts: 1
-cycle: 1
----
-`)
+	// Wiring + no terminal handoff = automate complete, execute none.
+	seedLegacyRecord(t, root, legacyRecord{
+		TC:        "tc-aaa1111",
+		Framework: "playwright",
+		Attempts:  1,
+	})
 	// In-progress task should override the "complete" automation status
-	mkdirAll(t, root, filepath.Join("test-tasks", "in-progress"))
-	writeFile(t, root, filepath.Join("test-tasks", "in-progress", "task-x1y2z3a-automate-tc-aaa1111.md"), `---
+	mkdirAll(t, root, filepath.Join("gtms/tasks", "in-progress"))
+	writeFile(t, root, filepath.Join("gtms/tasks", "in-progress", "task-x1y2z3a-automate-tc-aaa1111.md"), `---
 id: task-x1y2z3a
 type: automate
 target: tc-aaa1111
@@ -333,7 +365,7 @@ branch: feature/automate
 ---
 `)
 
-	report, err := Map(root, nil)
+	report, err := Map(root, nil, "", false)
 	require.NoError(t, err)
 	require.Len(t, report.Groups, 1)
 
@@ -344,15 +376,15 @@ branch: feature/automate
 func TestMap_ActiveTaskOverride_ExecuteTask(t *testing.T) {
 	root := t.TempDir()
 
-	writeFile(t, root, filepath.Join("test-cases", "tc-aaa1111-executing.md"), `---
+	writeFile(t, root, filepath.Join("gtms/cases", "tc-aaa1111-executing.md"), `---
 test_case_id: tc-aaa1111
 title: Executing Test
 requirement: REQ-1
 ---
 `)
 	// Pending execute task — no automation record needed
-	mkdirAll(t, root, filepath.Join("test-tasks", "pending"))
-	writeFile(t, root, filepath.Join("test-tasks", "pending", "task-x1y2z3a-execute-tc-aaa1111.md"), `---
+	mkdirAll(t, root, filepath.Join("gtms/tasks", "pending"))
+	writeFile(t, root, filepath.Join("gtms/tasks", "pending", "task-x1y2z3a-execute-tc-aaa1111.md"), `---
 id: task-x1y2z3a
 type: execute
 target: tc-aaa1111
@@ -363,7 +395,7 @@ branch: feature/execute
 ---
 `)
 
-	report, err := Map(root, nil)
+	report, err := Map(root, nil, "", false)
 	require.NoError(t, err)
 	require.Len(t, report.Groups, 1)
 
@@ -375,19 +407,19 @@ func TestMap_MalformedTestCase(t *testing.T) {
 	root := t.TempDir()
 
 	// Valid test case
-	writeFile(t, root, filepath.Join("test-cases", "tc-aaa1111-valid.md"), `---
+	writeFile(t, root, filepath.Join("gtms/cases", "tc-aaa1111-valid.md"), `---
 test_case_id: tc-aaa1111
 title: Valid Test
 requirement: REQ-1
 ---
 `)
 	// Malformed test case
-	writeFile(t, root, filepath.Join("test-cases", "tc-bad.md"), `---
+	writeFile(t, root, filepath.Join("gtms/cases", "tc-bad.md"), `---
 broken: yaml: [[[
 ---
 `)
 
-	report, err := Map(root, nil)
+	report, err := Map(root, nil, "", false)
 	require.NoError(t, err)
 	require.Len(t, report.Groups, 1)
 	assert.Len(t, report.Groups[0].TestCases, 1)

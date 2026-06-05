@@ -10,12 +10,12 @@ import (
 
 func TestNew_Length(t *testing.T) {
 	id := New()
-	assert.Len(t, id, 7, "ID should be exactly 7 characters")
+	assert.Len(t, id, 8, "ID should be exactly 8 characters")
 }
 
 func TestNew_HexChars(t *testing.T) {
 	id := New()
-	matched, err := regexp.MatchString("^[0-9a-f]{7}$", id)
+	matched, err := regexp.MatchString("^[0-9a-f]{8}$", id)
 	require.NoError(t, err)
 	assert.True(t, matched, "ID should contain only lowercase hex characters, got: %s", id)
 }
@@ -30,7 +30,7 @@ func TestNew_MultipleCalls(t *testing.T) {
 	seen := make(map[string]bool)
 	for i := 0; i < 1000; i++ {
 		id := New()
-		assert.Len(t, id, 7)
+		assert.Len(t, id, 8)
 		assert.False(t, seen[id], "Duplicate ID generated: %s", id)
 		seen[id] = true
 	}

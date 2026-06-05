@@ -168,3 +168,169 @@ func TestResolve_NoAdaptersForCommand(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "No adapter 'missing' registered for 'create'")
 }
+
+// ENH-150: Built-in action adapter fallback tests
+
+func TestResolve_BuiltinActionFallback_AgentCreate(t *testing.T) {
+	// Empty config — no adapters registered at all
+	cfg := &config.Config{
+		Project:  config.ProjectConfig{Name: "Test", Repo: "org/test"},
+		Adapters: map[string]map[string]*config.AdapterConfig{},
+		Defaults: map[string]string{},
+	}
+
+	ra, err := Resolve(cfg, "create", "agent-create")
+	require.NoError(t, err)
+	assert.Equal(t, "agent-create", ra.Name)
+	assert.Equal(t, 0, ra.Tier)
+	assert.Equal(t, "sync", ra.Mode)
+}
+
+func TestResolve_BuiltinActionFallback_ManualCreate(t *testing.T) {
+	cfg := &config.Config{
+		Project:  config.ProjectConfig{Name: "Test", Repo: "org/test"},
+		Adapters: map[string]map[string]*config.AdapterConfig{},
+		Defaults: map[string]string{},
+	}
+
+	ra, err := Resolve(cfg, "create", "manual-create")
+	require.NoError(t, err)
+	assert.Equal(t, "manual-create", ra.Name)
+	assert.Equal(t, 0, ra.Tier)
+}
+
+func TestResolve_BuiltinActionFallback_AgentPrime(t *testing.T) {
+	cfg := &config.Config{
+		Project:  config.ProjectConfig{Name: "Test", Repo: "org/test"},
+		Adapters: map[string]map[string]*config.AdapterConfig{},
+		Defaults: map[string]string{},
+	}
+
+	ra, err := Resolve(cfg, "prime", "agent-prime")
+	require.NoError(t, err)
+	assert.Equal(t, "agent-prime", ra.Name)
+	assert.Equal(t, 0, ra.Tier)
+}
+
+func TestResolve_BuiltinActionFallback_ManualPrime(t *testing.T) {
+	cfg := &config.Config{
+		Project:  config.ProjectConfig{Name: "Test", Repo: "org/test"},
+		Adapters: map[string]map[string]*config.AdapterConfig{},
+		Defaults: map[string]string{},
+	}
+
+	ra, err := Resolve(cfg, "prime", "manual-prime")
+	require.NoError(t, err)
+	assert.Equal(t, "manual-prime", ra.Name)
+	assert.Equal(t, 0, ra.Tier)
+}
+
+func TestResolve_BuiltinActionFallback_AgentExecute(t *testing.T) {
+	cfg := &config.Config{
+		Project:  config.ProjectConfig{Name: "Test", Repo: "org/test"},
+		Adapters: map[string]map[string]*config.AdapterConfig{},
+		Defaults: map[string]string{},
+	}
+
+	ra, err := Resolve(cfg, "execute", "agent-execute")
+	require.NoError(t, err)
+	assert.Equal(t, "agent-execute", ra.Name)
+	assert.Equal(t, 0, ra.Tier)
+}
+
+func TestResolve_BuiltinActionFallback_ManualExecute(t *testing.T) {
+	cfg := &config.Config{
+		Project:  config.ProjectConfig{Name: "Test", Repo: "org/test"},
+		Adapters: map[string]map[string]*config.AdapterConfig{},
+		Defaults: map[string]string{},
+	}
+
+	ra, err := Resolve(cfg, "execute", "manual-execute")
+	require.NoError(t, err)
+	assert.Equal(t, "manual-execute", ra.Name)
+	assert.Equal(t, 0, ra.Tier)
+}
+
+func TestResolve_ConfigTakesPrecedenceOverBuiltin(t *testing.T) {
+	// Config defines agent-create with a script — should be Tier 2, not Tier 0
+	cfg := &config.Config{
+		Project: config.ProjectConfig{Name: "Test", Repo: "org/test"},
+		Adapters: map[string]map[string]*config.AdapterConfig{
+			"create": {
+				"agent-create": {
+					Mode:   "sync",
+					Script: "my-custom-agent-create.sh",
+				},
+			},
+		},
+		Defaults: map[string]string{},
+	}
+
+	ra, err := Resolve(cfg, "create", "agent-create")
+	require.NoError(t, err)
+	assert.Equal(t, "agent-create", ra.Name)
+	assert.Equal(t, 2, ra.Tier) // Script set = Tier 2
+	assert.Equal(t, "my-custom-agent-create.sh", ra.Config.Script)
+}
+
+func TestResolve_UnknownNameStillErrors(t *testing.T) {
+	cfg := &config.Config{
+		Project:  config.ProjectConfig{Name: "Test", Repo: "org/test"},
+		Adapters: map[string]map[string]*config.AdapterConfig{},
+		Defaults: map[string]string{},
+	}
+
+	_, err := Resolve(cfg, "create", "totally-unknown")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "No adapter 'totally-unknown' registered for 'create'")
+}
+
+func TestResolve_PrimeDefaultsToManualPrime(t *testing.T) {
+	// No flag, no config default — prime should fall back to built-in manual-prime
+	cfg := &config.Config{
+		Project:  config.ProjectConfig{Name: "Test", Repo: "org/test"},
+		Adapters: map[string]map[string]*config.AdapterConfig{},
+		Defaults: map[string]string{},
+	}
+
+	ra, err := Resolve(cfg, "prime", "")
+	require.NoError(t, err)
+	assert.Equal(t, "manual-prime", ra.Name)
+	assert.Equal(t, 0, ra.Tier)
+}
+
+func TestResolve_PrimeConfigDefaultOverridesBuiltin(t *testing.T) {
+	cfg := &config.Config{
+		Project: config.ProjectConfig{Name: "Test", Repo: "org/test"},
+		Adapters: map[string]map[string]*config.AdapterConfig{
+			"prime": {
+				"custom-prime": {
+					Mode:   "sync",
+					Script: "custom-prime.sh",
+				},
+			},
+		},
+		Defaults: map[string]string{
+			"prime": "custom-prime",
+		},
+	}
+
+	ra, err := Resolve(cfg, "prime", "")
+	require.NoError(t, err)
+	assert.Equal(t, "custom-prime", ra.Name)
+	assert.Equal(t, 2, ra.Tier) // Script = Tier 2
+}
+
+func TestIsBuiltinActionAdapter(t *testing.T) {
+	assert.True(t, IsBuiltinActionAdapter("create", "agent-create"))
+	assert.True(t, IsBuiltinActionAdapter("create", "manual-create"))
+	assert.True(t, IsBuiltinActionAdapter("prime", "agent-prime"))
+	assert.True(t, IsBuiltinActionAdapter("prime", "manual-prime"))
+	assert.True(t, IsBuiltinActionAdapter("execute", "agent-execute"))
+	assert.True(t, IsBuiltinActionAdapter("execute", "manual-execute"))
+	assert.True(t, IsBuiltinActionAdapter("automate", "agent-automate"))
+	assert.True(t, IsBuiltinActionAdapter("automate", "manual-automate"))
+	assert.False(t, IsBuiltinActionAdapter("create", "unknown"))
+	assert.False(t, IsBuiltinActionAdapter("automate", "unknown"))
+	assert.False(t, IsBuiltinActionAdapter("status", "built-in"))
+}

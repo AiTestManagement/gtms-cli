@@ -1,0 +1,7 @@
+project:
+  name: "Artefact Ignore Project"
+  repo: org/artefact-ignore
+
+artefact-ignore:
+  - .claude/
+  - vendor

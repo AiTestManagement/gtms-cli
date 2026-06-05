@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	"github.com/aitestmanagement/gtms-cli/internal/config"
 	"github.com/aitestmanagement/gtms-cli/internal/output"
 	"github.com/aitestmanagement/gtms-cli/internal/reader"
 )
@@ -21,20 +22,23 @@ func newTriageCmd() *cobra.Command {
 		summary         string
 		defect          string
 		jsonOut         bool
+		frameworkFlag   string
 	)
 
 	cmd := &cobra.Command{
-		Use:   "triage <test-case-ID>",
+		Use:   "triage <test-case-id>",
 		Short: "Classify and triage test failures",
 		Long: `Classify a failed test execution and trigger follow-on actions.
+Specify exactly one of --automation-wrong, --test-wrong, or --app-wrong.
 
-  gtms triage tc-007 --automation-wrong --summary "Selectors changed"
-  gtms triage tc-007 --test-wrong --summary "Expected result changed"
-  gtms triage tc-007 --app-wrong --defect JIRA-789 --summary "Payment gateway 500"
-  gtms triage tc-007 --app-wrong --summary "bug" --json   — machine-readable JSON output`,
+  gtms triage tc-a1b2c3d4 --automation-wrong --summary "Selectors changed"
+  gtms triage tc-a1b2c3d4 --test-wrong --summary "Expected result changed"
+  gtms triage tc-a1b2c3d4 --app-wrong --defect JIRA-789 --summary "Payment gateway 500"
+  gtms triage tc-a1b2c3d4 --app-wrong --summary "bug" --json   — machine-readable JSON output`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			target := strings.ToLower(args[0])
+			target = normaliseTarget(target)
 			root := GetProjectRoot()
 
 			// Validate: target ID is safe (rejects shell metacharacters, path traversal)
@@ -47,19 +51,26 @@ func newTriageCmd() *cobra.Command {
 			// Validate: target format (test case ID)
 			if !isTestCaseID(target) {
 				msg := fmt.Sprintf("Invalid test case ID format: '%s'.", target)
-				output.Errorf(msg, "Use format like tc-007.")
+				output.Errorf(msg, "Use format like tc-a1b2c3d4.")
 				return output.AsDisplayed(fmt.Errorf(msg))
 			}
 
 			// Validate: exactly one category flag
 			category, err := resolveTriageCategory(automationWrong, testWrong, appWrong)
 			if err != nil {
-				output.Errorf(err.Error(), "")
+				output.Errorf(err.Error(), "Example: gtms triage tc-a1b2c3d4 --automation-wrong --summary \"reason\"")
 				return output.AsDisplayed(err)
 			}
 
+			// Validate --framework flag if provided
+			if frameworkFlag != "" && !config.ValidateFramework(frameworkFlag) {
+				msg := fmt.Sprintf("Invalid framework '%s'. Framework must contain only lowercase letters, digits, and hyphens.", frameworkFlag)
+				output.Errorf(msg, "Example: --framework playwright")
+				return output.AsDisplayed(fmt.Errorf(msg))
+			}
+
 			// Call reader.RecordTriage
-			result, err := reader.RecordTriage(root, target, category, summary, defect)
+			result, err := reader.RecordTriage(root, target, category, summary, defect, frameworkFlag)
 			if err != nil {
 				output.Errorf(err.Error(), "")
 				return output.AsDisplayed(err)
@@ -80,6 +91,7 @@ func newTriageCmd() *cobra.Command {
 	cmd.Flags().StringVar(&summary, "summary", "", "Summary of the triage decision")
 	cmd.Flags().StringVar(&defect, "defect", "", "Defect ID to link (used with --app-wrong)")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Output as JSON")
+	cmd.Flags().StringVar(&frameworkFlag, "framework", "", "Framework to triage (required when multiple frameworks exist for a test case)")
 
 	return cmd
 }

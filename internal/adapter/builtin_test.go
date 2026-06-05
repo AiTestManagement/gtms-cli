@@ -24,7 +24,7 @@ func setupMinimalProject(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
 	writeFile(t, root, "gtms.config", "project:\n  name: test\n  repo: test\n")
-	writeFile(t, root, filepath.Join("test-cases", "tc-001.md"), `---
+	writeFile(t, root, filepath.Join("gtms/cases", "tc-001.md"), `---
 test_case_id: tc-001
 title: Test One
 requirement: REQ-1
@@ -37,7 +37,7 @@ status: ready
 func TestInvokeBuiltin_StatusOverview(t *testing.T) {
 	root := setupMinimalProject(t)
 
-	result, err := InvokeBuiltin(context.Background(), "status", nil, root, []string{})
+	result, err := InvokeBuiltin(context.Background(), "status", nil, root, []string{}, "")
 	require.NoError(t, err)
 
 	entries, ok := result.([]reader.PipelineEntry)
@@ -49,7 +49,7 @@ func TestInvokeBuiltin_StatusOverview(t *testing.T) {
 func TestInvokeBuiltin_StatusDetail(t *testing.T) {
 	root := setupMinimalProject(t)
 
-	result, err := InvokeBuiltin(context.Background(), "status", []string{"tc-001"}, root, []string{})
+	result, err := InvokeBuiltin(context.Background(), "status", []string{"tc-001"}, root, []string{}, "")
 	require.NoError(t, err)
 
 	detail, ok := result.(*reader.PipelineDetailEntry)
@@ -61,7 +61,7 @@ func TestInvokeBuiltin_StatusDetail(t *testing.T) {
 func TestInvokeBuiltin_StatusDetailNotFound(t *testing.T) {
 	root := setupMinimalProject(t)
 
-	_, err := InvokeBuiltin(context.Background(), "status", []string{"tc-nonexistent"}, root, []string{})
+	_, err := InvokeBuiltin(context.Background(), "status", []string{"tc-nonexistent"}, root, []string{}, "")
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "not found")
 }
@@ -69,7 +69,7 @@ func TestInvokeBuiltin_StatusDetailNotFound(t *testing.T) {
 func TestInvokeBuiltin_Gaps(t *testing.T) {
 	root := setupMinimalProject(t)
 
-	result, err := InvokeBuiltin(context.Background(), "gaps", nil, root, []string{})
+	result, err := InvokeBuiltin(context.Background(), "gaps", nil, root, []string{}, "")
 	require.NoError(t, err)
 
 	report, ok := result.(*reader.GapReport)
@@ -80,13 +80,14 @@ func TestInvokeBuiltin_Gaps(t *testing.T) {
 }
 
 func TestInvokeBuiltin_Triage(t *testing.T) {
-	_, err := InvokeBuiltin(context.Background(), "triage", []string{"tc-001"}, "/fake/path", []string{})
+	_, err := InvokeBuiltin(context.Background(), "triage", []string{"tc-001"}, "/fake/path", []string{}, "")
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "no automation record found")
+	// CON-023 / ENH-145: triage reads wiring; error wording reflects that.
+	assert.Contains(t, err.Error(), "no wiring record found")
 }
 
 func TestInvokeBuiltin_UnknownCommand(t *testing.T) {
-	_, err := InvokeBuiltin(context.Background(), "unknown", nil, "/fake/path", []string{})
+	_, err := InvokeBuiltin(context.Background(), "unknown", nil, "/fake/path", []string{}, "")
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "unknown built-in command")
 }

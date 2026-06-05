@@ -16,8 +16,8 @@ func TestStatusIcon(t *testing.T) {
 		{"complete", IconComplete},
 		{"in-progress", IconInProgress},
 		{"pending", IconPending},
-		{"failed", IconError},
 		{"error", IconError},
+		{"failed", IconPending}, // ENH-141: "failed" is retired, falls to default
 		{"warning", IconWarning},
 		{"unknown", IconPending}, // default
 	}
@@ -58,8 +58,8 @@ func TestFprintError_WithoutHint(t *testing.T) {
 
 func TestTable_BasicRender(t *testing.T) {
 	tbl := NewTable("ID", "STATUS", "TARGET")
-	tbl.AddRow("task-a1b2c3d", "pending", "REQ-001")
-	tbl.AddRow("task-e4f5a6b", "complete", "REQ-002")
+	tbl.AddRow("task-a1b2c3d0", "pending", "REQ-001")
+	tbl.AddRow("task-e4f5a6b0", "complete", "REQ-002")
 
 	output := tbl.String()
 	lines := strings.Split(strings.TrimRight(output, "\n"), "\n")
@@ -76,9 +76,9 @@ func TestTable_BasicRender(t *testing.T) {
 	assert.Contains(t, lines[1], "---")
 
 	// Data rows should contain values
-	assert.Contains(t, lines[2], "task-a1b2c3d")
+	assert.Contains(t, lines[2], "task-a1b2c3d0")
 	assert.Contains(t, lines[2], "pending")
-	assert.Contains(t, lines[3], "task-e4f5a6b")
+	assert.Contains(t, lines[3], "task-e4f5a6b0")
 	assert.Contains(t, lines[3], "complete")
 }
 
@@ -131,6 +131,25 @@ func TestDisplayedError(t *testing.T) {
 
 func TestDisplayedError_Nil(t *testing.T) {
 	assert.False(t, IsDisplayed(nil), "nil error should not be displayed")
+}
+
+func TestDim_NonTTY(t *testing.T) {
+	// bytes.Buffer is not a TTY, so output should be plain
+	var buf bytes.Buffer
+	Dim(&buf, "hello")
+	assert.Equal(t, "hello", buf.String())
+}
+
+func TestDimf_NonTTY(t *testing.T) {
+	var buf bytes.Buffer
+	Dimf(&buf, "count: %d", 42)
+	assert.Equal(t, "count: 42", buf.String())
+}
+
+func TestDimln_NonTTY(t *testing.T) {
+	var buf bytes.Buffer
+	Dimln(&buf, "hello")
+	assert.Equal(t, "hello\n", buf.String())
 }
 
 func TestWarnf(t *testing.T) {

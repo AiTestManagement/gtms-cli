@@ -8,8 +8,8 @@ import (
 )
 
 // tcIDPattern matches tc-xxx identifiers (case insensitive for legacy compatibility).
-// Covers both legacy short IDs (e.g. tc-007) and canonical 7-hex IDs (e.g. tc-a1b2c3d).
-var tcIDPattern = regexp.MustCompile(`(?i)TC-[0-9a-f]{3,7}\b`)
+// Covers both legacy short IDs (e.g. tc-007) and canonical 8-hex IDs (e.g. tc-a1b2c3d0).
+var tcIDPattern = regexp.MustCompile(`(?i)TC-[0-9a-f]{3,8}\b`)
 
 // ScanSpecFiles walks each specDir (relative to projectRoot), reads all files,
 // and extracts tc-xxx references. Returns a map from normalised (lowercase) tc ID

@@ -22,7 +22,7 @@ func newExecuteStatusCmd() *cobra.Command {
 		Long: `Show the status of execute tasks.
 
   gtms execute status          — list all execute tasks
-  gtms execute status tc-007   — detail for a specific target`,
+  gtms execute status tc-a1b2c3d4   — detail for a specific target`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
@@ -142,6 +142,13 @@ func runExecuteStatusDetail(ctx context.Context, w io.Writer, projectRoot string
 		if rc.Completed != "" {
 			fmt.Fprintf(w, "Completed: %s\n", rc.Completed)
 		}
+	}
+
+	// ENH-109 / verbose: surface the handoff contract path consulted, so users
+	// debugging an execute can find the on-disk artefact without grepping
+	// .gtms/. Only printed under --verbose to keep the default view compact.
+	if IsVerbose() && rcPath != "" {
+		fmt.Fprintf(w, "Handoff: %s\n", rcPath)
 	}
 
 	return nil

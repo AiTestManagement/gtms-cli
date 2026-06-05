@@ -6,24 +6,24 @@ adapters:
   create:
     local-claude:
       mode: sync
-      prompt-template: test-cases/prompts/create-standard.md
-      guide-dir: test-cases/guides/
+      prompt-template: gtms/cases/prompts/create-standard.md
+      guide-dir: gtms/cases/guides/
       command: 'claude -p {prompt}'
     github-create:
       mode: async
-      prompt-template: test-cases/prompts/create-standard.md
+      prompt-template: gtms/cases/prompts/create-standard.md
       script: adapters/github-create.sh
       status-script: adapters/github-create-status.sh
   automate:
     local-claude:
       mode: sync
-      prompt-template: test-automation/prompts/automate-standard.md
+      prompt-template: gtms/automation/prompts/automate-standard.md
       command: 'claude -p {prompt}'
       timeout: 5m
   execute:
     local-runner:
       mode: sync
-      command: 'npx playwright test {spec_file} --reporter=junit --output=results/junit/'
+      command: 'npx playwright test {artefact_file} --reporter=junit --output=results/junit/'
     github-actions:
       mode: async
       script: adapters/github-execute.sh

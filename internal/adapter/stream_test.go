@@ -17,7 +17,7 @@ func TestParseStreaming_MultipleFiles(t *testing.T) {
 	input := "<gtms-file name=\"test1.md\">\nHello World\n</gtms-file>\n<gtms-file name=\"test2.md\">\nSecond file\nWith two lines\n</gtms-file>\n<gtms-file name=\"test3.md\">\nThird\n</gtms-file>"
 	outputDir := t.TempDir()
 
-	res, err := parseStreamingOutput(strings.NewReader(input), outputDir)
+	res, err := parseStreamingOutput(strings.NewReader(input), outputDir, false)
 	require.NoError(t, err)
 
 	assert.Empty(t, res.Summary)
@@ -40,7 +40,7 @@ func TestParseStreaming_NoDelimiters(t *testing.T) {
 	input := "plain text output\nwith multiple lines"
 	outputDir := t.TempDir()
 
-	res, err := parseStreamingOutput(strings.NewReader(input), outputDir)
+	res, err := parseStreamingOutput(strings.NewReader(input), outputDir, false)
 	require.NoError(t, err)
 
 	assert.Equal(t, "plain text output\nwith multiple lines", res.Summary)
@@ -51,7 +51,7 @@ func TestParseStreaming_SingleFile(t *testing.T) {
 	input := "<gtms-file name=\"output.txt\">\nSingle file content\n</gtms-file>"
 	outputDir := t.TempDir()
 
-	res, err := parseStreamingOutput(strings.NewReader(input), outputDir)
+	res, err := parseStreamingOutput(strings.NewReader(input), outputDir, false)
 	require.NoError(t, err)
 
 	assert.Empty(t, res.Summary)
@@ -66,7 +66,7 @@ func TestParseStreaming_SummaryBeforeFirstDelimiter(t *testing.T) {
 	input := "Preamble line 1\nPreamble line 2\n<gtms-file name=\"file1.md\">\nFile content\n</gtms-file>"
 	outputDir := t.TempDir()
 
-	res, err := parseStreamingOutput(strings.NewReader(input), outputDir)
+	res, err := parseStreamingOutput(strings.NewReader(input), outputDir, false)
 	require.NoError(t, err)
 
 	assert.Equal(t, "Preamble line 1\nPreamble line 2", res.Summary)
@@ -82,7 +82,7 @@ func TestParseStreaming_EmptyContent(t *testing.T) {
 	input := "<gtms-file name=\"empty.md\">\n</gtms-file>\n<gtms-file name=\"notempty.md\">\nContent\n</gtms-file>"
 	outputDir := t.TempDir()
 
-	res, err := parseStreamingOutput(strings.NewReader(input), outputDir)
+	res, err := parseStreamingOutput(strings.NewReader(input), outputDir, false)
 	require.NoError(t, err)
 
 	// Empty block is skipped (no content to write), only notempty.md is written
@@ -100,7 +100,7 @@ func TestParseStreaming_LargeContent(t *testing.T) {
 	input := "<gtms-file name=\"large.txt\">\n" + largeLine + "\n</gtms-file>"
 	outputDir := t.TempDir()
 
-	res, err := parseStreamingOutput(strings.NewReader(input), outputDir)
+	res, err := parseStreamingOutput(strings.NewReader(input), outputDir, false)
 	require.NoError(t, err)
 
 	assert.Len(t, res.SavedFiles, 1)
@@ -114,7 +114,7 @@ func TestParseStreaming_MaliciousFilename(t *testing.T) {
 	input := "<gtms-file name=\"../../etc/passwd\">\nmalicious content\n</gtms-file>\n<gtms-file name=\"safe.md\">\nOK\n</gtms-file>"
 	outputDir := t.TempDir()
 
-	res, err := parseStreamingOutput(strings.NewReader(input), outputDir)
+	res, err := parseStreamingOutput(strings.NewReader(input), outputDir, false)
 	require.NoError(t, err)
 
 	// Malicious file skipped, safe file written
@@ -134,7 +134,7 @@ func TestParseStreaming_WindowsLineEndings(t *testing.T) {
 	input := "<gtms-file name=\"win.txt\">\r\nLine one\r\nLine two\r\n</gtms-file>"
 	outputDir := t.TempDir()
 
-	res, err := parseStreamingOutput(strings.NewReader(input), outputDir)
+	res, err := parseStreamingOutput(strings.NewReader(input), outputDir, false)
 	require.NoError(t, err)
 
 	assert.Len(t, res.SavedFiles, 1)
@@ -149,7 +149,7 @@ func TestParseStreaming_NoTrailingNewline(t *testing.T) {
 	input := "<gtms-file name=\"noeol.txt\">\nContent without newline at end\n</gtms-file>"
 	outputDir := t.TempDir()
 
-	res, err := parseStreamingOutput(strings.NewReader(input), outputDir)
+	res, err := parseStreamingOutput(strings.NewReader(input), outputDir, false)
 	require.NoError(t, err)
 
 	assert.Len(t, res.SavedFiles, 1)
@@ -163,7 +163,7 @@ func TestParseStreaming_EmptyOutputDir(t *testing.T) {
 	// When outputDir is empty, all output is treated as summary
 	input := "<gtms-file name=\"test.md\">\nContent\n</gtms-file>"
 
-	res, err := parseStreamingOutput(strings.NewReader(input), "")
+	res, err := parseStreamingOutput(strings.NewReader(input), "", false)
 	require.NoError(t, err)
 
 	assert.Equal(t, "<gtms-file name=\"test.md\">\nContent\n</gtms-file>", res.Summary)
@@ -174,7 +174,7 @@ func TestParseStreaming_FilenameWithSlash(t *testing.T) {
 	input := "<gtms-file name=\"sub/file.md\">\nContent\n</gtms-file>\n<gtms-file name=\"safe.md\">\nOK\n</gtms-file>"
 	outputDir := t.TempDir()
 
-	res, err := parseStreamingOutput(strings.NewReader(input), outputDir)
+	res, err := parseStreamingOutput(strings.NewReader(input), outputDir, false)
 	require.NoError(t, err)
 
 	// Relative subdirectory paths are allowed — both files written
@@ -193,7 +193,7 @@ func TestParseStreaming_SubdirectoryCreated(t *testing.T) {
 	input := "<gtms-file name=\"deep/nested/dir/file.bats\">\n#!/usr/bin/env bats\n@test \"works\" { true; }\n</gtms-file>"
 	outputDir := t.TempDir()
 
-	res, err := parseStreamingOutput(strings.NewReader(input), outputDir)
+	res, err := parseStreamingOutput(strings.NewReader(input), outputDir, false)
 	require.NoError(t, err)
 
 	assert.Len(t, res.SavedFiles, 1)
@@ -210,7 +210,7 @@ func TestParseStreaming_FilenameWithBackslash(t *testing.T) {
 	input := "<gtms-file name=\"sub\\file.md\">\nContent\n</gtms-file>\n<gtms-file name=\"safe.md\">\nOK\n</gtms-file>"
 	outputDir := t.TempDir()
 
-	res, err := parseStreamingOutput(strings.NewReader(input), outputDir)
+	res, err := parseStreamingOutput(strings.NewReader(input), outputDir, false)
 	require.NoError(t, err)
 
 	assert.Len(t, res.SavedFiles, 1)
@@ -218,7 +218,7 @@ func TestParseStreaming_FilenameWithBackslash(t *testing.T) {
 }
 
 func TestParseStreaming_EmptyInput(t *testing.T) {
-	res, err := parseStreamingOutput(strings.NewReader(""), t.TempDir())
+	res, err := parseStreamingOutput(strings.NewReader(""), t.TempDir(), false)
 	require.NoError(t, err)
 
 	assert.Empty(t, res.Summary)
@@ -231,7 +231,7 @@ func TestParseStreaming_XMLSingleFile(t *testing.T) {
 	input := "<gtms-file name=\"test.md\">\nContent\n</gtms-file>"
 	outputDir := t.TempDir()
 
-	res, err := parseStreamingOutput(strings.NewReader(input), outputDir)
+	res, err := parseStreamingOutput(strings.NewReader(input), outputDir, false)
 	require.NoError(t, err)
 
 	assert.Empty(t, res.Summary)
@@ -246,7 +246,7 @@ func TestParseStreaming_XMLMultipleFiles(t *testing.T) {
 	input := "<gtms-file name=\"f1.md\">\nA\n</gtms-file>\n<gtms-file name=\"f2.md\">\nB\n</gtms-file>"
 	outputDir := t.TempDir()
 
-	res, err := parseStreamingOutput(strings.NewReader(input), outputDir)
+	res, err := parseStreamingOutput(strings.NewReader(input), outputDir, false)
 	require.NoError(t, err)
 
 	assert.Empty(t, res.Summary)
@@ -265,7 +265,7 @@ func TestParseStreaming_XMLSummaryAfterClose(t *testing.T) {
 	input := "<gtms-file name=\"test.md\">\nContent\n</gtms-file>\nDesign notes:\nThis is a summary"
 	outputDir := t.TempDir()
 
-	res, err := parseStreamingOutput(strings.NewReader(input), outputDir)
+	res, err := parseStreamingOutput(strings.NewReader(input), outputDir, false)
 	require.NoError(t, err)
 
 	assert.Len(t, res.SavedFiles, 1)
@@ -280,7 +280,7 @@ func TestParseStreaming_XMLSummaryBeforeAndAfter(t *testing.T) {
 	input := "Preamble\n<gtms-file name=\"test.md\">\nContent\n</gtms-file>\nEpilogue"
 	outputDir := t.TempDir()
 
-	res, err := parseStreamingOutput(strings.NewReader(input), outputDir)
+	res, err := parseStreamingOutput(strings.NewReader(input), outputDir, false)
 	require.NoError(t, err)
 
 	assert.Equal(t, "Preamble\nEpilogue", res.Summary)
@@ -295,7 +295,7 @@ func TestParseStreaming_XMLMaliciousFilename(t *testing.T) {
 	input := "<gtms-file name=\"../../etc/passwd\">\nmalicious\n</gtms-file>\n<gtms-file name=\"safe.md\">\nOK\n</gtms-file>"
 	outputDir := t.TempDir()
 
-	res, err := parseStreamingOutput(strings.NewReader(input), outputDir)
+	res, err := parseStreamingOutput(strings.NewReader(input), outputDir, false)
 	require.NoError(t, err)
 
 	// Malicious file skipped, safe file written
@@ -314,7 +314,7 @@ func TestParseStreaming_XMLEmptyBlock(t *testing.T) {
 	input := "<gtms-file name=\"empty.md\">\n</gtms-file>\n<gtms-file name=\"real.md\">\nContent\n</gtms-file>"
 	outputDir := t.TempDir()
 
-	res, err := parseStreamingOutput(strings.NewReader(input), outputDir)
+	res, err := parseStreamingOutput(strings.NewReader(input), outputDir, false)
 	require.NoError(t, err)
 
 	// Empty block is skipped (no content to write), only real.md is written
@@ -330,7 +330,7 @@ func TestParseStreaming_XMLTagCollision(t *testing.T) {
 	input := "<gtms-file name=\"test.html\">\n<div>Some HTML</div>\n</file>\n<file name=\"other\">\n</gtms-file>"
 	outputDir := t.TempDir()
 
-	res, err := parseStreamingOutput(strings.NewReader(input), outputDir)
+	res, err := parseStreamingOutput(strings.NewReader(input), outputDir, false)
 	require.NoError(t, err)
 
 	// 1 file saved (test.html), content includes the inner HTML and </file> tags
@@ -347,7 +347,7 @@ func TestParseStreaming_XMLTagCollision(t *testing.T) {
 func TestParseStreaming_XMLEmptyOutputDir(t *testing.T) {
 	input := "<gtms-file name=\"test.md\">\nContent\n</gtms-file>"
 
-	res, err := parseStreamingOutput(strings.NewReader(input), "")
+	res, err := parseStreamingOutput(strings.NewReader(input), "", false)
 	require.NoError(t, err)
 
 	// All output becomes summary when outputDir is empty
@@ -359,7 +359,7 @@ func TestParseStreaming_XMLWindowsLineEndings(t *testing.T) {
 	input := "<gtms-file name=\"win.txt\">\r\nLine one\r\n</gtms-file>"
 	outputDir := t.TempDir()
 
-	res, err := parseStreamingOutput(strings.NewReader(input), outputDir)
+	res, err := parseStreamingOutput(strings.NewReader(input), outputDir, false)
 	require.NoError(t, err)
 
 	assert.Len(t, res.SavedFiles, 1)
@@ -381,7 +381,7 @@ func TestWriteFileBlock_SkipsDuplicate(t *testing.T) {
 	require.NoError(t, err)
 
 	// Attempt to write same filename with different content
-	path, err := writeFileBlock(outputDir, filename, "new content")
+	path, err := writeFileBlock(outputDir, filename, "new content", false)
 	assert.NoError(t, err)
 	assert.Empty(t, path, "should return empty path for duplicate")
 
@@ -401,7 +401,7 @@ func TestParseStreaming_DuplicateFileSkipped(t *testing.T) {
 	// Stream input tries to write to the same filename
 	input := "<gtms-file name=\"existing.md\">\nNew content\n</gtms-file>\n<gtms-file name=\"fresh.md\">\nFresh content\n</gtms-file>"
 
-	res, err := parseStreamingOutput(strings.NewReader(input), outputDir)
+	res, err := parseStreamingOutput(strings.NewReader(input), outputDir, false)
 	require.NoError(t, err)
 
 	// Only the fresh file should be in savedFiles
@@ -561,12 +561,12 @@ func TestStreamingInvoke_ArtefactUsesRelativePaths(t *testing.T) {
 
 	assert.NotEmpty(t, rc.Artefact, "artefact should be populated from SavedFiles")
 	assert.NotContains(t, rc.Artefact, root, "artefact should not contain absolute project root")
-	assert.Contains(t, rc.Artefact, "test-cases/tc-100.md", "artefact should contain relative path")
-	assert.Contains(t, rc.Artefact, "test-cases/tc-101.md", "artefact should contain both file paths")
+	assert.Contains(t, rc.Artefact, "gtms/cases/tc-100.md", "artefact should contain relative path")
+	assert.Contains(t, rc.Artefact, "gtms/cases/tc-101.md", "artefact should contain both file paths")
 
 	// Verify files were actually written
-	assert.FileExists(t, filepath.Join(root, "test-cases", "tc-100.md"))
-	assert.FileExists(t, filepath.Join(root, "test-cases", "tc-101.md"))
+	assert.FileExists(t, filepath.Join(root, "gtms/cases", "tc-100.md"))
+	assert.FileExists(t, filepath.Join(root, "gtms/cases", "tc-101.md"))
 }
 
 // --- BUG-021: OutputSubdir appended to streaming output directory ---
@@ -685,4 +685,86 @@ printf '<gtms-file name="tc-test4.bats">\ncontent\n</gtms-file>\n'
 
 	// File must land directly in outputDir (no extra subdirectory)
 	assert.FileExists(t, filepath.Join(outputDir, "tc-test4.bats"))
+}
+
+// --- BUG-031: Force flag overwrites existing streamed files ---
+
+func TestWriteFileBlock_ForceOverwritesExisting(t *testing.T) {
+	outputDir := t.TempDir()
+	filename := "existing-file.md"
+
+	// Pre-create the file with known content
+	originalContent := "original content\n"
+	err := os.WriteFile(filepath.Join(outputDir, filename), []byte(originalContent), 0644)
+	require.NoError(t, err)
+
+	// Write with force=true — should overwrite
+	path, err := writeFileBlock(outputDir, filename, "new content", true)
+	assert.NoError(t, err)
+	assert.NotEmpty(t, path, "should return path when force overwrites")
+
+	// Content should be the new content
+	data, err := os.ReadFile(filepath.Join(outputDir, filename))
+	require.NoError(t, err)
+	assert.Equal(t, "new content\n", string(data), "file should be overwritten with new content")
+}
+
+func TestParseStreaming_ForceOverwritesDuplicate(t *testing.T) {
+	outputDir := t.TempDir()
+
+	// Pre-create a file that will collide
+	err := os.WriteFile(filepath.Join(outputDir, "existing.md"), []byte("original\n"), 0644)
+	require.NoError(t, err)
+
+	// Stream input tries to write to the same filename, with force=true
+	input := "<gtms-file name=\"existing.md\">\nNew content\n</gtms-file>\n<gtms-file name=\"fresh.md\">\nFresh content\n</gtms-file>"
+
+	res, err := parseStreamingOutput(strings.NewReader(input), outputDir, true)
+	require.NoError(t, err)
+
+	// Both files should be in savedFiles (force overrides the duplicate guard)
+	assert.Len(t, res.SavedFiles, 2)
+
+	// Existing file should be overwritten
+	data, err := os.ReadFile(filepath.Join(outputDir, "existing.md"))
+	require.NoError(t, err)
+	assert.Equal(t, "New content\n", string(data), "existing file should be overwritten")
+
+	// Fresh file should also be written
+	freshData, err := os.ReadFile(filepath.Join(outputDir, "fresh.md"))
+	require.NoError(t, err)
+	assert.Equal(t, "Fresh content\n", string(freshData))
+}
+
+func TestCleanupExistingOutputByTCID(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create files: two matching the TC ID prefix, one unrelated
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "tc-abc123-old-slug.bats"), []byte("old"), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "tc-abc123-another.Tests.ps1"), []byte("old"), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "tc-other99-unrelated.bats"), []byte("keep"), 0644))
+
+	err := cleanupExistingOutputByTCID(dir, "tc-abc123")
+	require.NoError(t, err)
+
+	// Matching files should be removed
+	assert.NoFileExists(t, filepath.Join(dir, "tc-abc123-old-slug.bats"))
+	assert.NoFileExists(t, filepath.Join(dir, "tc-abc123-another.Tests.ps1"))
+
+	// Unrelated file should be preserved
+	assert.FileExists(t, filepath.Join(dir, "tc-other99-unrelated.bats"))
+}
+
+func TestCleanupExistingOutputByTCID_EmptyDir(t *testing.T) {
+	// Should not error on empty or non-existent dir
+	err := cleanupExistingOutputByTCID("", "tc-abc123")
+	assert.NoError(t, err)
+
+	err = cleanupExistingOutputByTCID(filepath.Join(t.TempDir(), "nonexistent"), "tc-abc123")
+	assert.NoError(t, err)
+}
+
+func TestCleanupExistingOutputByTCID_EmptyTarget(t *testing.T) {
+	err := cleanupExistingOutputByTCID(t.TempDir(), "")
+	assert.NoError(t, err)
 }

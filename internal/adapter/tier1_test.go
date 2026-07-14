@@ -161,7 +161,7 @@ func TestShellEscape(t *testing.T) {
 	}{
 		{"empty string", "", "''"},
 		{"safe value", "JIRA-456", "JIRA-456"},
-		{"safe path", "gtms/cases/foo.md", "gtms/cases/foo.md"},
+		{"safe path", "gtms/test/cases/foo.md", "gtms/test/cases/foo.md"},
 		{"safe with numbers", "task-a3f72b1", "task-a3f72b1"},
 		{"safe with equals", "key=value", "key=value"},
 		{"spaces", "hello world", "'hello world'"},
@@ -708,6 +708,338 @@ func TestPrependPathEntries_EmptyDirsIsNoOp(t *testing.T) {
 	env := []string{"PATH=/usr/bin", "FOO=bar"}
 	out := prependPathEntries(env, nil)
 	assert.Equal(t, env, out)
+}
+
+// ---------------------------------------------------------------------------
+// BUG-154: shell-quoted placeholder detection.
+//
+// Tier 1 substitution passes every value through ShellEscape, producing ONE
+// complete POSIX token. Placeholders must therefore appear BARE in the command.
+// An author who wraps one in shell quotes turns ShellEscape's quotes into literal
+// characters, and the adapter silently writes to the wrong place and exits 0.
+//
+// These are pure string tests (no os/exec, no git), so they deliberately do NOT
+// call skipIfShort and run in the smoke tier.
+// ---------------------------------------------------------------------------
+
+// bug154Vars returns the recognised-placeholder set, derived from the PRODUCTION
+// map (tier1Vars) rather than restating it. A hand-copied key list would silently
+// drift the moment a new placeholder was added to InvokeTier1, and the new one
+// would escape both invocation-time diagnostics without any test going red.
+func bug154Vars() map[string]string {
+	return tier1Vars(&AdapterContext{})
+}
+
+// The two REAL shipped adapter commands, verbatim from gtms.config. These are the
+// highest-value fixtures in this file: both place a bare {prompt_file} AFTER a long
+// double-quoted prose segment containing ESCAPED quotes (\") and BEFORE a trailing
+// empty quoted argument (--allowedTools ""). A naive quote-counting detector reads
+// {prompt_file} as sitting inside quotes and false-warns on GTMS's own correct
+// configuration from the very first run. These two tests fail loudly for any such
+// implementation.
+const (
+	shippedPlaywrightScaffoldCommand = `claude -p "Read the system prompt. Generate a Playwright scaffold spec with test.fixme() for each scenario. Output using <gtms-file name=\"<filename>.spec.ts\"> tags, closed with </gtms-file>. No code fences. Raw text only." --append-system-prompt-file {prompt_file} --allowedTools ""`
+
+	shippedCreateCommandPostMigration = `claude -p "Read the system prompt instructions. Create test cases from the source material. Output each test case using <gtms-file name=\"tc-<8-char-hex>-<short-slug>.md\"> tags, closed with </gtms-file>. YAML frontmatter then markdown body. No code fences. Raw text only." --append-system-prompt-file {prompt_file} --allowedTools ""`
+
+	// The pre-migration create command, which BUG-154 repairs. {tc_name} sits inside
+	// the double-quoted prose. Retained as a positive control: the detector must catch
+	// the exact defect that was live in this repository's own gtms.config.
+	shippedCreateCommandPreMigration = `claude -p "Read the system prompt instructions. Create test cases from the source material. If {tc_name} is non-empty, generate exactly one test case. Use the first ID from the pre-generated list and name the file <first-id>-{tc_name}.md. Set the title: frontmatter to a human-readable form of the name. Do not generate additional test cases. If {tc_name} is empty, generate one test case per distinct behavior using AI-chosen slugs. Output each test case using <gtms-file name=\"tc-<8-char-hex>-<short-slug>.md\"> tags, closed with </gtms-file>. YAML frontmatter then markdown body. No code fences. Raw text only." --append-system-prompt-file {prompt_file} --allowedTools ""`
+)
+
+func TestWarnQuotedPlaceholders(t *testing.T) {
+	tests := []struct {
+		name string
+		tmpl string
+		// wantNamed are placeholders the warning MUST name.
+		wantNamed []string
+		// wantAbsent are strings that must NOT appear anywhere in the output.
+		// Used to prove a bare sibling is never blamed.
+		wantAbsent []string
+		// wantSilent asserts no warning at all is emitted.
+		wantSilent bool
+	}{
+		// --- the positive matrix (tc-33745800) ---
+		{name: "quoted double", tmpl: `sh probe.sh "{reference}"`, wantNamed: []string{"reference"}},
+		{name: "quoted single", tmpl: `sh probe.sh '{reference}'`, wantNamed: []string{"reference"}},
+		{name: "quoted suffix", tmpl: `sh probe.sh "{output_dir}/seen.txt"`, wantNamed: []string{"output_dir"}},
+		{name: "quoted option assignment", tmpl: `sh probe.sh "--output={output_dir}"`, wantNamed: []string{"output_dir"}},
+		{name: "quoted embedded", tmpl: `sh probe.sh "prefix-{reference}-suffix"`, wantNamed: []string{"reference"}},
+
+		// --- bare forms: never warn ---
+		{name: "bare standalone", tmpl: `sh probe.sh {reference}`, wantSilent: true},
+		{name: "bare with suffix", tmpl: `mkdir -p {output_dir} && cat {testcase_file} > {output_dir}/seen.txt`, wantSilent: true},
+		{name: "bare prompt_file", tmpl: `sh capture-prompt.sh {prompt_file}`, wantSilent: true},
+
+		// --- precision guard (tc-ecb517aa): name the quoted one, never the bare sibling ---
+		{
+			name:       "quoted and bare sibling",
+			tmpl:       `sh capture-args.sh "{reference}" {output_dir}`,
+			wantNamed:  []string{"reference"},
+			wantAbsent: []string{"output_dir"},
+		},
+
+		// --- diagnostic boundary (tc-7f54856a): unrecognised token is BUG-076's, not ours ---
+		{name: "unrecognised token in quotes", tmpl: `sh probe.sh "{not_a_var}"`, wantSilent: true},
+		{
+			name:       "unrecognised quoted alongside recognised bare",
+			tmpl:       `sh probe.sh "{not_a_var}" {reference}`,
+			wantSilent: true,
+		},
+
+		// --- empty value is NOT exempt (tc-164a302a). The helper never sees values,
+		//     so this falls out of the design; the row pins it against regression. ---
+		{name: "quoted tc_name (empty at runtime)", tmpl: `sh capture-args.sh "name-is-{tc_name}-end" {prompt_file}`, wantNamed: []string{"tc_name"}},
+
+		// --- dedup: one offending placeholder, one diagnostic ---
+		{name: "same placeholder quoted twice", tmpl: `sh tool "{reference}" "{reference}"`, wantNamed: []string{"reference"}},
+		// Ordering guard: a BARE occurrence before a QUOTED one must still warn. An
+		// implementation that marked a name "seen" on the bare hit would miss this.
+		{name: "bare occurrence before quoted occurrence", tmpl: `sh tool {reference} "{reference}"`, wantNamed: []string{"reference"}},
+
+		// --- COMMAND SUBSTITUTION: suppressed (owner decision). A placeholder inside $()
+		//     is valid and always works. ---
+		{name: "command subst: matched", tmpl: `my-tool --note "$(cat {artefact_file})"`, wantSilent: true},
+		{name: "command subst: nested", tmpl: `"$(echo $(basename {testcase_file}))"`, wantSilent: true},
+		{name: "command subst: already closed", tmpl: `"$(date) {output_dir}"`, wantNamed: []string{"output_dir"}},
+		{name: "command subst: bare outside quotes", tmpl: `$(cat {artefact_file})`, wantSilent: true},
+
+		// --- STILL WARNS: multi-word argument and second shell. These are latently broken
+		//     (they work only while the value is safe-charset). ---
+		{name: "multi-word argument still warns", tmpl: `git commit -m "Automate {testcase}"`, wantNamed: []string{"testcase"}},
+		{name: "nested shell still warns", tmpl: `ssh host "cd {output_dir} && bats ."`, wantNamed: []string{"output_dir"}},
+
+		// --- ambiguity gate: unbalanced quoting stays silent, never guesses ---
+		{name: "unbalanced double quote", tmpl: `sh tool "{reference}`, wantSilent: true},
+		{name: "unbalanced single quote", tmpl: `sh tool '{output_dir}`, wantSilent: true},
+
+		// --- escaping rules ---
+		{name: "backslash outside quotes", tmpl: `C:\tools\my-tool {reference}`, wantSilent: true},
+		{name: "apostrophe inside double-quoted prose", tmpl: `tool -p "Don't fence me in." {reference}`, wantSilent: true},
+		{name: "trailing lone backslash does not panic or unbalance", tmpl: `tool {reference} \`, wantSilent: true},
+
+		// --- multi-byte UTF-8: analyzeQuoting indexes BYTES and templateVarPattern returns
+		//     BYTE offsets, so the two must stay in step. A rune-indexed scanner paired
+		//     with byte offsets would desync here and blame the wrong token. ---
+		{name: "bare placeholder after multi-byte quoted prose", tmpl: `tool --note "cafe unicode ✓ prose" {reference}`, wantSilent: true},
+		{name: "quoted placeholder after multi-byte chars", tmpl: `tool --note "✓ {reference}"`, wantNamed: []string{"reference"}},
+
+		// --- THE FALSE-POSITIVE KILL SWITCHES ---
+		// Synthetic canary (tc-c79c123d): quoted prose + escaped quotes + empty quoted
+		// arg, every placeholder bare.
+		{
+			name:       "quoted literals, escaped quotes, empty quoted arg, bare placeholders",
+			tmpl:       `sh probe.sh --note "Emit using <gtms-file name=\"out.md\"> tags. No fences." --allowedTools "" {prompt_file} {reference}`,
+			wantSilent: true,
+		},
+		// The real shipped adapters. If either of these warns, the fix has started
+		// shouting at GTMS's own correct configuration.
+		{name: "shipped playwright-scaffold automate command (tc-97b7e41c)", tmpl: shippedPlaywrightScaffoldCommand, wantSilent: true},
+		{name: "shipped create command, post-migration (tc-b27c6885)", tmpl: shippedCreateCommandPostMigration, wantSilent: true},
+
+		// Positive control: the same command BEFORE the migration must be caught.
+		{
+			name:       "shipped create command, pre-migration (the live defect)",
+			tmpl:       shippedCreateCommandPreMigration,
+			wantNamed:  []string{"tc_name"},
+			wantAbsent: []string{"prompt_file"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			warnQuotedPlaceholders(&buf, tc.tmpl, bug154Vars())
+			out := buf.String()
+
+			if tc.wantSilent {
+				assert.Empty(t, out, "expected no quoted-placeholder warning, got:\n%s", out)
+				return
+			}
+
+			require.NotEmpty(t, out, "expected a quoted-placeholder warning, got none")
+			// Exactly one diagnostic per invocation (one headline).
+			assert.Equal(t, 1, strings.Count(out, "Shell-quoted template variable(s):"),
+				"expected exactly one diagnostic headline")
+
+			for _, name := range tc.wantNamed {
+				assert.Contains(t, out, "{"+name+"}", "warning should name the quoted placeholder")
+			}
+			// wantAbsent names must not appear in the HEADLINE (the first line),
+			// which is where the diagnostic names the offending placeholder. The
+			// remedy body may mention any placeholder as an instructional example.
+			headline := strings.SplitN(out, "\n", 2)[0]
+			for _, name := range tc.wantAbsent {
+				assert.NotContains(t, headline, "{"+name+"}",
+					"the headline must not blame %q -- it is bare and correct", name)
+			}
+
+			// The guidance must be actionable (tc-33745800 step 3).
+			assert.Contains(t, out, "complete shell token", "warning should explain GTMS already escapes the value")
+			assert.Contains(t, out, "YAML", "warning should distinguish shell quotes from YAML quoting of the scalar")
+
+			// Two-remedy text (owner decision, 2026-07-13): must NOT tell the author to
+			// "keep the quotes"; must offer prompt-template and Tier 2 as the two routes.
+			assert.NotContains(t, out, "Keep your quotes",
+				"struck: this blessed a form that breaks silently the moment a value contains a space")
+			assert.Contains(t, out, "prompt-template",
+				"remedy (a) must name prompt-template for prose interpolation")
+			assert.Contains(t, out, "Tier 2",
+				"remedy (b) must name Tier 2 for shell-argument composition")
+		})
+	}
+}
+
+// TestWarnQuotedPlaceholders_DoesNotListValidVariables pins the precision guard at
+// the level it is most likely to be broken. warnUnrecognizedVars prints a sorted
+// "Valid variables:" line naming EVERY recognised placeholder. If warnQuotedPlaceholders
+// copied that shape, its output would name output_dir even when output_dir is bare and
+// correct -- failing tc-ecb517aa, which requires that no diagnostic mention the bare
+// sibling.
+func TestWarnQuotedPlaceholders_DoesNotListValidVariables(t *testing.T) {
+	var buf bytes.Buffer
+	warnQuotedPlaceholders(&buf, `sh capture-args.sh "{reference}" {output_dir}`, bug154Vars())
+	out := buf.String()
+
+	assert.NotContains(t, out, "Valid variables",
+		"BUG-154 must not print the valid-variable list; that list names every bare placeholder")
+	// Check headline only -- the remedy body may mention any variable as an instructional example.
+	headline := strings.SplitN(out, "\n", 2)[0]
+	assert.NotContains(t, headline, "{output_dir}",
+		"the headline must not blame the bare sibling")
+	assert.Contains(t, headline, "{reference}")
+}
+
+// TestWarnQuotedPlaceholders_NeverDoubleFiresWithBUG076 verifies the two Tier 1
+// diagnostics stay disjoint on a single token (tc-7f54856a). An unrecognised token is
+// never substituted, so it is never escaped, so it cannot collide with author quotes.
+func TestWarnQuotedPlaceholders_NeverDoubleFiresWithBUG076(t *testing.T) {
+	vars := bug154Vars()
+
+	var quoted, unrecognized bytes.Buffer
+	warnQuotedPlaceholders(&quoted, `sh probe.sh "{not_a_var}"`, vars)
+	warnUnrecognizedVars(&unrecognized, `sh probe.sh "{not_a_var}"`, vars)
+
+	assert.Empty(t, quoted.String(), "an unrecognised token must not raise the BUG-154 warning")
+	assert.Contains(t, unrecognized.String(), "not_a_var", "it must still raise the BUG-076 warning")
+
+	// And the mirror image: a recognised quoted placeholder raises BUG-154 only.
+	quoted.Reset()
+	unrecognized.Reset()
+	warnQuotedPlaceholders(&quoted, `sh probe.sh "{reference}"`, vars)
+	warnUnrecognizedVars(&unrecognized, `sh probe.sh "{reference}"`, vars)
+
+	assert.Contains(t, quoted.String(), "{reference}", "a recognised quoted placeholder must raise BUG-154")
+	assert.Empty(t, unrecognized.String(), "and must not raise the BUG-076 warning")
+}
+
+// TestWarnQuotedPlaceholders_WarningTextIsBATSSafe pins two literal constraints that
+// existing acceptance tests depend on. Both are load-bearing:
+//
+//   - tier1-unrecognized-template-vars/tc-6d665b93 asserts
+//     `grep -c 'Unrecognized template variable(s):' == 1` on stderr. If the BUG-154
+//     message contained that literal, the count would become 2 and the test would go red.
+//   - enh-092-create-output-lists-tcs/tc-75f84cf0 does line-POSITION arithmetic over
+//     merged stdout+stderr using `grep -n` for "gtms automate" and a tc-<8hex> id.
+func TestWarnQuotedPlaceholders_WarningTextIsBATSSafe(t *testing.T) {
+	var buf bytes.Buffer
+	warnQuotedPlaceholders(&buf, `sh probe.sh "{reference}"`, bug154Vars())
+	out := buf.String()
+
+	assert.NotContains(t, out, "Unrecognized template variable",
+		"would inflate the BUG-076 warning count asserted by tc-6d665b93")
+	assert.NotContains(t, out, "gtms automate",
+		"would perturb the line-position arithmetic in tc-75f84cf0")
+	assert.NotRegexp(t, `tc-[0-9a-f]{8}`, out,
+		"would perturb the tc-id line lookup in tc-75f84cf0")
+}
+
+// TestQuoteStates_BalancedAndEscapes covers the scanner directly. The backslash rule
+// inside double quotes is the load-bearing detail: without it, both shipped adapter
+// commands false-warn.
+func TestAnalyzeQuoting_BalancedAndEscapes(t *testing.T) {
+	tests := []struct {
+		name         string
+		in           string
+		wantBalanced bool
+	}{
+		{"plain text", `echo hello`, true},
+		{"balanced double", `echo "hi"`, true},
+		{"balanced single", `echo 'hi'`, true},
+		{"empty quoted arg", `tool --allowedTools ""`, true},
+		{"escaped quote inside double", `tool "name=\"x\" done"`, true},
+		{"backslash outside quotes", `C:\tools\x`, true},
+		{"apostrophe inside double quotes is inert", `tool "Don't"`, true},
+		{"unterminated double", `echo "hi`, false},
+		{"unterminated single", `echo 'hi`, false},
+		{"shipped playwright command", shippedPlaywrightScaffoldCommand, true},
+		{"shipped create command", shippedCreateCommandPostMigration, true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, balanced := analyzeQuoting(tc.in)
+			assert.Equal(t, tc.wantBalanced, balanced)
+			assert.Len(t, ctx.states, len(tc.in), "one state per byte")
+		})
+	}
+}
+
+// TestAnalyzeQuoting_PlaceholderPositionInShippedCommands is the sharpest single assertion
+// in this file. In BOTH shipped adapter commands, {prompt_file} sits AFTER a double-quoted
+// prose segment that contains escaped quotes. It must be scanned as OUTSIDE quotes.
+func TestAnalyzeQuoting_PlaceholderPositionInShippedCommands(t *testing.T) {
+	for _, cmd := range []string{shippedPlaywrightScaffoldCommand, shippedCreateCommandPostMigration} {
+		ctx, balanced := analyzeQuoting(cmd)
+		require.True(t, balanced, "shipped command must scan as balanced")
+
+		idx := strings.Index(cmd, "{prompt_file}")
+		require.NotEqual(t, -1, idx, "shipped command should contain {prompt_file}")
+		assert.Equal(t, quoteNone, ctx.states[idx],
+			"{prompt_file} is bare in the shipped command and MUST scan as outside quotes; "+
+				"if this fails, the scanner is mishandling the escaped \\\" sequences in the prose "+
+				"and GTMS will warn about its own correct configuration")
+	}
+
+	// And the pre-migration create command: {tc_name} really is inside the prose.
+	ctx, balanced := analyzeQuoting(shippedCreateCommandPreMigration)
+	require.True(t, balanced)
+	idx := strings.Index(shippedCreateCommandPreMigration, "{tc_name}")
+	require.NotEqual(t, -1, idx)
+	assert.Equal(t, quoteDouble, ctx.states[idx], "{tc_name} sat inside the quoted prose -- that was the defect")
+}
+
+// TestAnalyzeQuoting_CommandSubstitution covers the $(...) region tracking.
+// Owner decision: a placeholder inside $(...) is valid (the inner shell parses GTMS's
+// complete token correctly) and must NOT warn. The suppression must match properly
+// balanced regions, handle nesting, and re-warn when $(...) has closed.
+func TestAnalyzeQuoting_CommandSubstitution(t *testing.T) {
+	tests := []struct {
+		name      string
+		in        string
+		idx       int // byte offset to check for inSubst
+		wantSubst bool
+	}{
+		// matched: placeholder inside $(...) -- the outer quote state is still quoteDouble
+		// but inSubst is true, so warnQuotedPlaceholders suppresses it.
+		{"matched subst", `"$(cat {testcase_file})"`, 7, true},
+		// nested: placeholder inside inner $(...)
+		{"nested subst", `"$(echo $(basename {testcase_file}))"`, 18, true},
+		// already closed: $() before placeholder -- back in outer context, inSubst false
+		{"already closed", `"$(date) {output_dir}"`, 9, false},
+		// bare subst outside quotes
+		{"bare subst outside quotes", `$(cat {artefact_file})`, 6, true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, balanced := analyzeQuoting(tc.in)
+			require.True(t, balanced, "test input must be balanced")
+			require.Less(t, tc.idx, len(ctx.inSubst), "index %d out of range for input len %d", tc.idx, len(tc.in))
+			assert.Equal(t, tc.wantSubst, ctx.inSubst[tc.idx], "inSubst at byte %d", tc.idx)
+		})
+	}
 }
 
 // --- BUG-076: Unrecognized template variable warning tests ---

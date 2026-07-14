@@ -12,25 +12,41 @@ You write requirements. AI writes the tests. GTMS conducts the orchestra.
 
 ## Install
 
-**Go install** (recommended — requires Go 1.21+):
+GTMS ships as a single self-contained binary -- no installer, no runtime, no DLLs. The fastest way to start is to download it and run it from your project folder.
+
+**Run it straight away (no install):**
+
+Download the latest release from [GitHub Releases](https://github.com/aitestmanagement/gtms-cli/releases), unzip it, and drop `gtms.exe` (or `gtms` on macOS/Linux) into your project folder. Run it from there -- no PATH setup required:
+
+```powershell
+.\gtms.exe version    # PowerShell (the Windows default)
+```
+
+```bat
+gtms.exe version      # cmd.exe
+```
+
+```bash
+./gtms version        # macOS / Linux
+```
+
+Every `gtms ...` example in this README works the same way from that folder -- read them as `.\gtms.exe ...` (PowerShell), `gtms.exe ...` (cmd), or `./gtms ...` (macOS/Linux).
+
+On Windows, if SmartScreen shows *"Windows protected your PC"*, click **More info -> Run anyway** -- SmartScreen reputation builds organically across the first few signed releases. See [SIGNING.md](SIGNING.md) for the signing policy and how to verify a binary.
+
+**Prefer to type just `gtms` from anywhere?** Add the folder to your PATH, or install with Go (requires Go 1.21+):
 
 ```bash
 go install github.com/aitestmanagement/gtms-cli/cmd/gtms@latest
 ```
 
-**Download a binary** from [GitHub Releases](https://github.com/aitestmanagement/gtms-cli/releases), extract, and add to your PATH. On Windows, if SmartScreen shows *"Windows protected your PC"*, click **More info → Run anyway** — SmartScreen reputation builds organically across the first few signed releases. See [SIGNING.md](SIGNING.md) for the signing policy and how to verify a binary.
-
-**Verify:**
-
-```bash
-gtms version
-```
+Then the `gtms ...` examples below work verbatim.
 
 ## Quick Start
 
 ```bash
 # Initialise a project (in an existing git repo)
-gtms init --name "My Project" --repo "org/my-repo" --adapter claude
+gtms init --name "My Project" --repo "org/my-repo" --preset manual
 
 # Create test cases from a requirement
 gtms create login --reference REQ-001 --context-file requirements/login.md
@@ -72,12 +88,12 @@ adapters:
   create:
     local-claude:
       mode: sync
-      prompt-template: test-cases/prompts/create-standard.md
+      prompt-template: gtms/test/prompts/create-standard.md   # you author this file; gtms init does not scaffold it
       command: 'claude -p "Create test cases from the source material." --append-system-prompt-file {prompt_file}'
   automate:
     local-claude:
       mode: sync
-      prompt-template: test-automation/prompts/automate-standard.md
+      prompt-template: gtms/automation/prompts/automate-standard.md   # you author this file too
       command: 'claude -p "Generate an automated test from the test case." --append-system-prompt-file {prompt_file}'
   execute:
     local-runner:

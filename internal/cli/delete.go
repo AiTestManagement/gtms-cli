@@ -16,33 +16,37 @@ import (
 func newDeleteCmd() *cobra.Command {
 	var keepSpec bool
 	var recursive bool
+	var localDryRun bool
 
 	cmd := &cobra.Command{
-		Use:   "delete [test-case-id | folder]",
-		Short: "Delete test case artifacts",
-		Long: `Delete all pipeline artifacts for a test case or folder of test cases.
+		Use:   "delete <test-case-id | folder>",
+		Short: "Delete test case artefacts",
+		Long: `Delete all pipeline artefacts for a test case or folder of test cases.
 
 Single test case:
-  gtms delete tc-a1b2c3d0                — delete all artifacts for this test case
-  gtms delete tc-a1b2c3d0 --keep-spec    — keep the spec, delete pipeline artifacts only
-  gtms delete tc-a1b2c3d0 --dry-run      — preview what would be deleted
+  gtms delete tc-a1b2c3d0                -- delete all artefacts for this test case
+  gtms delete tc-a1b2c3d0 --keep-spec    -- keep the spec, delete pipeline artefacts only
+  gtms delete tc-a1b2c3d0 --dry-run      -- preview what would be deleted
 
 Folder (bulk mode):
-  gtms delete my-feature                  — delete all test cases in gtms/cases/my-feature/
-  gtms delete my-feature -r               — include test cases from subdirectories
-  gtms delete my-feature --keep-spec      — keep specs, delete pipeline artifacts only
+  gtms delete my-feature                  -- delete all test cases in gtms/test/cases/my-feature/
+  gtms delete my-feature -r               -- include test cases from subdirectories
+  gtms delete my-feature --keep-spec      -- keep specs, delete pipeline artefacts only
 
-Artifact types deleted:
-  - Test case specs (gtms/cases/**/tc-{id}-*.md)
+Artefact types deleted:
+  - Test case specs (gtms/test/cases/**/tc-{id}-*.md or tc-{id}.md)
   - Wiring records (gtms/automation/wiring/tc-{id}--*.wiring.yaml)
   - Manual records (gtms/manual/records/tc-{id}--manual.result.yaml)
-  - Test scripts (discovered from wiring record artefact fields)
+  - Test artefacts (discovered from wiring and manual record artefact fields)
+  - Result files (discovered from record executed_artefact fields)
   - Task files (gtms/tasks/*/task-*-{command}-tc-{id}.md)
   - Result contracts (.gtms/results/*.handoff.yaml)`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			root := GetProjectRoot()
-			dry := IsDryRun()
+			// BUG-113: honour both root-position (gtms --dry-run delete)
+			// and local (gtms delete --dry-run) flag sources.
+			dry := IsDryRun() || localDryRun
 
 			arg := strings.ToLower(args[0])
 			arg = normaliseTarget(arg)
@@ -67,7 +71,7 @@ Artifact types deleted:
 			}
 
 			if !IsBulkFolder(root, folder) {
-				msg := fmt.Sprintf("No test cases folder found at gtms/cases/%s/.", folder)
+				msg := fmt.Sprintf("No test cases folder found at gtms/test/cases/%s/.", folder)
 				output.Errorf(msg, "Check the folder name and try again.")
 				return output.AsDisplayed(fmt.Errorf(msg))
 			}
@@ -77,8 +81,9 @@ Artifact types deleted:
 		},
 	}
 
-	cmd.Flags().BoolVar(&keepSpec, "keep-spec", false, "Preserve test case specs, delete only pipeline artifacts")
+	cmd.Flags().BoolVar(&keepSpec, "keep-spec", false, "Preserve test case specs, delete only pipeline artefacts")
 	cmd.Flags().BoolVarP(&recursive, "recursive", "r", false, "Include test cases from subdirectories")
+	cmd.Flags().BoolVar(&localDryRun, "dry-run", false, "Preview what would be deleted without executing")
 
 	return cmd
 }
@@ -104,7 +109,7 @@ func runDelete(w io.Writer, projectRoot string, scope *reader.ScopeInfo, tcID st
 	return nil
 }
 
-// formatDeleteOutput prints the delete result, grouped by artifact type.
+// formatDeleteOutput prints the delete result, grouped by artefact type.
 func formatDeleteOutput(w io.Writer, result *reader.DeleteResult, projectRoot string, dryRun bool) {
 	total := result.TotalFiles()
 
@@ -130,7 +135,7 @@ func formatDeleteOutput(w io.Writer, result *reader.DeleteResult, projectRoot st
 		fmt.Fprintf(w, "  Automation records:  %d\n", result.AutomationRecords)
 	}
 	if result.TestScripts > 0 {
-		fmt.Fprintf(w, "  Test scripts:        %d\n", result.TestScripts)
+		fmt.Fprintf(w, "  Test artefacts:      %d\n", result.TestScripts)
 	}
 	if result.TaskFiles > 0 {
 		fmt.Fprintf(w, "  Task files:          %d\n", result.TaskFiles)

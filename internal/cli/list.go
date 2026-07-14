@@ -27,14 +27,17 @@ func effectiveDefault(cfg *config.Config, command string) (string, bool) {
 }
 
 // adapterEntry holds one row for the adapters table/JSON output.
+// ENH-160: Configured field distinguishes "set in defaults.X but not a no-flag
+// runtime default" (execute on manual preset) from a true runtime default.
 type adapterEntry struct {
-	Command   string `json:"command"`
-	Name      string `json:"name"`
-	Tier      int    `json:"tier"`
-	Tool      string `json:"tool"`
-	Framework string `json:"framework"`
-	Mode      string `json:"mode"`
-	Default   bool   `json:"default"`
+	Command    string `json:"command"`
+	Name       string `json:"name"`
+	Tier       int    `json:"tier"`
+	Tool       string `json:"tool"`
+	Framework  string `json:"framework"`
+	Mode       string `json:"mode"`
+	Default    bool   `json:"default"`
+	Configured bool   `json:"configured"`
 }
 
 // frameworkEntry holds one row for the frameworks table/JSON output.
@@ -178,17 +181,22 @@ func buildAdapterEntries(cfg *config.Config) []adapterEntry {
 	}
 
 	// Mark the DEFAULT column in a single pass so config-defined and built-in
-	// rows are treated symmetrically. For each non-hint entry, set Default=true
-	// when its name matches the effective default for its command. The effective
-	// default is cfg.Defaults[command] if present, else the resolver's implicit
-	// built-in default (e.g. prime -> manual-prime).
+	// rows are treated symmetrically. For each non-hint entry, check whether
+	// its name matches the effective default for its command.
+	//
+	// ENH-163: Mode 3 execute adapters named in defaults.execute are now true
+	// runtime defaults (no-flag `gtms execute` reaches them via the
+	// defaults.execute bypass). The ENH-160 Configured=true special case is
+	// retired.
 	for i := range entries {
 		if entries[i].Tier == hintTierSentinel {
 			continue
 		}
-		if defaultName, ok := effectiveDefault(cfg, entries[i].Command); ok && entries[i].Name == defaultName {
-			entries[i].Default = true
+		defaultName, ok := effectiveDefault(cfg, entries[i].Command)
+		if !ok || entries[i].Name != defaultName {
+			continue
 		}
+		entries[i].Default = true
 	}
 
 	// Sort: by command order, then alphabetical by name
@@ -205,7 +213,7 @@ func buildAdapterEntries(cfg *config.Config) []adapterEntry {
 }
 
 // buildFrameworkEntries groups adapter entries by framework.
-// Hint rows (empty-bucket placeholders) are skipped — they represent absence,
+// Hint rows (empty-bucket placeholders) are skipped -- they represent absence,
 // not real adapters.
 func buildFrameworkEntries(entries []adapterEntry) []frameworkEntry {
 	groups := make(map[string][]string)
@@ -255,6 +263,19 @@ func truncateTool(s string, max int) string {
 	return s[:max-3] + "..."
 }
 
+// defaultLabel returns the table label for the DEFAULT column.
+// ENH-160: "configured" for execute adapters that are set in defaults but
+// require --adapter explicitly (wiring-first design).
+func defaultLabel(e adapterEntry) string {
+	if e.Default {
+		return "*"
+	}
+	if e.Configured {
+		return "configured"
+	}
+	return ""
+}
+
 // renderAdaptersTable writes the adapters table to w.
 func renderAdaptersTable(w io.Writer, entries []adapterEntry, showTools bool) {
 	if showTools {
@@ -268,10 +289,6 @@ func renderAdaptersTable(w io.Writer, entries []adapterEntry, showTools bool) {
 			if fw == "" {
 				fw = "\u2014"
 			}
-			def := ""
-			if e.Default {
-				def = "*"
-			}
 			tbl.AddRow(
 				e.Command,
 				e.Name,
@@ -279,7 +296,7 @@ func renderAdaptersTable(w io.Writer, entries []adapterEntry, showTools bool) {
 				truncateTool(e.Tool, toolTruncateMax),
 				fw,
 				e.Mode,
-				def,
+				defaultLabel(e),
 			)
 		}
 		tbl.Render(w)
@@ -294,17 +311,13 @@ func renderAdaptersTable(w io.Writer, entries []adapterEntry, showTools bool) {
 			if fw == "" {
 				fw = "\u2014"
 			}
-			def := ""
-			if e.Default {
-				def = "*"
-			}
 			tbl.AddRow(
 				e.Command,
 				e.Name,
 				fmt.Sprintf("%d", e.Tier),
 				fw,
 				e.Mode,
-				def,
+				defaultLabel(e),
 			)
 		}
 		tbl.Render(w)
@@ -327,20 +340,21 @@ func newListCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "list <adapters|frameworks|all>",
 		Short: "List configured adapters and frameworks",
-		Long: `Show adapters and frameworks configured in gtms.config.
+		Long: `Show the adapters and frameworks registered for this project: entries from
+gtms.config plus the shipped built-in adapters.
 
 Use 'list adapters' for a table of all registered adapters with their tier,
 framework, mode, and default status. Use 'list frameworks' to see which
 adapters support each test framework.
 
-  gtms list adapters             — table of all adapters
-  gtms list adapters --show-tools — include the tool/command column
-  gtms list adapters --json      — machine-readable JSON output
-  gtms list frameworks           — adapters grouped by framework
-  gtms list all                  — both views
+  gtms list adapters             -- table of all adapters
+  gtms list adapters --show-tools -- include the tool/command column
+  gtms list adapters --json      -- machine-readable JSON output
+  gtms list frameworks           -- adapters grouped by framework
+  gtms list all                  -- both views
 
-See USER-GUIDE.md § "Adapters and tiers" for details.`,
-		// No RunE on parent — requires a subcommand
+See USER-GUIDE.md section "gtms list" for details.`,
+		// No RunE on parent -- requires a subcommand
 	}
 
 	cmd.PersistentFlags().BoolVar(&jsonOut, "json", false, "Output as JSON")
@@ -357,9 +371,10 @@ func newListAdaptersCmd(jsonOut *bool, showTools *bool) *cobra.Command {
 	return &cobra.Command{
 		Use:   "adapters",
 		Short: "List all configured adapters",
-		Long: `Render a table of every adapter registered in gtms.config, one row per
-adapter, grouped by command bucket (create, automate, execute) and then by
-the built-in readers (gaps, map, status, triage).
+		Long: `Render a table of every adapter available to the project -- gtms.config
+entries plus the shipped Tier 0 built-ins -- one row per adapter, grouped by
+command (create, automate, execute, prime) and then by the built-in readers
+(gaps, map, status, triage).
 
 Columns: COMMAND, NAME, TIER, FRAMEWORK, MODE, DEFAULT. A star in the
 DEFAULT column marks the adapter that resolves when no --adapter flag is
@@ -367,17 +382,18 @@ passed. An em-dash in FRAMEWORK means the adapter did not set one.
 
 Flags:
   --show-tools   Insert a TOOL column containing the tier-1 command
-                 template or tier-2 script path. The TOOL column is
-                 hidden by default because it is often long; pair with
-                 --json for full, untruncated values.
+                 template or tier-2 script path ((built-in) for Tier 0
+                 rows). The TOOL column is hidden by default because it
+                 is often long; pair with --json for full, untruncated
+                 values.
   --json         Emit a machine-readable array of adapter records. The
                  "tool" field is always present on every record.
 
-Empty pipeline buckets are rendered with a hint row ("no adapters
-configured -- run gtms init --preset bats") instead of being silently
-omitted.
+Pipeline commands (create, automate, execute) with no configured adapter
+are rendered with a hint row pointing at gtms init --preset bats instead of
+being silently omitted.
 
-See USER-GUIDE.md § "Adapters and tiers" for the full adapter model.`,
+See USER-GUIDE.md section "What a configured adapter is" for the full adapter model.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg := GetConfig()
@@ -391,16 +407,16 @@ func newListFrameworksCmd(jsonOut *bool) *cobra.Command {
 	return &cobra.Command{
 		Use:   "frameworks",
 		Short: "List adapters grouped by framework",
-		Long: `Group registered adapters by their declared framework (bats, pester,
-playwright, etc.) so you can see at a glance which frameworks the
+		Long: `Group registered adapters by their declared framework (bats, playwright,
+manual, etc.) so you can see at a glance which frameworks the
 project supports and which adapters implement each one.
 
 Adapters that do not declare a framework land under "(none)", rendered
 last. Use --json for a machine-readable array of framework records,
-each containing the bucket:name references of the adapters that belong
-to it.
+each containing the command:name references (for example create:agent-create)
+of the adapters that belong to it.
 
-See USER-GUIDE.md § "Adapters and tiers" for the full adapter model.`,
+See USER-GUIDE.md section "What a configured adapter is" for the full adapter model.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg := GetConfig()
@@ -425,7 +441,7 @@ Flags:
                  behaviour as 'gtms list adapters --show-tools').
   --json         Emit the combined JSON document.
 
-See USER-GUIDE.md § "Adapters and tiers" for the full adapter model.`,
+See USER-GUIDE.md section "What a configured adapter is" for the full adapter model.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg := GetConfig()

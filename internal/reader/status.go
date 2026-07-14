@@ -64,7 +64,7 @@ func PipelineStatus(projectRoot string, scope *ScopeInfo, defaultFramework strin
 }
 
 // PipelineFolderSummary returns aggregate pipeline counts per folder.
-// It scans all test cases recursively and groups by the immediate subfolder under gtms/cases/.
+// It scans all test cases recursively and groups by the immediate subfolder under gtms/test/cases/.
 //
 // ENH-089: also populates Passing/Failing/Errored/InFlight for the icon-forward
 // renderer. InFlight is sourced from active execute task files (gtms/tasks/in-progress/);
@@ -108,7 +108,7 @@ func PipelineFolderSummary(projectRoot string, defaultFramework string) ([]Folde
 		}
 	}
 
-	tcDir := layout.CasesDir(projectRoot)
+	tcDir := layout.TestCasesDir(projectRoot)
 
 	// Group test cases by folder
 	type folderAccum struct {
@@ -225,8 +225,8 @@ func PipelineFolderSummary(projectRoot string, defaultFramework string) ([]Folde
 	return entries, nil
 }
 
-// deriveFolderName extracts the immediate subfolder name under gtms/cases/.
-// Returns "(root)" for test cases directly in gtms/cases/ with no subfolder.
+// deriveFolderName extracts the immediate subfolder name under gtms/test/cases/.
+// Returns "(root)" for test cases directly in gtms/test/cases/ with no subfolder.
 func deriveFolderName(tcDir, sourceFile string) string {
 	dir := filepath.Dir(sourceFile)
 	rel, err := filepath.Rel(tcDir, dir)
@@ -354,7 +354,7 @@ func PipelineDetail(projectRoot, testCaseID, defaultFramework string, strictFram
 }
 
 // scanTestCases reads test case markdown files.
-// When scope is nil, it recursively scans all of gtms/cases/ (backward compatible).
+// When scope is nil, it recursively scans all of gtms/test/cases/ (backward compatible).
 // When scope is non-nil and Recursive is true, it uses filepath.Walk from scope.ScanDir.
 // When scope is non-nil and Recursive is false, it uses os.ReadDir for shallow scanning.
 func scanTestCases(projectRoot string, scope *ScopeInfo) ([]testCaseFrontmatter, error) {
@@ -370,9 +370,9 @@ func scanTestCases(projectRoot string, scope *ScopeInfo) ([]testCaseFrontmatter,
 	return scanTestCasesShallow(scope.ScanDir)
 }
 
-// scanTestCasesAll recursively scans all test case files under gtms/cases/.
+// scanTestCasesAll recursively scans all test case files under gtms/test/cases/.
 func scanTestCasesAll(projectRoot string) ([]testCaseFrontmatter, error) {
-	tcDir := layout.CasesDir(projectRoot)
+	tcDir := layout.TestCasesDir(projectRoot)
 	return scanTestCasesRecursive(tcDir)
 }
 

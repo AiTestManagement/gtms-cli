@@ -176,9 +176,9 @@ func TestResolveArtefact_EmptyStoredPathTriggersSearch(t *testing.T) {
 func TestResolveArtefact_SkipsSentinelParent_Default(t *testing.T) {
 	dir := t.TempDir()
 
-	// Place a matching file inside the default parent dir ("gtms/cases/...").
+	// Place a matching file inside the default parent dir ("gtms/test/cases/...").
 	// The resolver must exclude the top-level "gtms/" directory.
-	target := filepath.Join(dir, "gtms", "cases", "foo")
+	target := filepath.Join(dir, "gtms", "test", "cases", "foo")
 	require.NoError(t, os.MkdirAll(target, 0755))
 	require.NoError(t, os.WriteFile(
 		filepath.Join(target, "tc-abc12345-test.bats"),
@@ -197,11 +197,11 @@ func TestResolveArtefact_SkipsSentinelParent_Renamed(t *testing.T) {
 	orig := layout.Current()
 	layout.InitFromParent("testing")
 	t.Cleanup(func() {
-		layout.InitFromParent(filepath.Dir(orig.Cases))
+		layout.InitFromParent(orig.Parent)
 	})
 
 	// Place a matching file inside the renamed parent dir.
-	target := filepath.Join(dir, "testing", "cases", "foo")
+	target := filepath.Join(dir, "testing", "test", "cases", "foo")
 	require.NoError(t, os.MkdirAll(target, 0755))
 	require.NoError(t, os.WriteFile(
 		filepath.Join(target, "tc-abc12345-test.bats"),
@@ -401,7 +401,7 @@ func TestHashFile_ErrorOnMissing(t *testing.T) {
 
 func TestResolveTestCaseSpec_TopLevel(t *testing.T) {
 	root := t.TempDir()
-	casesDir := filepath.Join(root, "gtms", "cases")
+	casesDir := filepath.Join(root, "gtms", "test", "cases")
 	require.NoError(t, os.MkdirAll(casesDir, 0755))
 	require.NoError(t, os.WriteFile(
 		filepath.Join(casesDir, "tc-aaa11111-some-test.md"),
@@ -409,12 +409,12 @@ func TestResolveTestCaseSpec_TopLevel(t *testing.T) {
 
 	path, err := ResolveTestCaseSpec(root, "tc-aaa11111")
 	require.NoError(t, err)
-	assert.Equal(t, "gtms/cases/tc-aaa11111-some-test.md", path)
+	assert.Equal(t, "gtms/test/cases/tc-aaa11111-some-test.md", path)
 }
 
 func TestResolveTestCaseSpec_Subfolder(t *testing.T) {
 	root := t.TempDir()
-	subDir := filepath.Join(root, "gtms", "cases", "my-feature")
+	subDir := filepath.Join(root, "gtms", "test", "cases", "my-feature")
 	require.NoError(t, os.MkdirAll(subDir, 0755))
 	require.NoError(t, os.WriteFile(
 		filepath.Join(subDir, "tc-bbb22222-another-test.md"),
@@ -422,12 +422,12 @@ func TestResolveTestCaseSpec_Subfolder(t *testing.T) {
 
 	path, err := ResolveTestCaseSpec(root, "tc-bbb22222")
 	require.NoError(t, err)
-	assert.Equal(t, "gtms/cases/my-feature/tc-bbb22222-another-test.md", path)
+	assert.Equal(t, "gtms/test/cases/my-feature/tc-bbb22222-another-test.md", path)
 }
 
 func TestResolveTestCaseSpec_NotFound(t *testing.T) {
 	root := t.TempDir()
-	casesDir := filepath.Join(root, "gtms", "cases")
+	casesDir := filepath.Join(root, "gtms", "test", "cases")
 	require.NoError(t, os.MkdirAll(casesDir, 0755))
 
 	_, err := ResolveTestCaseSpec(root, "tc-nonexist")

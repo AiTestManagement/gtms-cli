@@ -265,7 +265,7 @@ func (r *GapReport) TotalGaps() int {
 }
 
 // GapsFolderSummary returns aggregate gap counts per folder.
-// It scans all test cases recursively and groups by the immediate subfolder under gtms/cases/.
+// It scans all test cases recursively and groups by the immediate subfolder under gtms/test/cases/.
 // CON-023 / ENH-146: spec-file scanning was retired alongside the SpecButNoRecord
 // category, and "not run here" is no longer counted as a gap. Folder summary
 // counts come exclusively from wiring records overlaid with terminal result
@@ -281,7 +281,7 @@ func GapsFolderSummary(projectRoot string, defaultFramework string) ([]GapsFolde
 		return nil, fmt.Errorf("scanning automation records: %w", err)
 	}
 
-	tcDir := layout.CasesDir(projectRoot)
+	tcDir := layout.TestCasesDir(projectRoot)
 
 	type folderAccum struct {
 		created      int

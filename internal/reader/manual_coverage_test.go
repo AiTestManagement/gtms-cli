@@ -153,7 +153,7 @@ func TestPipelineFolderSummary_ManualCounts(t *testing.T) {
 	setupMinimalProject(t, root)
 
 	// Create 3 TCs in a folder: one prepared, one recorded, one no-manual
-	folder := filepath.Join(root, "gtms", "cases", "myfolder")
+	folder := filepath.Join(root, "gtms", "test", "cases", "myfolder")
 	require.NoError(t, os.MkdirAll(folder, 0755))
 
 	createTestCaseInDir(t, folder, "tc-mf000001", "Prepared manual")
@@ -222,7 +222,7 @@ func TestGapsFolderSummary_ManualCounts(t *testing.T) {
 	root := t.TempDir()
 	setupMinimalProject(t, root)
 
-	folder := filepath.Join(root, "gtms", "cases", "gapfolder")
+	folder := filepath.Join(root, "gtms", "test", "cases", "gapfolder")
 	require.NoError(t, os.MkdirAll(folder, 0755))
 
 	createTestCaseInDir(t, folder, "tc-gf000001", "Prepared")
@@ -275,7 +275,7 @@ func TestMap_ManualCoverage(t *testing.T) {
 func setupMinimalProject(t *testing.T, root string) {
 	t.Helper()
 	dirs := []string{
-		filepath.Join(root, "gtms", "cases"),
+		filepath.Join(root, "gtms", "test", "cases"),
 		filepath.Join(root, "gtms", "automation", "records"),
 		filepath.Join(root, "gtms", "tasks", "pending"),
 		filepath.Join(root, "gtms", "tasks", "in-progress"),
@@ -289,7 +289,7 @@ func setupMinimalProject(t *testing.T, root string) {
 
 func createTestCase(t *testing.T, root, id, title string) {
 	t.Helper()
-	dir := filepath.Join(root, "gtms", "cases")
+	dir := filepath.Join(root, "gtms", "test", "cases")
 	createTestCaseInDir(t, dir, id, title)
 }
 

@@ -20,6 +20,29 @@ import (
 	"github.com/aitestmanagement/gtms-cli/internal/task"
 )
 
+// defaultSyncTimeout is the timeout applied to sync adapter invocations when no
+// per-adapter timeout: is configured. Exported as a package-level var so tests
+// can override it to avoid waiting 30 minutes (follows the lookPath pattern).
+var defaultSyncTimeout = 30 * time.Minute
+
+// defaultSyncTimeoutEnvVar names the runtime override for the default sync
+// timeout. Acceptance tests (BATS) set this so they don't have to wait for
+// the production 30-minute default to fire (BUG-131 spec testability note).
+// Invalid or empty values are ignored and the package default is used.
+const defaultSyncTimeoutEnvVar = "GTMS_DEFAULT_EXECUTE_TIMEOUT"
+
+// effectiveDefaultSyncTimeout returns the runtime default sync timeout,
+// honouring the GTMS_DEFAULT_EXECUTE_TIMEOUT env-var override when present
+// and parseable. Falls back to defaultSyncTimeout on any error or absence.
+func effectiveDefaultSyncTimeout() time.Duration {
+	if v := strings.TrimSpace(os.Getenv(defaultSyncTimeoutEnvVar)); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			return d
+		}
+	}
+	return defaultSyncTimeout
+}
+
 // InvokeResult holds the outcome of an Invoke call, used by CLI for output formatting.
 type InvokeResult struct {
 	TaskID        string
@@ -50,7 +73,9 @@ func Invoke(ctx context.Context, cfg *config.Config, resolved *ResolvedAdapter, 
 
 // InvokeWithRoot is like Invoke but accepts an explicit project root (useful for testing).
 func InvokeWithRoot(ctx context.Context, projectRoot string, cfg *config.Config, resolved *ResolvedAdapter, target string, flags CommandFlags) (*InvokeResult, error) {
-	// Apply timeout from adapter config
+	// Apply timeout: per-adapter config overrides the default; sync adapters
+	// always get a deadline (BUG-131). Async adapters return immediately so
+	// no default is needed.
 	if resolved.Config.Timeout != "" {
 		d, err := time.ParseDuration(resolved.Config.Timeout)
 		if err != nil {
@@ -58,6 +83,10 @@ func InvokeWithRoot(ctx context.Context, projectRoot string, cfg *config.Config,
 		}
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, d)
+		defer cancel()
+	} else if resolved.Mode == "sync" {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, effectiveDefaultSyncTimeout())
 		defer cancel()
 	}
 
@@ -194,6 +223,7 @@ func InvokeWithRoot(ctx context.Context, projectRoot string, cfg *config.Config,
 			"guides":           ac.Guides,
 			"environment":      ac.Environment,
 			"tc_ids":           ac.TestCaseIDs,
+			"tc_name":          ac.TestCaseName,
 		}
 
 		assembled, err := prompt.Assemble(tmplPath, promptVars)
@@ -316,7 +346,7 @@ func InvokeWithRoot(ctx context.Context, projectRoot string, cfg *config.Config,
 		// Adapter invocation failed at the system level
 		summary := fmt.Sprintf("Adapter invocation failed: %s", err.Error())
 		if ctx.Err() == context.DeadlineExceeded {
-			summary = fmt.Sprintf("adapter timed out after %s", resolved.Config.Timeout)
+			summary = fmt.Sprintf("adapter timed out after %s", effectiveTimeoutStr(resolved))
 		} else if ctx.Err() == context.Canceled {
 			summary = "adapter cancelled"
 		}
@@ -335,7 +365,7 @@ func InvokeWithRoot(ctx context.Context, projectRoot string, cfg *config.Config,
 	if invResult != nil && ctx.Err() != nil {
 		summary := "adapter cancelled"
 		if ctx.Err() == context.DeadlineExceeded {
-			summary = fmt.Sprintf("adapter timed out after %s", resolved.Config.Timeout)
+			summary = fmt.Sprintf("adapter timed out after %s", effectiveTimeoutStr(resolved))
 		}
 		tf.Error = summary
 		_ = task.Move(projectRoot, tf, "error")
@@ -445,6 +475,18 @@ func buildAdapterContext(projectRoot, taskID string, resolved *ResolvedAdapter, 
 		Environment:    flags.Environment,
 	}
 
+	// ENH-168: resolve the directory the adapter (Tier 1/2) runs in. Defaults to the
+	// workDir base (project root today; the git worktree when that lands). An explicit
+	// working-dir is joined on top. Both tiers read ctx.RunDir for cmd.Dir. Tier 0
+	// built-ins exec nothing, so RunDir is harmless for them (and config load warns when
+	// working-dir is set on a built-in). Do NOT mutate ctx.TestCaseFile / ctx.ArtefactFile
+	// here -- those carriers are absolutized for the adapter at the tier1/tier2 boundary
+	// only, because Tier-0 BuiltinAutomate consumes ctx.TestCaseFile as project-relative.
+	ctx.RunDir = workDir
+	if resolved.Config.WorkingDir != "" {
+		ctx.RunDir = filepath.Join(workDir, filepath.FromSlash(resolved.Config.WorkingDir))
+	}
+
 	// Set command-specific context fields
 	switch resolved.Command {
 	case "create":
@@ -453,7 +495,7 @@ func buildAdapterContext(projectRoot, taskID string, resolved *ResolvedAdapter, 
 		if resolved.Config.OutputDir != "" {
 			ctx.OutputDir = filepath.Join(projectRoot, resolved.Config.OutputDir)
 		} else {
-			ctx.OutputDir = filepath.Join(layout.CasesDir(projectRoot), flags.Folder)
+			ctx.OutputDir = filepath.Join(layout.TestCasesDir(projectRoot), flags.Folder)
 		}
 		// Generate batch of pre-generated test case IDs for adapter consumption (ENH-042)
 		tcIDs := make([]string, 20)
@@ -461,10 +503,13 @@ func buildAdapterContext(projectRoot, taskID string, resolved *ResolvedAdapter, 
 			tcIDs[i] = "tc-" + id.New()
 		}
 		ctx.TestCaseIDs = strings.Join(tcIDs, ",")
+		// ENH-161: Populate template path for create adapters (role-specific).
+		ctx.TemplateFile = ResolveTemplatePath(projectRoot, "create", resolved.Name)
 	case "automate":
 		ctx.TestCase = target
 		if resolved.Config.OutputDir != "" {
 			ctx.OutputDir = filepath.Join(projectRoot, resolved.Config.OutputDir)
+			ctx.OutputDirConfigured = true // BUG-125: signal the Tier-0 built-in to honour it
 		} else {
 			ctx.OutputDir = filepath.Join(layout.SpecsDir(projectRoot), resolved.Name)
 		}
@@ -481,7 +526,8 @@ func buildAdapterContext(projectRoot, taskID string, resolved *ResolvedAdapter, 
 			if hash, hashErr := pipeline.HashFile(absTC); hashErr == nil {
 				ctx.TestCaseHash = hash
 			}
-			ctx.TemplateFile = filepath.Join(layout.ManualTemplatesDir(projectRoot), "manual-result.template.yaml")
+			// ENH-161: role-specific template path derived from adapter name.
+			ctx.TemplateFile = ResolveTemplatePath(projectRoot, "prime", resolved.Name)
 			ctx.OutputFile = filepath.Join(layout.ManualRecordsDir(projectRoot), target+"--manual.result.yaml")
 			// Manual-prime writes to gtms/manual/records/, not the BATS/automate
 			// output dir. Point the post-run scanner there so the CLI headline
@@ -529,7 +575,8 @@ func buildAdapterContext(projectRoot, taskID string, resolved *ResolvedAdapter, 
 			if hash, hashErr := pipeline.HashFile(absTC); hashErr == nil {
 				ctx.TestCaseHash = hash
 			}
-			ctx.TemplateFile = filepath.Join(layout.ManualTemplatesDir(projectRoot), "manual-result.template.yaml")
+			// ENH-161: role-specific template path derived from adapter name.
+			ctx.TemplateFile = ResolveTemplatePath(projectRoot, "prime", resolved.Name)
 			ctx.OutputFile = filepath.Join(layout.ManualRecordsDir(projectRoot), target+"--manual.result.yaml")
 			ctx.OutputDir = layout.ManualRecordsDir(projectRoot)
 			ctx.OutputSubdir = ""
@@ -582,7 +629,7 @@ func buildAdapterContext(projectRoot, taskID string, resolved *ResolvedAdapter, 
 		if resolved.Config.OutputDir != "" {
 			ctx.OutputDir = filepath.Join(projectRoot, resolved.Config.OutputDir)
 		} else {
-			ctx.OutputDir = layout.CasesDir(projectRoot)
+			ctx.OutputDir = layout.TestCasesDir(projectRoot)
 		}
 		// Generate batch of pre-generated test case IDs for unknown commands (same as create)
 		defIDs := make([]string, 20)
@@ -855,6 +902,13 @@ func handleSyncResult(ctx context.Context, projectRoot string, cfg *config.Confi
 
 		contractStatus := "complete"
 		contractResult := "pass" // ENH-130: exit 0 = adapter ran successfully, test passed
+		// ENH-160: Tier 0 built-in execute adapters (BuiltinExecute) carry
+		// the user-authored test outcome through ResultOverride. Without
+		// this, every Tier 0 manual-execute invocation would collapse to
+		// `pass` regardless of the value in the manual result file.
+		if invResult.ResultOverride != "" {
+			contractResult = invResult.ResultOverride
+		}
 
 		updates := map[string]interface{}{
 			"status":    contractStatus,
@@ -897,6 +951,23 @@ func handleSyncResult(ctx context.Context, projectRoot string, cfg *config.Confi
 				artifactCount = len(scanned)
 				artifactPaths = scanned
 			}
+		}
+
+		// ENH-160: Tier 0 built-in adapters carry the artefact path through
+		// ArtefactOverride. Without this, BuiltinExecute on the manual
+		// path loses the filled manual result file from the handoff
+		// contract because SavedFiles is empty and the manual pipeline
+		// has no output-dir scan target. Override wins over SavedFiles
+		// and the scan fallback because Tier 0 knows its artefact
+		// authoritatively.
+		if invResult.ArtefactOverride != "" {
+			artefactRel := invResult.ArtefactOverride
+			if rel, err := filepath.Rel(projectRoot, invResult.ArtefactOverride); err == nil {
+				artefactRel = filepath.ToSlash(rel)
+			}
+			updates["artefact"] = artefactRel
+			artifactCount = 1
+			artifactPaths = []string{artefactRel}
 		}
 
 		// Collect warnings
@@ -1075,6 +1146,16 @@ func handleSyncResult(ctx context.Context, projectRoot string, cfg *config.Confi
 	}, nil
 }
 
+// effectiveTimeoutStr returns the human-readable timeout duration used for
+// error messages. If the adapter has an explicit timeout: configured, that
+// string is returned as-is. Otherwise the default sync timeout is formatted.
+func effectiveTimeoutStr(resolved *ResolvedAdapter) string {
+	if resolved.Config.Timeout != "" {
+		return resolved.Config.Timeout
+	}
+	return effectiveDefaultSyncTimeout().String()
+}
+
 // containsInt reports whether the integer needle is present in haystack.
 // Used by handleSyncResult for the ENH-078 Tier 1 fail-exit-code check.
 func containsInt(haystack []int, needle int) bool {
@@ -1129,15 +1210,15 @@ func buildPipelineRecords(projectRoot string, cfg *config.Config, tf *task.TaskF
 }
 
 // deriveOutputSubdir extracts the subdirectory path from a test case source path.
-// For "gtms/cases/cwd-scoping/tc-abc.md" it returns "cwd-scoping/".
-// For "gtms/cases/tc-abc.md" (root level) or empty input it returns "".
+// For "gtms/test/cases/cwd-scoping/tc-abc.md" it returns "cwd-scoping/".
+// For "gtms/test/cases/tc-abc.md" (root level) or empty input it returns "".
 func deriveOutputSubdir(testCaseSourcePath string) string {
 	if testCaseSourcePath == "" {
 		return ""
 	}
 	// Strip the cases directory prefix (ENH-093: routed through layout package)
 	paths := layout.Current()
-	trimmed := strings.TrimPrefix(testCaseSourcePath, paths.Cases+"/")
+	trimmed := strings.TrimPrefix(testCaseSourcePath, paths.TestCases+"/")
 	// Get the directory portion
 	dir := filepath.Dir(trimmed)
 	// Convert to forward slashes (Windows compatibility)
@@ -1151,7 +1232,7 @@ func deriveOutputSubdir(testCaseSourcePath string) string {
 
 // findTestCaseSource searches for a test case file in the cases directory tree.
 func findTestCaseSource(projectRoot, target string) string {
-	testCasesDir := layout.CasesDir(projectRoot)
+	testCasesDir := layout.TestCasesDir(projectRoot)
 
 	// Walk the cases directory looking for a file matching the target
 	var found string
@@ -1178,11 +1259,15 @@ func findTestCaseSource(projectRoot, target string) string {
 
 // readGuides reads all .md files from the given guide directory, wrapping each
 // in XML <guide name="..."> tags for clear semantic boundaries. Returns empty
-// string if guideDir is empty or the directory does not exist. Only returns an
-// error on actual read failures.
+// string if the directory does not exist. Only returns an error on actual read
+// failures.
+//
+// ENH-164: when guideDir is empty (adapter has no explicit guide-dir
+// configured), default to layout.Current().TestGuides (gtms/test/guides by
+// default). Explicit guide-dir in adapter config continues to override.
 func readGuides(projectRoot, guideDir string) (string, error) {
 	if guideDir == "" {
-		return "", nil
+		guideDir = layout.Current().TestGuides
 	}
 
 	absDir := guideDir

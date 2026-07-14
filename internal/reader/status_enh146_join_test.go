@@ -178,7 +178,7 @@ func TestScanTerminalResults_JoinLadderRungs(t *testing.T) {
 // wiring is excluded as orphan (Edge Case 5).
 func TestScanTerminalResults_Join_ExplicitFrameworkVerifiedAgainstWiring(t *testing.T) {
 	root := t.TempDir()
-	writeFile(t, root, filepath.Join("gtms/cases", "tc-aaa22222-orphan.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-aaa22222-orphan.md"), `---
 test_case_id: tc-aaa22222
 title: Explicit framework join TC
 ---
@@ -218,7 +218,7 @@ title: Explicit framework join TC
 // pathless result joins via rung 4 only if exactly one matches.
 func TestScanTerminalResults_Join_AdapterMappingAmbiguousExcluded(t *testing.T) {
 	root := t.TempDir()
-	writeFile(t, root, filepath.Join("gtms/cases", "tc-aaa33333-ambig.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-aaa33333-ambig.md"), `---
 test_case_id: tc-aaa33333
 title: Ambiguous adapter mapping
 ---
@@ -264,7 +264,7 @@ title: Ambiguous adapter mapping
 // to manual within the top tier — that bypassed the pinned precedence.
 func TestPicker_DefaultFrameworkDoesNotOverrideFrameworkPrecedence(t *testing.T) {
 	root := t.TempDir()
-	writeFile(t, root, "gtms/cases/tc-pp01-mixed.md", `---
+	writeFile(t, root, "gtms/test/cases/tc-pp01-mixed.md", `---
 test_case_id: tc-pp01
 title: Mixed wiring TC
 ---
@@ -282,7 +282,7 @@ title: Mixed wiring TC
 	manualAbs := filepath.Join(root, manualArtefact)
 	require.NoError(t, os.MkdirAll(filepath.Dir(manualAbs), 0755))
 	require.NoError(t, os.WriteFile(manualAbs, []byte("# manual runbook\n"), 0644))
-	specAbs := filepath.Join(root, "gtms/cases/tc-pp01-mixed.md")
+	specAbs := filepath.Join(root, "gtms/test/cases/tc-pp01-mixed.md")
 	specHash, err := pipeline.HashFile(specAbs)
 	require.NoError(t, err)
 	manualHash, err := pipeline.HashFile(manualAbs)
@@ -322,7 +322,7 @@ title: Mixed wiring TC
 // dashboard. See tc-e3b7c650 in test/acceptance/stale-failed-override/.
 func TestScanTerminalResults_SameSecondCompletedTiebreaksByMtime(t *testing.T) {
 	root := t.TempDir()
-	writeFile(t, root, filepath.Join("gtms/cases", "tc-tie01-reexec.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-tie01-reexec.md"), `---
 test_case_id: tc-tie01
 title: Same-second completed tiebreaker
 ---
@@ -374,7 +374,7 @@ title: Same-second completed tiebreaker
 // pillar.
 func TestPipelineStatus_Join_ManualReadyPreserved(t *testing.T) {
 	root := t.TempDir()
-	writeFile(t, root, filepath.Join("gtms/cases", "tc-aaa44444-manual.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-aaa44444-manual.md"), `---
 test_case_id: tc-aaa44444
 title: Manual-only TC
 ---

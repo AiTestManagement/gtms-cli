@@ -1,11 +1,14 @@
 package cli
 
 import (
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/aitestmanagement/gtms-cli/internal/scaffold"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -362,7 +365,7 @@ func TestInit_S4_HintIncludesPreservationFooter(t *testing.T) {
 
 func TestInit_S4_ErrorRecipeListsGitMvForPresentDirs(t *testing.T) {
 	_, hint := flatLayoutErrorMessage([]string{"test-cases", "test-tasks"}, "linux")
-	assert.Contains(t, hint, "git mv test-cases gtms/cases")
+	assert.Contains(t, hint, "git mv test-cases gtms/test/cases")
 	assert.Contains(t, hint, "git mv test-tasks gtms/tasks")
 	assert.NotContains(t, hint, "git mv test-automation")
 	assert.NotContains(t, hint, "git mv test-execution")
@@ -481,12 +484,12 @@ func TestInitDemoFromEmptyRepo(t *testing.T) {
 	require.NoError(t, err)
 
 	// Nested layout should be created
-	assert.DirExists(t, filepath.Join(root, "gtms", "cases"))
+	assert.DirExists(t, filepath.Join(root, "gtms", "test", "cases"))
 	assert.DirExists(t, filepath.Join(root, "gtms", "tasks", "pending"))
 	assert.FileExists(t, filepath.Join(root, "gtms", ".gtms-root"))
 
 	// Demo guide should be present
-	assert.FileExists(t, filepath.Join(root, "gtms", "cases", "guides", "getting-started-with-ai.md"))
+	assert.FileExists(t, filepath.Join(root, "gtms", "test", "guides", "getting-started-with-ai.md"))
 
 	// Config should exist with demo_seeded and demo adapters
 	assert.FileExists(t, filepath.Join(root, "gtms.config"))
@@ -495,4 +498,185 @@ func TestInitDemoFromEmptyRepo(t *testing.T) {
 	configStr := string(content)
 	assert.Contains(t, configStr, "demo_seeded: true")
 	assert.Contains(t, configStr, "demo")
+}
+
+// TestInitOutputInventory verifies the durable guard from BUG-149: every file
+// gtms init creates is either named in the stdout Created: block or matches an
+// explicit exclusion. Runs for all three presets. A new scaffolded file that is
+// not listed and not excluded will fail this test, forcing a conscious decision.
+func TestInitOutputInventory(t *testing.T) {
+	skipIfShort(t)
+
+	for _, preset := range scaffold.ValidPresets() {
+		t.Run(preset, func(t *testing.T) {
+			root := initGitRepo(t)
+
+			opts := scaffold.Options{
+				ProjectRoot: root,
+				Name:        "inventory-test",
+				Repo:        "org/inventory-test",
+				Preset:      preset,
+				Force:       false,
+			}
+			result, err := scaffold.Init(opts)
+			require.NoError(t, err, "scaffold.Init failed for preset %s", preset)
+
+			// Capture stdout from formatInitOutput.
+			oldStdout := os.Stdout
+			r, w, err := os.Pipe()
+			require.NoError(t, err)
+			os.Stdout = w
+
+			formatInitOutput(root, "inventory-test", "org/inventory-test", preset, result, true)
+
+			w.Close()
+			os.Stdout = oldStdout
+
+			captured, err := io.ReadAll(r)
+			require.NoError(t, err)
+			stdout := string(captured)
+
+			// Extract the Created: block from stdout -- lines from "  Created:"
+			// to the next blank line or section header.
+			createdBlock := extractCreatedBlock(stdout)
+			require.NotEmpty(t, createdBlock, "Created: block not found in stdout for preset %s", preset)
+
+			// Walk the filesystem to find every file created.
+			var filesOnDisk []string
+			err = filepath.Walk(root, func(path string, info os.FileInfo, walkErr error) error {
+				if walkErr != nil {
+					return walkErr
+				}
+				if info.IsDir() {
+					// Skip .git/ directory tree entirely.
+					if info.Name() == ".git" {
+						return filepath.SkipDir
+					}
+					return nil
+				}
+				rel, relErr := filepath.Rel(root, path)
+				if relErr != nil {
+					return relErr
+				}
+				// Normalise to forward slashes for comparison.
+				filesOnDisk = append(filesOnDisk, filepath.ToSlash(rel))
+				return nil
+			})
+			require.NoError(t, err)
+			require.NotEmpty(t, filesOnDisk, "no files found on disk for preset %s", preset)
+
+			// Check each file against the Created block or exclusion policy.
+			var unnamed []string
+			for _, f := range filesOnDisk {
+				if isExcludedFromInventory(f) {
+					continue
+				}
+				if isNamedInCreatedBlock(f, createdBlock) {
+					continue
+				}
+				unnamed = append(unnamed, f)
+			}
+
+			assert.Empty(t, unnamed,
+				"preset %s: these files were created by gtms init but are not named "+
+					"in the stdout Created: block and do not match any exclusion. "+
+					"Either add them to formatInitOutput or classify them as excluded "+
+					"in isExcludedFromInventory:\n  %s",
+				preset, strings.Join(unnamed, "\n  "))
+		})
+	}
+}
+
+// extractCreatedBlock extracts the lines of the "Created:" section from stdout.
+// The block starts at "  Created:" and ends at the next blank line or section
+// header (a line starting with "  " followed by a word and ":").
+func extractCreatedBlock(stdout string) string {
+	lines := strings.Split(stdout, "\n")
+	var block []string
+	inBlock := false
+	for _, line := range lines {
+		trimmed := strings.TrimRight(line, "\r")
+		if !inBlock {
+			if strings.TrimSpace(trimmed) == "Created:" {
+				inBlock = true
+			}
+			continue
+		}
+		// End of block: blank line or new section header.
+		if strings.TrimSpace(trimmed) == "" {
+			break
+		}
+		// Section headers like "  Skipped (already exist):" or "  Reconstructed:"
+		if !strings.HasPrefix(trimmed, "    ") && strings.TrimSpace(trimmed) != "" {
+			break
+		}
+		block = append(block, trimmed)
+	}
+	return strings.Join(block, "\n")
+}
+
+// isExcludedFromInventory returns true if the file is explicitly excluded from
+// the inventory check per BUG-149's exclusion policy.
+func isExcludedFromInventory(relPath string) bool {
+	// .gitkeep files are structural placeholders, never user-facing.
+	if filepath.Base(relPath) == ".gitkeep" {
+		return true
+	}
+	// .gtms/guidance.yaml is plumbing; the guidance footer tells the user how to toggle it.
+	if relPath == ".gtms/guidance.yaml" {
+		return true
+	}
+	// gtms/skills/** is covered by the gtms/skills/ roll-up line.
+	if strings.HasPrefix(relPath, "gtms/skills/") {
+		return true
+	}
+	// .gitignore is reported on stderr per ENH-108, not in the stdout Created: block.
+	if relPath == ".gitignore" {
+		return true
+	}
+	return false
+}
+
+// inventoryRollupDirs is the CLOSED allowlist of directory entries in the
+// Created: block that may stand in for the files beneath them. Everything else
+// must be named by its exact path.
+//
+// This allowlist is the whole guard. An earlier version of this test credited
+// ANY entry ending in "/" as covering its descendants -- and the block prints
+// "gtms/ (pipeline parent directory)", so every file under gtms/ counted as
+// named and the test passed with all six of BUG-149's lines deleted. It was a
+// guard whose default was "pass", which is the exact defect BUG-149 exists to
+// prevent. Do not add to this list without a reason as strong as gtms/skills/'s
+// (six files whose individual paths carry no information the directory name
+// does not).
+var inventoryRollupDirs = []string{
+	"gtms/skills/",
+}
+
+// isNamedInCreatedBlock returns true if relPath appears in the Created: block,
+// either as an exact entry or under one of the allowlisted roll-up directories.
+func isNamedInCreatedBlock(relPath string, createdBlock string) bool {
+	for _, line := range strings.Split(createdBlock, "\n") {
+		entry := strings.TrimSpace(line)
+		// Strip trailing parenthetical like " (test case templates)".
+		if idx := strings.Index(entry, " ("); idx != -1 {
+			entry = entry[:idx]
+		}
+		if entry == "" {
+			continue
+		}
+		// Exact match: the default, and what every user-facing file must have.
+		if entry == relPath {
+			return true
+		}
+		// Roll-up match: only for allowlisted directories, and only on a path
+		// SEGMENT boundary. The trailing slash on each allowlist entry is what
+		// makes gtms/skills-old/x.md not count as covered by gtms/skills/.
+		for _, dir := range inventoryRollupDirs {
+			if entry == dir && strings.HasPrefix(relPath, dir) {
+				return true
+			}
+		}
+	}
+	return false
 }

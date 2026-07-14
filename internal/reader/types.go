@@ -102,7 +102,7 @@ func (e *PipelineEntry) UnmarshalJSON(data []byte) error {
 // frameworks[] array. CON-023 / ENH-146.
 type FrameworkEntry struct {
 	Framework       string `json:"framework"`
-	Wired           bool   `json:"wired"` // always true inside the array
+	Wired           bool   `json:"wired"` // true for wiring-derived entries; false for the synthesized `manual` result-file entry (BUG-127)
 	WiringDrift     string `json:"wiring_drift"` // "" | "testcase" | "artefact" | "both"
 	ArtefactPresent bool   `json:"artefact_present"`
 	Artefact        string `json:"artefact"`

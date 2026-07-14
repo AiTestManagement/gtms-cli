@@ -29,8 +29,8 @@ func InvokeTier2(ctx context.Context, ac *AdapterContext, scriptPath string) (*I
 		"GTMS_TESTCASE_CONTENT="+ac.TestCaseContent,
 		"GTMS_OUTPUT_DIR="+ac.OutputDir,
 		"GTMS_OUTPUT_SUBDIR="+ac.OutputSubdir,
-		"GTMS_ARTEFACT_FILE="+ac.ArtefactFile,
-		"GTMS_TESTCASE_FILE="+ac.TestCaseFile,
+		"GTMS_ARTEFACT_FILE="+adapterFacingPath(ac, ac.ArtefactFile),
+		"GTMS_TESTCASE_FILE="+adapterFacingPath(ac, ac.TestCaseFile),
 		"GTMS_PROMPT_TEMPLATE="+ac.PromptTemplate,
 		"GTMS_BRANCH="+ac.Branch,
 		"GTMS_REPO="+ac.Repo,
@@ -89,8 +89,8 @@ func InvokeTier2(ctx context.Context, ac *AdapterContext, scriptPath string) (*I
 	// Execute script via sh
 	cmd := exec.CommandContext(ctx, shPath, scriptPath)
 	cmd.Env = env
-	if ac.ProjectRoot != "" {
-		cmd.Dir = ac.ProjectRoot
+	if ac.RunDir != "" {
+		cmd.Dir = ac.RunDir
 	}
 
 	// Pipe assembled prompt via stdin for tools that read from stdin.

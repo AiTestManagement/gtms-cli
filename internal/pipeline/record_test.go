@@ -405,7 +405,7 @@ func TestCreateAutomationRecord_WritesTestCaseHash(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Join(root, "gtms/automation/records"), 0755))
 
 	// Create a test case spec
-	casesDir := filepath.Join(root, "gtms", "cases")
+	casesDir := filepath.Join(root, "gtms", "test", "cases")
 	require.NoError(t, os.MkdirAll(casesDir, 0755))
 	require.NoError(t, os.WriteFile(
 		filepath.Join(casesDir, "tc-linkhash-test.md"),
@@ -441,7 +441,7 @@ func TestCreateAutomationRecord_SubfolderSpec_WritesTestCaseHash(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Join(root, "gtms/automation/records"), 0755))
 
 	// Create a test case spec under a subfolder
-	subDir := filepath.Join(root, "gtms", "cases", "my-feature")
+	subDir := filepath.Join(root, "gtms", "test", "cases", "my-feature")
 	require.NoError(t, os.MkdirAll(subDir, 0755))
 	require.NoError(t, os.WriteFile(
 		filepath.Join(subDir, "tc-subfold-test.md"),

@@ -28,16 +28,22 @@ func newCreateCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "create <folder> [name]",
 		Short: "Create test cases from requirements",
-		Long: `Create test cases by delegating to a configured adapter. The adapter
-receives a prompt assembled from your template, guides, and CLI flags, then
-generates test case specs in gtms/cases/<folder>/. See USER-GUIDE.md for details
-on prompt assembly, input layers, and data flow.
+		Long: `Create test cases through an adapter. Built-in adapters stamp a test case
+skeleton; a prompt-driven configured adapter receives a prompt assembled from
+your template, guides, and CLI flags and generates filled test case specs.
+Output lands in gtms/test/cases/<folder>/.
 
 Examples:
-  gtms create bug-022 --context-file PRPs/bugs/BUG-022.md --reference BUG-022
+  gtms create bug-022 --context-file docs/bugs/BUG-022.md --reference BUG-022
   gtms create payments/checkout --reference REQ-123 --focus "guest checkout"
-  gtms create sprint-14 --adapter github-create
-  gtms create login user-can-login  — create a named test case skeleton`,
+  gtms create sprint-14 --adapter agent-create-script
+  gtms create login user-can-login  -- create a named test case skeleton
+
+Adapter execution:
+  Runs the adapter from --adapter or the gtms.config default
+  (built-in options: agent-create, manual-create).
+  Adapters run identically on every OS.
+  See "Adapter Execution Model" in USER-GUIDE.md.`,
 		Args: cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
@@ -86,7 +92,7 @@ Examples:
 			if referenceFlag != "" && looksLikeFilePath(referenceFlag) {
 				if _, err := os.Stat(referenceFlag); os.IsNotExist(err) {
 					output.Warnf(fmt.Sprintf("Reference looks like a file path but does not exist: %s", sanitizeForError(referenceFlag)))
-					fmt.Fprintf(os.Stderr, "    Proceeding anyway — the adapter will receive this value as-is.\n")
+					fmt.Fprintf(os.Stderr, "    Proceeding anyway -- the adapter will receive this value as-is.\n")
 				}
 			}
 
@@ -102,14 +108,14 @@ Examples:
 					resolved.Name, resolved.Tier, resolved.Mode)
 			}
 
-			// Auto-create the target folder under gtms/cases/ (only when adapter doesn't override output-dir)
+			// Auto-create the target folder under gtms/test/cases/ (only when adapter doesn't override output-dir)
 			if resolved.Config.OutputDir == "" {
 				paths := layout.Current()
-				outputDir := filepath.Join(root, paths.Cases, folder)
+				outputDir := filepath.Join(root, paths.TestCases, folder)
 				if err := os.MkdirAll(outputDir, 0755); err != nil {
 					return fmt.Errorf("creating output directory: %w", err)
 				}
-				fmt.Printf("  → Target folder: %s/%s/\n", paths.Cases, folder)
+				fmt.Printf("  → Target folder: %s/%s/\n", paths.TestCases, folder)
 			} else {
 				fmt.Printf("  → Output directory: %s (from adapter config)\n", resolved.Config.OutputDir)
 			}
@@ -183,12 +189,12 @@ Examples:
 // validateFolderStructure checks that the required GTMS directories exist.
 func validateFolderStructure(root string) error {
 	paths := layout.Current()
-	required := []string{paths.Tasks, paths.Cases}
+	required := []string{paths.Tasks, paths.TestCases}
 	for _, dir := range required {
 		path := filepath.Join(root, dir)
 		if _, err := os.Stat(path); os.IsNotExist(err) {
 			msg := fmt.Sprintf("Required directory '%s' not found.", dir)
-			output.Errorf(msg, fmt.Sprintf("Create the GTMS folder structure: %s/, %s/, %s/", paths.Tasks, paths.Cases, paths.Automation))
+			output.Errorf(msg, fmt.Sprintf("Create the GTMS folder structure: %s/, %s/, %s/", paths.Tasks, paths.TestCases, paths.Automation))
 			return output.AsDisplayed(fmt.Errorf(msg))
 		}
 	}
@@ -214,7 +220,7 @@ func formatCreateOutput(res *adapter.InvokeResult, projectRoot string) {
 		return
 	}
 
-	// ENH-120: artefact-focused headline — surface TC IDs, not task filenames.
+	// ENH-120: artefact-focused headline -- surface TC IDs, not task filenames.
 	if len(res.ArtifactPaths) > 0 {
 		printCreatedHeadline(res.ArtifactPaths, res.Target, projectRoot)
 	} else if len(res.Warnings) > 0 && res.ArtifactCount == 0 {
@@ -251,7 +257,7 @@ type tcInfo struct {
 }
 
 // printCreatedHeadline renders the artefact-focused headline for create output.
-// ENH-120: the headline IS the TC list — TC IDs are the primary content,
+// ENH-120: the headline IS the TC list -- TC IDs are the primary content,
 // not a secondary detail. For bulk creates exceeding maxInlineCount, a truncated
 // list with a follow-up hint is shown.
 func printCreatedHeadline(paths []string, target string, projectRoot string) {
@@ -269,7 +275,7 @@ func printCreatedHeadline(paths []string, target string, projectRoot string) {
 
 	n := len(entries)
 	layoutPaths := layout.Current()
-	casesDir := fmt.Sprintf("%s/%s", layoutPaths.Cases, target)
+	casesDir := fmt.Sprintf("%s/%s", layoutPaths.TestCases, target)
 	if n <= maxInlineCount {
 		label := "test case"
 		if n > 1 {

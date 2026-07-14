@@ -10,6 +10,7 @@ import (
 
 	"github.com/aitestmanagement/gtms-cli/internal/config"
 	"github.com/aitestmanagement/gtms-cli/internal/pathsafe"
+	"github.com/aitestmanagement/gtms-cli/internal/pipeline"
 	"github.com/aitestmanagement/gtms-cli/internal/wiring"
 )
 
@@ -27,13 +28,13 @@ func playwrightConfig() *config.Config {
 	}
 }
 
-// createTCSpecFixture creates a test case spec file under gtms/cases/ so that
+// createTCSpecFixture creates a test case spec file under gtms/test/cases/ so that
 // (a) testcase.Exists returns true and (b) HashFile can compute testcase-hash.
 // CON-023 makes the spec mandatory for wiring writes — the brownfield "link
 // without spec" contract is retired.
 func createTCSpecFixture(t *testing.T, root, tcID string) {
 	t.Helper()
-	dir := filepath.Join(root, "gtms", "cases", "test")
+	dir := filepath.Join(root, "gtms", "test", "cases", "test")
 	require.NoError(t, os.MkdirAll(dir, 0755))
 	spec := "---\ntest_case_id: " + tcID + "\n---\n# Sample\n"
 	require.NoError(t, os.WriteFile(filepath.Join(dir, tcID+"-sample.md"), []byte(spec), 0644))
@@ -43,7 +44,7 @@ func createTCSpecFixture(t *testing.T, root, tcID string) {
 // folder-qualified target tests below).
 func createTCSpecAt(t *testing.T, root, subdir, tcID string) {
 	t.Helper()
-	dir := filepath.Join(root, "gtms", "cases", subdir)
+	dir := filepath.Join(root, "gtms", "test", "cases", subdir)
 	require.NoError(t, os.MkdirAll(dir, 0755))
 	spec := "---\ntest_case_id: " + tcID + "\n---\n# " + tcID + "\n"
 	require.NoError(t, os.WriteFile(filepath.Join(dir, tcID+"-test.md"), []byte(spec), 0644))
@@ -66,15 +67,15 @@ func commonLinkFixture(t *testing.T) (string, *config.Config) {
 // TestLinkRecord_*NoWarning). The happy-path tests above use this wrapper
 // to keep the long signature out of every assertion; the fallback tests
 // call LinkRecord directly so they can inspect the warnings slice.
-func linkRecordErr(root string, cfg *config.Config, tcID, framework, artefact, branch, environment, executedBy string, force, strict bool) error {
-	_, err := LinkRecord(root, cfg, tcID, framework, artefact, branch, environment, executedBy, force, strict)
+func linkRecordErr(root string, cfg *config.Config, tcID, framework, artefact string, force, strict bool) error {
+	_, err := LinkRecord(root, cfg, tcID, framework, artefact, force, strict)
 	return err
 }
 
 func TestLinkRecord_HappyPath_WritesSixFieldWiring(t *testing.T) {
 	root, cfg := commonLinkFixture(t)
 
-	err := linkRecordErr(root, cfg, "tc-abc12345", "playwright", "tests/sample.spec.ts", "main", "", "", false, false)
+	err := linkRecordErr(root, cfg, "tc-abc12345", "playwright", "tests/sample.spec.ts", false, false)
 	require.NoError(t, err)
 
 	// Verify wiring file was created with all six fields.
@@ -98,7 +99,7 @@ func TestLinkRecord_NoExecuteAdapter_FailsClearly(t *testing.T) {
 		Defaults: map[string]string{"execute": ""},
 	}
 
-	err := linkRecordErr(root, emptyCfg, "tc-abc12345", "playwright", "tests/sample.spec.ts", "main", "", "", false, false)
+	err := linkRecordErr(root, emptyCfg, "tc-abc12345", "playwright", "tests/sample.spec.ts", false, false)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no execute adapter")
 	assert.Contains(t, err.Error(), "playwright")
@@ -111,7 +112,7 @@ func TestLinkRecord_NoExecuteAdapter_FailsClearly(t *testing.T) {
 func TestLinkRecord_ArtefactMissing(t *testing.T) {
 	root, cfg := commonLinkFixture(t)
 
-	err := linkRecordErr(root, cfg, "tc-abc12345", "playwright", "tests/does-not-exist.spec.ts", "main", "", "", false, false)
+	err := linkRecordErr(root, cfg, "tc-abc12345", "playwright", "tests/does-not-exist.spec.ts", false, false)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not found")
 	assert.Contains(t, err.Error(), "tests/does-not-exist.spec.ts")
@@ -123,10 +124,10 @@ func TestLinkRecord_ArtefactMissing(t *testing.T) {
 func TestLinkRecord_ExistingWiringNoForce(t *testing.T) {
 	root, cfg := commonLinkFixture(t)
 
-	require.NoError(t, linkRecordErr(root, cfg, "tc-abc12345", "playwright", "tests/sample.spec.ts", "main", "", "", false, false))
+	require.NoError(t, linkRecordErr(root, cfg, "tc-abc12345", "playwright", "tests/sample.spec.ts", false, false))
 
 	// Second link without --force fails
-	err := linkRecordErr(root, cfg, "tc-abc12345", "playwright", "tests/sample.spec.ts", "main", "", "", false, false)
+	err := linkRecordErr(root, cfg, "tc-abc12345", "playwright", "tests/sample.spec.ts", false, false)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "already exists")
 	assert.Contains(t, err.Error(), "--force")
@@ -135,14 +136,14 @@ func TestLinkRecord_ExistingWiringNoForce(t *testing.T) {
 func TestLinkRecord_ForceOverwritesAndRefreshesHashes(t *testing.T) {
 	root, cfg := commonLinkFixture(t)
 
-	require.NoError(t, linkRecordErr(root, cfg, "tc-abc12345", "playwright", "tests/sample.spec.ts", "main", "", "", false, false))
+	require.NoError(t, linkRecordErr(root, cfg, "tc-abc12345", "playwright", "tests/sample.spec.ts", false, false))
 	first, _, _ := wiring.Find(root, "tc-abc12345", "playwright")
 	require.NotNil(t, first)
 
 	// Edit the artefact so artefact-hash should change on force.
 	require.NoError(t, os.WriteFile(filepath.Join(root, "tests/sample.spec.ts"), []byte("test-updated-content"), 0644))
 
-	require.NoError(t, linkRecordErr(root, cfg, "tc-abc12345", "playwright", "tests/sample.spec.ts", "main", "", "", true, false))
+	require.NoError(t, linkRecordErr(root, cfg, "tc-abc12345", "playwright", "tests/sample.spec.ts", true, false))
 	second, _, _ := wiring.Find(root, "tc-abc12345", "playwright")
 	require.NotNil(t, second)
 
@@ -157,7 +158,7 @@ func TestLinkRecord_NoSpec_FailsBecauseTestCaseHashCannotBeComputed(t *testing.T
 	require.NoError(t, os.MkdirAll(filepath.Join(root, "tests"), 0755))
 	require.NoError(t, os.WriteFile(filepath.Join(root, "tests/sample.spec.ts"), []byte("test"), 0644))
 
-	err := linkRecordErr(root, playwrightConfig(), "tc-deadbeef", "playwright", "tests/sample.spec.ts", "main", "", "", false, false)
+	err := linkRecordErr(root, playwrightConfig(), "tc-deadbeef", "playwright", "tests/sample.spec.ts", false, false)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "test case spec")
 
@@ -187,7 +188,7 @@ func TestCheckLink_WithArtefactMissing(t *testing.T) {
 
 func TestCheckLink_ExistingWiring_ArtefactPresent(t *testing.T) {
 	root, cfg := commonLinkFixture(t)
-	require.NoError(t, linkRecordErr(root, cfg, "tc-abc12345", "playwright", "tests/sample.spec.ts", "main", "", "", false, false))
+	require.NoError(t, linkRecordErr(root, cfg, "tc-abc12345", "playwright", "tests/sample.spec.ts", false, false))
 
 	result, err := CheckLink(root, "tc-abc12345", "playwright", "", false)
 	require.NoError(t, err)
@@ -198,7 +199,7 @@ func TestCheckLink_ExistingWiring_ArtefactPresent(t *testing.T) {
 
 func TestCheckLink_ExistingWiring_ArtefactGone(t *testing.T) {
 	root, cfg := commonLinkFixture(t)
-	require.NoError(t, linkRecordErr(root, cfg, "tc-abc12345", "playwright", "tests/sample.spec.ts", "main", "", "", false, false))
+	require.NoError(t, linkRecordErr(root, cfg, "tc-abc12345", "playwright", "tests/sample.spec.ts", false, false))
 	require.NoError(t, os.Remove(filepath.Join(root, "tests/sample.spec.ts")))
 
 	result, err := CheckLink(root, "tc-abc12345", "playwright", "", false)
@@ -220,13 +221,13 @@ func TestCheckLink_NoWiringNoArtefact(t *testing.T) {
 
 func TestLinkRecord_StrictRejectsPhantom(t *testing.T) {
 	root := t.TempDir()
-	require.NoError(t, os.MkdirAll(filepath.Join(root, "gtms/cases"), 0755))
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "gtms/test/cases"), 0755))
 	require.NoError(t, os.MkdirAll(filepath.Join(root, "tests"), 0755))
 	require.NoError(t, os.WriteFile(filepath.Join(root, "tests/sample.spec.ts"), []byte("test"), 0644))
 
-	err := linkRecordErr(root, playwrightConfig(), "tc-deadbeef", "playwright", "tests/sample.spec.ts", "main", "", "", false, true)
+	err := linkRecordErr(root, playwrightConfig(), "tc-deadbeef", "playwright", "tests/sample.spec.ts", false, true)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "not found in gtms/cases")
+	assert.Contains(t, err.Error(), "not found in gtms/test/cases")
 
 	rec, _, _ := wiring.Find(root, "tc-deadbeef", "playwright")
 	assert.Nil(t, rec)
@@ -235,7 +236,7 @@ func TestLinkRecord_StrictRejectsPhantom(t *testing.T) {
 func TestLinkRecord_StrictAcceptsRealTC(t *testing.T) {
 	root, cfg := commonLinkFixture(t)
 
-	err := linkRecordErr(root, cfg, "tc-abc12345", "playwright", "tests/sample.spec.ts", "main", "", "", false, true)
+	err := linkRecordErr(root, cfg, "tc-abc12345", "playwright", "tests/sample.spec.ts", false, true)
 	require.NoError(t, err)
 
 	rec, _, _ := wiring.Find(root, "tc-abc12345", "playwright")
@@ -245,20 +246,20 @@ func TestLinkRecord_StrictAcceptsRealTC(t *testing.T) {
 
 func TestCheckLink_StrictRejectsPhantom(t *testing.T) {
 	root := t.TempDir()
-	require.NoError(t, os.MkdirAll(filepath.Join(root, "gtms/cases"), 0755))
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "gtms/test/cases"), 0755))
 	require.NoError(t, os.MkdirAll(filepath.Join(root, "tests"), 0755))
 	require.NoError(t, os.WriteFile(filepath.Join(root, "tests/sample.spec.ts"), []byte("test"), 0644))
 
 	result, err := CheckLink(root, "tc-deadbeef", "playwright", "tests/sample.spec.ts", true)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "not found in gtms/cases")
+	assert.Contains(t, err.Error(), "not found in gtms/test/cases")
 	assert.False(t, result.RecordExists)
 }
 
 func TestLinkRecord_StrictArtefactMissingStillErrors(t *testing.T) {
 	root, cfg := commonLinkFixture(t)
 
-	err := linkRecordErr(root, cfg, "tc-abc12345", "playwright", "tests/does-not-exist.spec.ts", "main", "", "", false, true)
+	err := linkRecordErr(root, cfg, "tc-abc12345", "playwright", "tests/does-not-exist.spec.ts", false, true)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not found")
 	assert.Contains(t, err.Error(), "tests/does-not-exist.spec.ts")
@@ -272,7 +273,7 @@ func TestBUG059_LinkRecord_FolderQualifiedTarget(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(root, "tests/sample.spec.ts"), []byte("test"), 0644))
 	createTCSpecAt(t, root, "login", "tc-abc12345")
 
-	err := linkRecordErr(root, playwrightConfig(), "login/tc-abc12345", "playwright", "tests/sample.spec.ts", "main", "", "", false, true)
+	err := linkRecordErr(root, playwrightConfig(), "login/tc-abc12345", "playwright", "tests/sample.spec.ts", false, true)
 	require.NoError(t, err)
 
 	rec, _, _ := wiring.Find(root, "tc-abc12345", "playwright")
@@ -285,9 +286,9 @@ func TestBUG059_LinkRecord_FolderQualifiedWrongFolder(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(root, "tests/sample.spec.ts"), []byte("test"), 0644))
 	createTCSpecAt(t, root, "login", "tc-abc12345")
 
-	err := linkRecordErr(root, playwrightConfig(), "checkout/tc-abc12345", "playwright", "tests/sample.spec.ts", "main", "", "", false, true)
+	err := linkRecordErr(root, playwrightConfig(), "checkout/tc-abc12345", "playwright", "tests/sample.spec.ts", false, true)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "not found in gtms/cases")
+	assert.Contains(t, err.Error(), "not found in gtms/test/cases")
 }
 
 // --- CON-023 / ENH-145 canonical-adapter fallback diagnostic ---
@@ -317,7 +318,7 @@ func TestLinkRecord_FallbackDiagnostic_NamesCompetingAdapters(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(root, "test/acceptance/sample.bats"), []byte("# bats"), 0644))
 
 	warnings, err := LinkRecord(root, cfg, "tc-abc12345", "bats",
-		"test/acceptance/sample.bats", "main", "", "", false, false)
+		"test/acceptance/sample.bats", false, false)
 	require.NoError(t, err)
 	require.Len(t, warnings, 1,
 		"a single fallback-diagnostic warning must surface when len(matches) > 1")
@@ -356,7 +357,7 @@ func TestLinkRecord_DefaultSelectsAdapter_NoWarning(t *testing.T) {
 	}
 
 	warnings, err := LinkRecord(root, cfg, "tc-abc12345", "bats",
-		"test/acceptance/sample.bats", "main", "", "", false, false)
+		"test/acceptance/sample.bats", false, false)
 	require.NoError(t, err)
 	// Single-default fast path: no fallback warning even though two
 	// adapters match the framework — the default disambiguates.
@@ -373,7 +374,7 @@ func TestLinkRecord_SingleMatch_NoWarning(t *testing.T) {
 	root, cfg := commonLinkFixture(t)
 
 	warnings, err := LinkRecord(root, cfg, "tc-abc12345", "playwright",
-		"tests/sample.spec.ts", "main", "", "", false, false)
+		"tests/sample.spec.ts", false, false)
 	require.NoError(t, err)
 	assert.Empty(t, warnings)
 }
@@ -394,7 +395,7 @@ func TestLinkRecord_RejectsRelativeTraversalOutsideRoot(t *testing.T) {
 	t.Cleanup(func() { _ = os.Remove(escape) })
 
 	_, err := LinkRecord(root, cfg, "tc-abc12345", "playwright",
-		"../traversal-link-target.txt", "main", "", "", false, false)
+		"../traversal-link-target.txt", false, false)
 	require.Error(t, err)
 	assert.True(t, pathsafe.IsPathSafetyError(err),
 		"relative traversal outside project root must produce *pathsafe.PathSafetyError")
@@ -415,7 +416,7 @@ func TestLinkRecord_RejectsAbsoluteOutsideRoot(t *testing.T) {
 	require.NoError(t, os.WriteFile(outsidePath, []byte("outside"), 0644))
 
 	_, err := LinkRecord(root, cfg, "tc-abc12345", "playwright",
-		outsidePath, "main", "", "", false, false)
+		outsidePath, false, false)
 	require.Error(t, err)
 	assert.True(t, pathsafe.IsPathSafetyError(err),
 		"absolute outside-root artefact must produce *pathsafe.PathSafetyError")
@@ -435,7 +436,7 @@ func TestLinkRecord_AbsoluteInsideRootNormalisesToRelative(t *testing.T) {
 	absArtefact := filepath.Join(root, "tests", "sample.spec.ts")
 
 	_, err := LinkRecord(root, cfg, "tc-abc12345", "playwright",
-		absArtefact, "main", "", "", false, false)
+		absArtefact, false, false)
 	require.NoError(t, err)
 
 	rec, _, _ := wiring.Find(root, "tc-abc12345", "playwright")
@@ -496,4 +497,203 @@ func TestCheckLink_RejectsSuppliedUnsafeArtefact(t *testing.T) {
 	require.Error(t, checkErr)
 	assert.True(t, pathsafe.IsPathSafetyError(checkErr),
 		"unsafe --artefact must produce *pathsafe.PathSafetyError")
+}
+
+// --- ENH-156 RefreshRecord tests ---
+
+// refreshFixture seeds a fully linked TC ready for refresh tests. Returns
+// (projectRoot, config, tcID). The wiring record is written via LinkRecord.
+func refreshFixture(t *testing.T) (string, *config.Config) {
+	t.Helper()
+	root := t.TempDir()
+	cfg := playwrightConfig()
+
+	// Spec
+	createTCSpecFixture(t, root, "tc-refresh1")
+
+	// Artefact
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "tests"), 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "tests/tc-refresh1.spec.ts"), []byte("test content"), 0644))
+
+	// Link
+	_, err := LinkRecord(root, cfg, "tc-refresh1", "playwright",
+		"tests/tc-refresh1.spec.ts", false, false)
+	require.NoError(t, err)
+
+	return root, cfg
+}
+
+func TestRefreshRecord_HappyPath_RefreshesStaleTestcaseHash(t *testing.T) {
+	root, _ := refreshFixture(t)
+
+	// Read original wiring
+	origRec, _, err := wiring.Find(root, "tc-refresh1", "playwright")
+	require.NoError(t, err)
+	require.NotNil(t, origRec)
+	oldTCHash := origRec.TestCaseHash
+
+	// Edit the spec to create testcase-hash drift
+	specDir := filepath.Join(root, "gtms", "test", "cases", "test")
+	entries, _ := os.ReadDir(specDir)
+	for _, e := range entries {
+		if !e.IsDir() {
+			specFile := filepath.Join(specDir, e.Name())
+			f, _ := os.OpenFile(specFile, os.O_APPEND|os.O_WRONLY, 0644)
+			_, _ = f.WriteString("\n## ENH-156 drift\n")
+			_ = f.Close()
+		}
+	}
+
+	// Refresh
+	refreshed, err := RefreshRecord(root, origRec)
+	require.NoError(t, err)
+	assert.True(t, refreshed, "should report the record was refreshed")
+
+	// Verify the wiring on disk
+	updated, _, err := wiring.Find(root, "tc-refresh1", "playwright")
+	require.NoError(t, err)
+	assert.NotEqual(t, oldTCHash, updated.TestCaseHash, "testcase-hash should change")
+	assert.Equal(t, origRec.ArtefactHash, updated.ArtefactHash, "artefact-hash should be unchanged")
+	assert.Equal(t, "playwright", updated.Framework)
+	assert.Equal(t, "playwright-runner", updated.Adapter)
+	assert.Equal(t, "tests/tc-refresh1.spec.ts", updated.Artefact)
+}
+
+func TestRefreshRecord_NoOp_WhenAlreadyCurrent(t *testing.T) {
+	root, _ := refreshFixture(t)
+
+	rec, _, err := wiring.Find(root, "tc-refresh1", "playwright")
+	require.NoError(t, err)
+
+	refreshed, err := RefreshRecord(root, rec)
+	require.NoError(t, err)
+	assert.False(t, refreshed, "should report no-op when hashes already match")
+}
+
+func TestRefreshRecord_RefreshesArtefactHash(t *testing.T) {
+	root, _ := refreshFixture(t)
+
+	rec, _, err := wiring.Find(root, "tc-refresh1", "playwright")
+	require.NoError(t, err)
+	oldArtHash := rec.ArtefactHash
+
+	// Edit artefact to create drift
+	artFile := filepath.Join(root, "tests", "tc-refresh1.spec.ts")
+	f, _ := os.OpenFile(artFile, os.O_APPEND|os.O_WRONLY, 0644)
+	_, _ = f.WriteString("\n// ENH-156 artefact drift\n")
+	_ = f.Close()
+
+	refreshed, err := RefreshRecord(root, rec)
+	require.NoError(t, err)
+	assert.True(t, refreshed)
+
+	updated, _, _ := wiring.Find(root, "tc-refresh1", "playwright")
+	assert.NotEqual(t, oldArtHash, updated.ArtefactHash, "artefact-hash should change")
+	assert.Equal(t, rec.TestCaseHash, updated.TestCaseHash, "testcase-hash should be stable")
+}
+
+func TestRefreshRecord_PendingArtefactHash_Preserved(t *testing.T) {
+	root := t.TempDir()
+	createTCSpecFixture(t, root, "tc-pending1")
+
+	// Manually seed wiring with pending artefact hash
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "tests"), 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "tests/tc-pending1.bats"), []byte("# skeleton"), 0644))
+
+	// We need a real testcase hash for the seed
+	specPath, _ := pipeline.ResolveTestCaseSpec(root, "tc-pending1")
+	oldTCHash, _ := pipeline.HashFile(filepath.Join(root, filepath.FromSlash(specPath)))
+
+	pendingRec := &wiring.WiringRecord{
+		TestCase:     "tc-pending1",
+		TestCaseHash: oldTCHash,
+		Framework:    "bats",
+		Adapter:      "bats-runner",
+		Artefact:     "tests/tc-pending1.bats",
+		ArtefactHash: wiring.PendingArtefactHash,
+	}
+	_, err := wiring.Write(root, pendingRec)
+	require.NoError(t, err)
+
+	// Edit spec to drift testcase-hash
+	specDir := filepath.Join(root, "gtms", "test", "cases", "test")
+	entries, _ := os.ReadDir(specDir)
+	for _, e := range entries {
+		if !e.IsDir() {
+			specFile := filepath.Join(specDir, e.Name())
+			f, _ := os.OpenFile(specFile, os.O_APPEND|os.O_WRONLY, 0644)
+			_, _ = f.WriteString("\n## pending drift\n")
+			_ = f.Close()
+		}
+	}
+
+	refreshed, err := RefreshRecord(root, pendingRec)
+	require.NoError(t, err)
+	assert.True(t, refreshed)
+
+	updated, _, _ := wiring.Find(root, "tc-pending1", "bats")
+	assert.NotEqual(t, oldTCHash, updated.TestCaseHash, "testcase-hash should change")
+	assert.Equal(t, wiring.PendingArtefactHash, updated.ArtefactHash,
+		"artefact-hash must remain 'pending'")
+}
+
+func TestRefreshRecord_MissingArtefact_Fails(t *testing.T) {
+	root, _ := refreshFixture(t)
+
+	rec, _, _ := wiring.Find(root, "tc-refresh1", "playwright")
+
+	// Delete artefact
+	require.NoError(t, os.Remove(filepath.Join(root, "tests", "tc-refresh1.spec.ts")))
+
+	refreshed, err := RefreshRecord(root, rec)
+	require.Error(t, err)
+	assert.False(t, refreshed)
+	assert.Contains(t, err.Error(), "artefact file not found")
+}
+
+func TestRefreshRecord_UnsafeArtefactPath_Fails(t *testing.T) {
+	root := t.TempDir()
+	createTCSpecFixture(t, root, "tc-unsafe1")
+
+	// Seed tampered wiring with escaping path
+	tampered := &wiring.WiringRecord{
+		TestCase:     "tc-unsafe1",
+		TestCaseHash: "deadbeefdeadbeef",
+		Framework:    "bats",
+		Adapter:      "bats-runner",
+		Artefact:     "../outside-project/tc-unsafe1.bats",
+		ArtefactHash: "deadbeefdeadbeef",
+	}
+	_, err := wiring.Write(root, tampered)
+	require.NoError(t, err)
+
+	refreshed, err := RefreshRecord(root, tampered)
+	require.Error(t, err)
+	assert.False(t, refreshed)
+	assert.Contains(t, err.Error(), "unsafe artefact path")
+}
+
+func TestRefreshRecord_MissingSpec_Fails(t *testing.T) {
+	root := t.TempDir()
+
+	// Create artefact but no spec
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "tests"), 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "tests/tc-nospec1.spec.ts"), []byte("test"), 0644))
+	// Create gtms/test/cases dir so the directory scan works
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "gtms", "test", "cases"), 0755))
+
+	rec := &wiring.WiringRecord{
+		TestCase:     "tc-nospec1",
+		TestCaseHash: "deadbeefdeadbeef",
+		Framework:    "playwright",
+		Adapter:      "playwright-runner",
+		Artefact:     "tests/tc-nospec1.spec.ts",
+		ArtefactHash: "deadbeefdeadbeef",
+	}
+	_, _ = wiring.Write(root, rec)
+
+	refreshed, err := RefreshRecord(root, rec)
+	require.Error(t, err)
+	assert.False(t, refreshed)
+	assert.Contains(t, err.Error(), "spec not found")
 }

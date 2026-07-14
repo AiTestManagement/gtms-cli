@@ -217,7 +217,7 @@ func TestGapsFolderSummary_DriftCount(t *testing.T) {
 	root := t.TempDir()
 	setupMinimalProject(t, root)
 
-	folder := filepath.Join(root, "gtms", "cases", "driftfolder")
+	folder := filepath.Join(root, "gtms", "test", "cases", "driftfolder")
 	require.NoError(t, os.MkdirAll(folder, 0755))
 
 	tcID := "tc-dr000016"
@@ -269,7 +269,7 @@ func TestIsStaleTestCaseHash_MatchingHash(t *testing.T) {
 	createTestCase(t, root, tcID, "Matching hash TC")
 
 	// Compute the actual hash of the test case file
-	casesDir := filepath.Join(root, "gtms", "cases")
+	casesDir := filepath.Join(root, "gtms", "test", "cases")
 	entries, _ := os.ReadDir(casesDir)
 	var tcFile string
 	for _, e := range entries {
@@ -361,7 +361,7 @@ func TestPipelineStatus_NoStaleTestCaseHash_WhenMatches(t *testing.T) {
 	createTestCase(t, root, tcID, "Status clean hash TC")
 
 	// Get the actual hash
-	casesDir := filepath.Join(root, "gtms", "cases")
+	casesDir := filepath.Join(root, "gtms", "test", "cases")
 	var tcFile string
 	entries2, _ := os.ReadDir(casesDir)
 	for _, e := range entries2 {

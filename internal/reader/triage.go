@@ -300,7 +300,7 @@ func appendTriageHistory(projectRoot, testCaseID, defect, summary string) error 
 
 // updateTestCaseStatus finds a test case file and updates its status field.
 func updateTestCaseStatus(projectRoot, testCaseID, newStatus string) error {
-	tcDir := layout.CasesDir(projectRoot)
+	tcDir := layout.TestCasesDir(projectRoot)
 
 	var tcPath string
 	err := filepath.Walk(tcDir, func(path string, info os.FileInfo, err error) error {

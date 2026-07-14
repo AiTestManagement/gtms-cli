@@ -3,7 +3,7 @@ package cli
 // Tree-integrity tests audit the active dogfood corpus on disk for
 // invariants that the product cannot enforce at runtime (e.g. AI-generated
 // spec files where filename ID disagrees with frontmatter test_case_id —
-// the BUG-038 class). They walk the project's gtms/cases/ tree from the
+// the BUG-038 class). They walk the project's gtms/test/cases/ tree from the
 // repo root rather than constructing fixtures in t.TempDir().
 //
 // Replaces test/acceptance/expand-id-width-to-8-hex/tc-4bbb946 step 3
@@ -25,19 +25,14 @@ import (
 )
 
 // TestTreeIntegrity_TestCaseFilenameMatchesFrontmatterID walks the active
-// gtms/cases/ tree from the project root and asserts that every tc-*.md
+// gtms/test/cases/ tree from the project root and asserts that every tc-*.md
 // file's filename ID matches the test_case_id: declared in its YAML
 // frontmatter. The active BUG-038 detector.
-//
-// Carve-outs:
-//   - specs-verify-fixture/ — ENH-095 negative-test fixtures that
-//     deliberately carry mismatched / malformed IDs so /specs-verify
-//     can demonstrate catching them.
 func TestTreeIntegrity_TestCaseFilenameMatchesFrontmatterID(t *testing.T) {
 	root := findGTMSProjectRoot(t)
-	casesDir := filepath.Join(root, "gtms", "cases")
+	casesDir := filepath.Join(root, "gtms", "test", "cases")
 	if info, err := os.Stat(casesDir); err != nil || !info.IsDir() {
-		t.Skipf("gtms/cases/ not found at %s — repo-shape audit skipped", casesDir)
+		t.Skipf("gtms/test/cases/ not found at %s -- repo-shape audit skipped", casesDir)
 	}
 
 	var mismatches []string
@@ -48,11 +43,6 @@ func TestTreeIntegrity_TestCaseFilenameMatchesFrontmatterID(t *testing.T) {
 			return walkErr
 		}
 		if d.IsDir() {
-			rel, _ := filepath.Rel(casesDir, path)
-			rel = filepath.ToSlash(rel)
-			if rel == "specs-verify-fixture" {
-				return filepath.SkipDir
-			}
 			return nil
 		}
 		name := d.Name()
@@ -87,7 +77,7 @@ func TestTreeIntegrity_TestCaseFilenameMatchesFrontmatterID(t *testing.T) {
 		}
 		return nil
 	})
-	require.NoError(t, walkErr, "walking gtms/cases/")
+	require.NoError(t, walkErr, "walking gtms/test/cases/")
 
 	// Sanity floor: this test is only meaningful against the active dogfood
 	// corpus. If we found no specs, we're probably running in a partial

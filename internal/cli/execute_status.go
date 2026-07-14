@@ -21,8 +21,9 @@ func newExecuteStatusCmd() *cobra.Command {
 		Short: "Show status of execute tasks",
 		Long: `Show the status of execute tasks.
 
-  gtms execute status          — list all execute tasks
-  gtms execute status tc-a1b2c3d4   — detail for a specific target`,
+  gtms execute status          -- list all execute tasks
+  gtms execute status tc-a1b2c3d4   -- detail for a specific target
+`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()

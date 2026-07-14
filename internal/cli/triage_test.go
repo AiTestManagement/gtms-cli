@@ -87,7 +87,7 @@ func setupTriageFixture(t *testing.T) string {
 	root := t.TempDir()
 
 	// Test case
-	writeTestFile(t, root, filepath.Join("gtms/cases", "tc-aaa1111-login-happy.md"), `---
+	writeTestFile(t, root, filepath.Join("gtms/test/cases", "tc-aaa1111-login-happy.md"), `---
 test_case_id: tc-aaa1111
 title: Login Happy Path
 requirement: REQ-A

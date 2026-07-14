@@ -3,9 +3,7 @@ package adapter
 import (
 	"bytes"
 	"errors"
-	"os"
 	"os/exec"
-	"runtime"
 	"strings"
 	"time"
 )
@@ -14,13 +12,27 @@ import (
 // through the file-delimiter parser, and returns the invocation result.
 // Both Tier 1 and Tier 2 adapters delegate here after building their command.
 func runAdapterProcess(cmd *exec.Cmd, outputDir string, force bool) (*InvocationResult, error) {
-	// Configure graceful cancellation behaviour.
-	// Must be set BEFORE cmd.Start().
+	// BUG-131: Place the child in its own process group (Unix) so that
+	// the captured-pgid kill closure can signal the entire tree on
+	// cancellation. Must be set BEFORE cmd.Start(). No-op on Windows
+	// (Job Object setup happens AFTER Start in captureChildPgid because
+	// AssignProcessToJobObject needs the child handle).
+	configureProcGroup(cmd)
+
+	// cmd.Cancel must be set BEFORE Start(). We close over a holder that
+	// the post-Start logic fills in once the child PID (Unix) or Job
+	// Object (Windows) is captured. Capturing at Start time avoids two
+	// races BUG-131 round-1 hit: Unix Getpgid racing child exit, and
+	// Windows taskkill failing to traverse descendants that outlive the
+	// immediate parent shell.
+	var killFn func() error
+	var cleanupFn func()
 	cmd.Cancel = func() error {
-		if runtime.GOOS == "windows" {
-			return cmd.Process.Kill()
+		if killFn != nil {
+			return killFn()
 		}
-		return cmd.Process.Signal(os.Interrupt)
+		// Fallback path -- Start failed or the closure wasn't installed.
+		return killProcessTree(cmd)
 	}
 	cmd.WaitDelay = 5 * time.Second
 
@@ -37,6 +49,19 @@ func runAdapterProcess(cmd *exec.Cmd, outputDir string, force bool) (*Invocation
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
+
+	// Capture pgid (Unix) / set up Job Object (Windows) immediately after
+	// Start so cmd.Cancel kills the entire descendant tree atomically,
+	// including descendants that survive the immediate parent shell. On
+	// Windows the child is created suspended (see configureProcGroup) and
+	// captureChildPgid resumes it after Job Object assignment, so no user
+	// code runs in the child until it is bound to the job.
+	killFn, cleanupFn = captureChildPgid(cmd)
+	// cleanupFn is idempotent on Windows (once-guarded) and a no-op on Unix.
+	// It closes the retained Job Object + process handles on normal
+	// adapter completion so repeated execute runs do not leak OS handles.
+	// Kill implicitly cleans up; cleanup after kill is a no-op.
+	defer cleanupFn()
 
 	// Stream and parse stdout
 	streamRes, parseErr := parseStreamingOutput(stdout, outputDir, force)

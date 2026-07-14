@@ -178,9 +178,18 @@ func buildMapEntry(
 	// Applied on PipelineEntry before applyTaskStatus (see function-level
 	// comment for the ordering rationale).
 	if pe.Wired {
-		relevant := pe.Frameworks
+		// Worst-of considers only WIRED frameworks (real wiring units). The
+		// synthesized result-file `manual` entry (Wired==false, BUG-127) must NOT
+		// bleed into the compact default-view result -- per Option A it surfaces
+		// only under explicit --framework manual (resolved in buildPipelineEntry).
+		relevant := make([]FrameworkEntry, 0, len(pe.Frameworks))
+		for _, fe := range pe.Frameworks {
+			if fe.Wired {
+				relevant = append(relevant, fe)
+			}
+		}
 		if strictFramework && defaultFramework != "" {
-			relevant = frameworksWithName(pe.Frameworks, defaultFramework)
+			relevant = frameworksWithName(relevant, defaultFramework)
 		}
 		worstResult, worstExec := worstFrameworkOutcome(relevant)
 		if outcomePriority(worstResult) > outcomePriority(pe.LastResult) {

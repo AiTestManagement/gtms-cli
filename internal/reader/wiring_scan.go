@@ -81,8 +81,11 @@ func scanTerminalResultsForTC(projectRoot, testCaseID string) (map[string]overla
 }
 
 // scanTerminalResults walks .gtms/results/ and returns the latest
-// terminal handoff per (testcase, framework). Non-terminal handoffs
-// (status: pending, in-progress) are excluded — CON-023 / ENH-146
+// terminal EXECUTE handoff per (testcase, framework). Non-terminal
+// handoffs (status: pending, in-progress) are excluded, and so are
+// non-execute commands: gtms automate/create/prime also write terminal
+// (complete/error) handoffs, but only `command: execute` results may
+// overlay the execute columns (BUG-124). CON-023 / ENH-146
 // terminal-handoff discipline.
 //
 // Each result file is joined to a currently existing wiring record
@@ -146,7 +149,14 @@ func scanTerminalResults(projectRoot string, wiringByTC map[string][]*wiring.Wir
 		if rErr != nil || rc == nil {
 			continue
 		}
-		if rc.Status != "complete" && rc.Status != "error" {
+		// BUG-130 structural guard: only terminal execute contracts may
+		// overlay the execute columns. Non-execute commands (automate/
+		// create/prime) also write terminal handoffs via the shared
+		// invoker path; without this gate an automate-success handoff
+		// renders as a false-green EXECUTE pass (BUG-124). Manual
+		// results route through `gtms execute --adapter manual-execute`
+		// (command: execute), so they are preserved.
+		if !result.IsTerminalExecuteContract(rc) {
 			continue
 		}
 		framework := resolveOverlayFramework(rc, wiringByTC[rc.Target])
@@ -434,16 +444,53 @@ func buildPipelineEntry(
 	entry.Frameworks = frameworks
 	entry.Wired = len(wiringRecs) > 0
 
-	// Manual-ready: manual-only TC (no wiring) with a primed manual
-	// result template. ENH-146: this is a per-TC signal, not per
-	// wiring unit.
+	// BUG-127: a recorded manual/prime result is first-class regardless of
+	// wiring. ManualReady is a per-TC signal keyed on the presence of a manual
+	// result file, NOT on the TC being un-wired -- a primed+executed result on a
+	// case that later graduates to automate must still surface.
+	entry.ManualReady = manual != nil
+
+	// BUG-127: on a WIRED case, model the manual result as a first-class
+	// FrameworkEntry so it is visible in --json and selectable via
+	// --framework manual (frameworks[] is otherwise built only from wiring
+	// records). Gated on entry.Wired: a manual-only TC already surfaces via
+	// ManualReady + the legacy carriers below and keeps an empty frameworks[]
+	// per the ENH-146 contract (map_phase3d), so we must NOT add one there.
+	// DUP GUARD: a manual WIRING record (CON-023 Edge Case 1) already produced a
+	// Framework=="manual" entry via the wiringRecs loop above; do not add a second.
+	if entry.Wired && manual != nil {
+		hasManual := false
+		for _, fe := range entry.Frameworks {
+			if fe.Framework == "manual" {
+				hasManual = true
+				break
+			}
+		}
+		if !hasManual {
+			me := FrameworkEntry{
+				Framework:       "manual",
+				Wired:           false, // synthesized result-file entry, not a wiring record
+				Artefact:        manual.ArtefactPath,
+				ArtefactPresent: true, // scanManualByTC parsed the file, so it exists
+			}
+			if manual.Result != "" {
+				me.LastResultHere = manual.Result
+				me.LastStatusHere = "complete"
+				if manual.Result == "skipped" {
+					me.LastStatusHere = "skipped"
+				}
+			}
+			entry.Frameworks = append(entry.Frameworks, me)
+			sortFrameworksByName(entry.Frameworks)
+		}
+	}
+
+	// Manual-only TC (no wiring) with a primed/recorded manual result: populate
+	// the legacy AUTOMATE / LAST RESULT / EXECUTE carriers so the CLI table
+	// formatter and downstream consumers don't see "none". Mirrors what the
+	// pre-cutover deriveAutomateStatus / deriveExecuteResult returned for
+	// framework=manual records. (ManualReady is set above, regardless of wiring.)
 	if !entry.Wired && manual != nil {
-		entry.ManualReady = true
-		// Legacy carriers: keep AUTOMATE / LAST RESULT / EXECUTE columns
-		// rendering manual-recorded state so the existing CLI table
-		// formatter and downstream consumers don't see "none". Mirrors
-		// what the pre-cutover deriveAutomateStatus / deriveExecuteResult
-		// returned for framework=manual records.
 		entry.AutomateStatus = "manual"
 		entry.Framework = "manual"
 		if manual.Result != "" {
@@ -484,6 +531,27 @@ func buildPipelineEntry(
 			}
 			entry.Stale = pickedClass.StaleTestcaseHash || pickedClass.StaleArtefactHash
 			entry.StaleTestCaseHash = pickedClass.StaleTestcaseHash
+		}
+	}
+
+	// BUG-127: explicit `--framework manual` on a WIRED case. pickWiring only
+	// sees wiring records, so it cannot select a manual RESULT file; resolve it
+	// here. PRECEDENCE GUARD `SelectedFramework != "manual"`: if a manual WIRING
+	// record exists the picker already selected it (with overlay carriers) -- that
+	// wiring-derived selection wins and must not be overwritten with result-file
+	// values. Placed before the drift block below so its
+	// `SelectedFramework == "manual"` gate fires and manual drift surfaces here.
+	if entry.Wired && strictFramework && defaultFramework == "manual" && manual != nil && entry.SelectedFramework != "manual" {
+		entry.SelectedFramework = "manual"
+		entry.Framework = "manual"
+		entry.AutomateStatus = "manual"
+		if manual.Result != "" {
+			entry.LastResult = manual.Result
+			if manual.Result == "skipped" {
+				entry.ExecuteStatus = "skipped"
+			} else {
+				entry.ExecuteStatus = "complete"
+			}
 		}
 	}
 

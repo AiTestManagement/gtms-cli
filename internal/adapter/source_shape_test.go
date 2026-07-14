@@ -142,6 +142,61 @@ func TestSourceShape_InvokerPromptVarsIncludesTcIDs(t *testing.T) {
 	assert.Contains(t, content, "TestCaseIDs")
 }
 
+// --- BUG-136: promptVars completeness -- assert the 16-key expected set ---
+
+func TestSourceShape_PromptVarsCompleteness(t *testing.T) {
+	src, err := os.ReadFile("invoker.go")
+	require.NoError(t, err)
+	content := string(src)
+
+	// The 16-key expected set for promptVars. Tier 1 command vars (23 keys)
+	// differ by design -- do NOT conflate (see BUG-136 record).
+	expectedKeys := []string{
+		"artefact_file",
+		"branch",
+		"context",
+		"context_file",
+		"environment",
+		"focus",
+		"framework",
+		"guides",
+		"output_dir",
+		"output_subdir",
+		"reference",
+		"tc_ids",
+		"tc_name",
+		"testcase",
+		"testcase_content",
+		"testcase_file",
+	}
+
+	// Find the promptVars block. It starts with "promptVars := map[string]string{"
+	// and ends with the next standalone "}".
+	startMarker := "promptVars := map[string]string{"
+	startIdx := strings.Index(content, startMarker)
+	require.NotEqual(t, -1, startIdx, "promptVars map not found in invoker.go")
+
+	// Extract from the marker to the closing brace.
+	block := content[startIdx:]
+	closeBrace := strings.Index(block, "\n\t\t}")
+	require.NotEqual(t, -1, closeBrace, "closing brace of promptVars not found")
+	block = block[:closeBrace]
+
+	for _, key := range expectedKeys {
+		quoted := `"` + key + `"`
+		assert.Contains(t, block, quoted,
+			"promptVars map must contain key %s (BUG-136)", key)
+	}
+
+	// Count the number of keys in the map to catch unexpected additions.
+	// Each key appears as a quoted string followed by a colon.
+	keyPattern := regexp.MustCompile(`"([a-z_]+)":\s`)
+	matches := keyPattern.FindAllStringSubmatch(block, -1)
+	assert.Len(t, matches, len(expectedKeys),
+		"promptVars must have exactly %d keys; got %d -- update this test if keys are added intentionally",
+		len(expectedKeys), len(matches))
+}
+
 // --- Audit #12 + #19: TestCaseIDs field with 8hex comment ---
 
 func TestSourceShape_TestCaseIDsFieldExists(t *testing.T) {
@@ -150,7 +205,11 @@ func TestSourceShape_TestCaseIDsFieldExists(t *testing.T) {
 	content := string(src)
 
 	assert.Contains(t, content, "TestCaseIDs")
-	assert.Contains(t, content, `TestCaseIDs     string`)
+	// Match the field declaration shape ("TestCaseIDs <whitespace> string")
+	// without pinning the exact whitespace -- gofmt re-aligns struct columns
+	// when adjacent field names change, so the absolute space count is not a
+	// structural invariant.
+	assert.Regexp(t, `TestCaseIDs\s+string`, content)
 
 	// Find the TestCaseIDs line and check its comment
 	for _, line := range strings.Split(content, "\n") {
@@ -248,6 +307,39 @@ func TestSourceShape_BuiltinActionNoBATSSkeletonLiterals(t *testing.T) {
 	// BATS setup function name must not appear in core
 	assert.NotContains(t, content, "_common_setup",
 		"builtin_action.go must not contain BATS setup function name -- skeleton belongs in framework_support.go")
+}
+
+// --- ENH-162: Automate template const sharing ---
+
+func TestSourceShape_FrameworkSupportReferencesScaffoldBATSConst(t *testing.T) {
+	src, err := os.ReadFile("framework_support.go")
+	require.NoError(t, err)
+	content := string(src)
+
+	// The framework support FallbackContent must reference the scaffold const,
+	// ensuring single-source-of-truth parity (ENH-162 AC #9).
+	assert.Contains(t, content, "scaffold.BATSAutomateTemplate",
+		"framework_support.go must reference scaffold.BATSAutomateTemplate")
+}
+
+func TestSourceShape_FrameworkSupportReferencesScaffoldPlaywrightConst(t *testing.T) {
+	src, err := os.ReadFile("framework_support.go")
+	require.NoError(t, err)
+	content := string(src)
+
+	assert.Contains(t, content, "scaffold.PlaywrightAutomateTemplate",
+		"framework_support.go must reference scaffold.PlaywrightAutomateTemplate")
+}
+
+func TestSourceShape_ScaffoldDefinesBATSAutomateTemplate(t *testing.T) {
+	src, err := os.ReadFile("../scaffold/templates.go")
+	require.NoError(t, err)
+	content := string(src)
+
+	assert.Contains(t, content, "BATSAutomateTemplate",
+		"scaffold/templates.go must define BATSAutomateTemplate const")
+	assert.Contains(t, content, "PlaywrightAutomateTemplate",
+		"scaffold/templates.go must define PlaywrightAutomateTemplate const")
 }
 
 func TestSourceShape_BuiltinActionNoFrameworkBranch(t *testing.T) {

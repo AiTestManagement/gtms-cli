@@ -126,6 +126,55 @@ func TestResolve_NoDefaultNoFlag(t *testing.T) {
 	assert.Contains(t, err.Error(), "No default adapter configured for 'create'")
 }
 
+// TestResolve_AutomateFromPresetDefault verifies BUG-123: an automate adapter
+// entry that carries a framework but no command/script/module resolves as a
+// Tier 0 built-in via the config default, and ResolveFramework yields the
+// preset framework (no --framework flag needed). This is the resolution path
+// the bats/playwright presets rely on for bare `gtms automate <tc>`.
+func TestResolve_AutomateFromPresetDefault(t *testing.T) {
+	cfg := &config.Config{
+		Project: config.ProjectConfig{Name: "Test", Repo: "org/test"},
+		Adapters: map[string]map[string]*config.AdapterConfig{
+			"automate": {
+				"agent-automate": {Mode: "sync", Framework: "bats"},
+			},
+		},
+		Defaults: map[string]string{"automate": "agent-automate"},
+	}
+
+	ra, err := Resolve(cfg, "automate", "")
+	require.NoError(t, err)
+	assert.Equal(t, "automate", ra.Command)
+	assert.Equal(t, "agent-automate", ra.Name)
+	assert.Equal(t, "sync", ra.Mode)
+	assert.Equal(t, 0, ra.Tier, "built-in entry (no command/script/module) is Tier 0")
+
+	// No --framework flag: framework comes from the adapter config entry.
+	assert.Equal(t, "bats", ResolveFramework(ra, ""), "framework resolves from the adapter config entry")
+}
+
+// TestResolve_ManualAutomateResolvesManualFramework verifies BUG-123: the manual
+// preset's automate default resolves framework "manual", which BuiltinAutomate
+// uses to surface the prime/execute diagnostic instead of the generic
+// no-default-adapter error.
+func TestResolve_ManualAutomateResolvesManualFramework(t *testing.T) {
+	cfg := &config.Config{
+		Project: config.ProjectConfig{Name: "Test", Repo: "org/test"},
+		Adapters: map[string]map[string]*config.AdapterConfig{
+			"automate": {
+				"manual-automate": {Mode: "sync", Framework: "manual"},
+			},
+		},
+		Defaults: map[string]string{"automate": "manual-automate"},
+	}
+
+	ra, err := Resolve(cfg, "automate", "")
+	require.NoError(t, err)
+	assert.Equal(t, "manual-automate", ra.Name)
+	assert.Equal(t, 0, ra.Tier)
+	assert.Equal(t, "manual", ResolveFramework(ra, ""))
+}
+
 func TestComputeTier_Command(t *testing.T) {
 	ac := &config.AdapterConfig{Command: "echo hello"}
 	assert.Equal(t, 1, computeTier(ac))

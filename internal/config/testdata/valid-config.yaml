@@ -6,12 +6,12 @@ adapters:
   create:
     local-claude:
       mode: sync
-      prompt-template: gtms/cases/prompts/create-standard.md
-      guide-dir: gtms/cases/guides/
+      prompt-template: gtms/test/prompts/create-standard.md
+      guide-dir: gtms/test/guides/
       command: 'claude -p {prompt}'
     github-create:
       mode: async
-      prompt-template: gtms/cases/prompts/create-standard.md
+      prompt-template: gtms/test/prompts/create-standard.md
       script: adapters/github-create.sh
       status-script: adapters/github-create-status.sh
   automate:

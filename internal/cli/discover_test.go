@@ -11,7 +11,7 @@ import (
 
 func TestDiscoverTestCases_FindsTCsAlphabetically(t *testing.T) {
 	root := t.TempDir()
-	dir := filepath.Join(root, "gtms/cases", "my-feature")
+	dir := filepath.Join(root, "gtms/test/cases", "my-feature")
 	require.NoError(t, os.MkdirAll(dir, 0755))
 
 	// Create files in non-alphabetical order
@@ -30,7 +30,7 @@ func TestDiscoverTestCases_FindsTCsAlphabetically(t *testing.T) {
 
 func TestDiscoverTestCases_EmptyFolder(t *testing.T) {
 	root := t.TempDir()
-	dir := filepath.Join(root, "gtms/cases", "empty-feature")
+	dir := filepath.Join(root, "gtms/test/cases", "empty-feature")
 	require.NoError(t, os.MkdirAll(dir, 0755))
 
 	_, err := DiscoverTestCases(root, "empty-feature", false)
@@ -40,7 +40,7 @@ func TestDiscoverTestCases_EmptyFolder(t *testing.T) {
 
 func TestDiscoverTestCases_IgnoresNonTCFiles(t *testing.T) {
 	root := t.TempDir()
-	dir := filepath.Join(root, "gtms/cases", "mixed")
+	dir := filepath.Join(root, "gtms/test/cases", "mixed")
 	require.NoError(t, os.MkdirAll(dir, 0755))
 
 	// tc-*.md files
@@ -58,7 +58,7 @@ func TestDiscoverTestCases_IgnoresNonTCFiles(t *testing.T) {
 
 func TestDiscoverTestCases_FolderNotExist(t *testing.T) {
 	root := t.TempDir()
-	require.NoError(t, os.MkdirAll(filepath.Join(root, "gtms/cases"), 0755))
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "gtms/test/cases"), 0755))
 
 	_, err := DiscoverTestCases(root, "nonexistent", false)
 	assert.Error(t, err)
@@ -67,7 +67,7 @@ func TestDiscoverTestCases_FolderNotExist(t *testing.T) {
 
 func TestDiscoverTestCases_NestedFolder(t *testing.T) {
 	root := t.TempDir()
-	dir := filepath.Join(root, "gtms/cases", "payments", "checkout")
+	dir := filepath.Join(root, "gtms/test/cases", "payments", "checkout")
 	require.NoError(t, os.MkdirAll(dir, 0755))
 
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "tc-abc1234-cart.md"), []byte("# test"), 0644))
@@ -79,7 +79,7 @@ func TestDiscoverTestCases_NestedFolder(t *testing.T) {
 
 func TestDiscoverTestCases_OnlyNonTCFiles(t *testing.T) {
 	root := t.TempDir()
-	dir := filepath.Join(root, "gtms/cases", "no-tcs")
+	dir := filepath.Join(root, "gtms/test/cases", "no-tcs")
 	require.NoError(t, os.MkdirAll(dir, 0755))
 
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "readme.md"), []byte("# readme"), 0644))
@@ -92,7 +92,7 @@ func TestDiscoverTestCases_OnlyNonTCFiles(t *testing.T) {
 
 func TestIsBulkFolder_DirectoryExists(t *testing.T) {
 	root := t.TempDir()
-	dir := filepath.Join(root, "gtms/cases", "my-feature")
+	dir := filepath.Join(root, "gtms/test/cases", "my-feature")
 	require.NoError(t, os.MkdirAll(dir, 0755))
 
 	assert.True(t, IsBulkFolder(root, "my-feature"))
@@ -100,14 +100,14 @@ func TestIsBulkFolder_DirectoryExists(t *testing.T) {
 
 func TestIsBulkFolder_NotDirectory(t *testing.T) {
 	root := t.TempDir()
-	require.NoError(t, os.MkdirAll(filepath.Join(root, "gtms/cases"), 0755))
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "gtms/test/cases"), 0755))
 
 	assert.False(t, IsBulkFolder(root, "nonexistent"))
 }
 
 func TestIsBulkFolder_FileNotDir(t *testing.T) {
 	root := t.TempDir()
-	tcDir := filepath.Join(root, "gtms/cases")
+	tcDir := filepath.Join(root, "gtms/test/cases")
 	require.NoError(t, os.MkdirAll(tcDir, 0755))
 	// Create a file with the same name (not a directory)
 	require.NoError(t, os.WriteFile(filepath.Join(tcDir, "my-feature"), []byte("file"), 0644))
@@ -117,7 +117,7 @@ func TestIsBulkFolder_FileNotDir(t *testing.T) {
 
 func TestIsBulkFolder_NestedDirectory(t *testing.T) {
 	root := t.TempDir()
-	dir := filepath.Join(root, "gtms/cases", "payments", "checkout")
+	dir := filepath.Join(root, "gtms/test/cases", "payments", "checkout")
 	require.NoError(t, os.MkdirAll(dir, 0755))
 
 	assert.True(t, IsBulkFolder(root, "payments/checkout"))
@@ -126,7 +126,7 @@ func TestIsBulkFolder_NestedDirectory(t *testing.T) {
 
 func TestDiscoverTestCases_RecursiveFindsSubdirs(t *testing.T) {
 	root := t.TempDir()
-	topDir := filepath.Join(root, "gtms/cases", "feature")
+	topDir := filepath.Join(root, "gtms/test/cases", "feature")
 	subDir := filepath.Join(topDir, "login")
 	require.NoError(t, os.MkdirAll(topDir, 0755))
 	require.NoError(t, os.MkdirAll(subDir, 0755))
@@ -143,7 +143,7 @@ func TestDiscoverTestCases_RecursiveFindsSubdirs(t *testing.T) {
 
 func TestDiscoverTestCases_RecursiveFalseIgnoresSubdirs(t *testing.T) {
 	root := t.TempDir()
-	topDir := filepath.Join(root, "gtms/cases", "feature")
+	topDir := filepath.Join(root, "gtms/test/cases", "feature")
 	subDir := filepath.Join(topDir, "login")
 	require.NoError(t, os.MkdirAll(topDir, 0755))
 	require.NoError(t, os.MkdirAll(subDir, 0755))
@@ -160,7 +160,7 @@ func TestDiscoverTestCases_RecursiveFalseIgnoresSubdirs(t *testing.T) {
 
 func TestDiscoverTestCases_RecursiveEmptySubdirs(t *testing.T) {
 	root := t.TempDir()
-	topDir := filepath.Join(root, "gtms/cases", "feature")
+	topDir := filepath.Join(root, "gtms/test/cases", "feature")
 	subDir := filepath.Join(topDir, "empty-sub")
 	require.NoError(t, os.MkdirAll(topDir, 0755))
 	require.NoError(t, os.MkdirAll(subDir, 0755))
@@ -175,7 +175,7 @@ func TestDiscoverTestCases_RecursiveEmptySubdirs(t *testing.T) {
 
 func TestDiscoverTestCases_RecursiveSortedAcrossDepths(t *testing.T) {
 	root := t.TempDir()
-	topDir := filepath.Join(root, "gtms/cases", "feature")
+	topDir := filepath.Join(root, "gtms/test/cases", "feature")
 	subA := filepath.Join(topDir, "alpha")
 	subB := filepath.Join(topDir, "beta")
 	require.NoError(t, os.MkdirAll(topDir, 0755))
@@ -194,7 +194,7 @@ func TestDiscoverTestCases_RecursiveSortedAcrossDepths(t *testing.T) {
 
 func TestDiscoverTestCases_RecursiveDeepNesting(t *testing.T) {
 	root := t.TempDir()
-	topDir := filepath.Join(root, "gtms/cases", "feature")
+	topDir := filepath.Join(root, "gtms/test/cases", "feature")
 	level2 := filepath.Join(topDir, "sub1")
 	level3 := filepath.Join(level2, "sub2")
 	require.NoError(t, os.MkdirAll(level3, 0755))
@@ -210,7 +210,7 @@ func TestDiscoverTestCases_RecursiveDeepNesting(t *testing.T) {
 
 func TestDiscoverTestCases_RecursiveNoTCsAnywhere(t *testing.T) {
 	root := t.TempDir()
-	topDir := filepath.Join(root, "gtms/cases", "feature")
+	topDir := filepath.Join(root, "gtms/test/cases", "feature")
 	subDir := filepath.Join(topDir, "sub")
 	require.NoError(t, os.MkdirAll(subDir, 0755))
 

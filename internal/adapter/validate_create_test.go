@@ -261,8 +261,8 @@ func TestBUG038_CreateValidatorRejectsIDMismatch(t *testing.T) {
 	}
 
 	// Tier 1 adapter that writes a spec file with a mismatched frontmatter ID.
-	// The adapter writes to gtms/cases/bug038test/ which is the target folder.
-	outputDir := filepath.Join(root, "gtms/cases", "bug038test")
+	// The adapter writes to gtms/test/cases/bug038test/ which is the target folder.
+	outputDir := filepath.Join(root, "gtms/test/cases", "bug038test")
 	require.NoError(t, os.MkdirAll(outputDir, 0755))
 
 	// The command template uses sh -c, which will write a spec file.
@@ -321,7 +321,7 @@ func TestBUG038_CreateValidatorHappyPath(t *testing.T) {
 		Project: config.ProjectConfig{Name: "Test", Repo: "org/test"},
 	}
 
-	outputDir := filepath.Join(root, "gtms/cases", "bug038ok")
+	outputDir := filepath.Join(root, "gtms/test/cases", "bug038ok")
 	require.NoError(t, os.MkdirAll(outputDir, 0755))
 
 	// Adapter that writes no spec files (just echoes).
@@ -426,7 +426,7 @@ func TestBUG040_IterativeCreateSucceeds(t *testing.T) {
 		Project: config.ProjectConfig{Name: "Test", Repo: "org/test"},
 	}
 
-	outputDir := filepath.Join(root, "gtms/cases", "bug040iter")
+	outputDir := filepath.Join(root, "gtms/test/cases", "bug040iter")
 	require.NoError(t, os.MkdirAll(outputDir, 0755))
 
 	// Simulate a pre-existing spec file from a prior invocation.

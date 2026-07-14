@@ -21,8 +21,9 @@ func newAutomateStatusCmd() *cobra.Command {
 		Short: "Show status of automate tasks",
 		Long: `Show the status of automate tasks.
 
-  gtms automate status          — list all automate tasks
-  gtms automate status tc-a1b2c3d4   — detail for a specific target`,
+  gtms automate status          -- list all automate tasks
+  gtms automate status tc-a1b2c3d4   -- detail for a specific target
+`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()

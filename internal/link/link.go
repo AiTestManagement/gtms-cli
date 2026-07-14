@@ -67,21 +67,14 @@ type CheckResult struct {
 // execute adapters match the framework; in that case the diagnostic names
 // the chosen adapter and the competing matches so the user can pin a
 // default in gtms.config if the implicit choice is wrong.
-//
-// Unused parameters preserved for CLI compatibility (branch, environment,
-// executedBy): wiring records carry only the six identity fields, so these
-// values are dropped — the runtime fields belong on the result contract.
-func LinkRecord(projectRoot string, cfg *config.Config, tcID, framework, artefact, branch, environment, executedBy string, force, strict bool) ([]string, error) {
-	_ = branch
-	_ = environment
-	_ = executedBy
+func LinkRecord(projectRoot string, cfg *config.Config, tcID, framework, artefact string, force, strict bool) ([]string, error) {
 
 	// Strict-mode spec check (kept for CLI back-compatibility; the spec
 	// must exist either way to compute testcase-hash, but the strict flag
 	// still controls the diagnostic shape that fires first).
 	if strict && !testcase.Exists(projectRoot, tcID) {
 		paths := layout.Current()
-		return nil, fmt.Errorf("test case '%s' not found in %s/", tcID, paths.Cases)
+		return nil, fmt.Errorf("test case '%s' not found in %s/", tcID, paths.TestCases)
 	}
 
 	// Extract base TC ID for record creation (strip folder prefix).
@@ -158,6 +151,80 @@ func LinkRecord(projectRoot string, cfg *config.Config, tcID, framework, artefac
 	return warnings, nil
 }
 
+// RefreshRecord recomputes stale hashes in an existing wiring record without
+// requiring the user to supply --framework or --artefact. The identity fields
+// (testcase, framework, adapter, artefact) are preserved verbatim; only the
+// hash fields are updated.
+//
+// Validation mirrors LinkRecord:
+//  1. Path-safety containment check on the stored artefact path.
+//  2. Artefact file exists on disk.
+//  3. Test case spec exists and is hashable.
+//
+// ENH-151 pending sentinel: when artefact-hash is PendingArtefactHash,
+// refresh updates testcase-hash only and leaves artefact-hash as "pending".
+// The record remains first-executeable through the ENH-151 bootstrap path.
+//
+// Returns (true, nil) when the record was rewritten with updated hashes,
+// (false, nil) when both hashes already match current content (no-op),
+// or (false, error) on validation failure.
+func RefreshRecord(projectRoot string, rec *wiring.WiringRecord) (bool, error) {
+	// Path-safety check on the stored artefact path.
+	artefactAbs, _, safeErr := pathsafe.ResolveUnderRoot(projectRoot, rec.Artefact)
+	if safeErr != nil {
+		return false, fmt.Errorf("unsafe artefact path for wiring: %w", safeErr)
+	}
+
+	// Artefact must exist on disk. The pending sentinel only controls whether
+	// the artefact hash gets recomputed (see below), it does not exempt the
+	// record from artefact-existence validation. A pending record whose
+	// artefact has been deleted is unrecoverable: refresh must surface that.
+	if _, err := os.Stat(artefactAbs); os.IsNotExist(err) {
+		return false, fmt.Errorf("artefact file not found: %s", rec.Artefact)
+	} else if err != nil {
+		return false, fmt.Errorf("checking artefact file: %w", err)
+	}
+
+	// Resolve and hash the test case spec.
+	specPath, err := pipeline.ResolveTestCaseSpec(projectRoot, rec.TestCase)
+	if err != nil {
+		return false, fmt.Errorf("spec not found for %s: %w", rec.TestCase, err)
+	}
+	newTestCaseHash, err := pipeline.HashFile(filepath.Join(projectRoot, filepath.FromSlash(specPath)))
+	if err != nil {
+		return false, fmt.Errorf("hashing test case spec: %w", err)
+	}
+
+	// Compute new artefact-hash unless the sentinel is pending.
+	newArtefactHash := rec.ArtefactHash
+	if !wiring.IsPendingArtefactHash(rec.ArtefactHash) {
+		h, err := pipeline.HashFile(artefactAbs)
+		if err != nil {
+			return false, fmt.Errorf("hashing artefact: %w", err)
+		}
+		newArtefactHash = h
+	}
+
+	// No-op when both hashes already match.
+	if newTestCaseHash == rec.TestCaseHash && newArtefactHash == rec.ArtefactHash {
+		return false, nil
+	}
+
+	// Write updated record preserving identity fields.
+	updated := &wiring.WiringRecord{
+		TestCase:     rec.TestCase,
+		TestCaseHash: newTestCaseHash,
+		Framework:    rec.Framework,
+		Adapter:      rec.Adapter,
+		Artefact:     rec.Artefact,
+		ArtefactHash: newArtefactHash,
+	}
+	if _, err := wiring.Write(projectRoot, updated); err != nil {
+		return false, fmt.Errorf("writing refreshed wiring: %w", err)
+	}
+	return true, nil
+}
+
 // CheckLink validates inputs and reports link health without writing anything.
 //
 // When artefact is provided: checks that the artefact file exists.
@@ -174,7 +241,7 @@ func CheckLink(projectRoot, tcID, framework, artefact string, strict bool) (Chec
 
 	if strict && !testcase.Exists(projectRoot, tcID) {
 		paths := layout.Current()
-		return result, fmt.Errorf("test case '%s' not found in %s/", tcID, paths.Cases)
+		return result, fmt.Errorf("test case '%s' not found in %s/", tcID, paths.TestCases)
 	}
 
 	// Extract base TC ID for record lookup (strip folder prefix).

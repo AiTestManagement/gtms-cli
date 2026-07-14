@@ -600,6 +600,150 @@ func TestBuildAdapterEntries_BuiltinDefaultMarker(t *testing.T) {
 	})
 }
 
+// ENH-163: When defaults.execute names a Mode 3 adapter, it is now a true
+// runtime default (Default=true) because no-flag `gtms execute` consults
+// defaults.execute before wiring lookup.
+func TestBuildAdapterEntries_ExecuteMode3Default(t *testing.T) {
+	// Tier 0 built-ins: manual-execute, agent-execute.
+	// Tier 2 script adapters: manual-execute-script, agent-execute-script
+	// (must be registered in config to appear in entries).
+	t.Run("manual-execute", func(t *testing.T) {
+		cfg := &config.Config{
+			Project:  config.ProjectConfig{Name: "manual", Repo: "test/repo"},
+			Adapters: map[string]map[string]*config.AdapterConfig{},
+			Defaults: map[string]string{"execute": "manual-execute"},
+		}
+		entries := buildAdapterEntries(cfg)
+		for _, e := range entries {
+			if e.Command == "execute" && e.Name == "manual-execute" {
+				assert.True(t, e.Default, "manual-execute must be marked Default")
+				assert.False(t, e.Configured, "manual-execute must NOT be Configured")
+				return
+			}
+		}
+		t.Fatal("manual-execute entry not found")
+	})
+
+	t.Run("agent-execute", func(t *testing.T) {
+		cfg := &config.Config{
+			Project:  config.ProjectConfig{Name: "manual", Repo: "test/repo"},
+			Adapters: map[string]map[string]*config.AdapterConfig{},
+			Defaults: map[string]string{"execute": "agent-execute"},
+		}
+		entries := buildAdapterEntries(cfg)
+		for _, e := range entries {
+			if e.Command == "execute" && e.Name == "agent-execute" {
+				assert.True(t, e.Default, "agent-execute must be marked Default")
+				assert.False(t, e.Configured, "agent-execute must NOT be Configured")
+				return
+			}
+		}
+		t.Fatal("agent-execute entry not found")
+	})
+
+	t.Run("manual-execute-script", func(t *testing.T) {
+		cfg := &config.Config{
+			Project: config.ProjectConfig{Name: "manual", Repo: "test/repo"},
+			Adapters: map[string]map[string]*config.AdapterConfig{
+				"execute": {
+					"manual-execute-script": {
+						Mode:   "sync",
+						Script: "gtms/adapters/manual-execute-script.sh",
+					},
+				},
+			},
+			Defaults: map[string]string{"execute": "manual-execute-script"},
+		}
+		entries := buildAdapterEntries(cfg)
+		for _, e := range entries {
+			if e.Command == "execute" && e.Name == "manual-execute-script" {
+				assert.True(t, e.Default, "manual-execute-script must be marked Default")
+				assert.False(t, e.Configured, "manual-execute-script must NOT be Configured")
+				return
+			}
+		}
+		t.Fatal("manual-execute-script entry not found")
+	})
+
+	t.Run("agent-execute-script", func(t *testing.T) {
+		cfg := &config.Config{
+			Project: config.ProjectConfig{Name: "manual", Repo: "test/repo"},
+			Adapters: map[string]map[string]*config.AdapterConfig{
+				"execute": {
+					"agent-execute-script": {
+						Mode:   "sync",
+						Script: "gtms/adapters/agent-execute-script.sh",
+					},
+				},
+			},
+			Defaults: map[string]string{"execute": "agent-execute-script"},
+		}
+		entries := buildAdapterEntries(cfg)
+		for _, e := range entries {
+			if e.Command == "execute" && e.Name == "agent-execute-script" {
+				assert.True(t, e.Default, "agent-execute-script must be marked Default")
+				assert.False(t, e.Configured, "agent-execute-script must NOT be Configured")
+				return
+			}
+		}
+		t.Fatal("agent-execute-script entry not found")
+	})
+}
+
+// ENH-160: When defaults.execute names a framework runner (bats-runner),
+// the adapter should remain Default=true, Configured=false.
+func TestBuildAdapterEntries_ExecuteFrameworkRunnerDefault(t *testing.T) {
+	cfg := fixtureConfig() // defaults.execute = bats-runner
+	entries := buildAdapterEntries(cfg)
+
+	for _, e := range entries {
+		if e.Command == "execute" && e.Name == "bats-runner" {
+			assert.True(t, e.Default,
+				"bats-runner must be marked Default (it IS the runtime default)")
+			assert.False(t, e.Configured,
+				"bats-runner must NOT be marked Configured (it is Default)")
+		}
+	}
+}
+
+// ENH-160/ENH-163: Table rendering shows "configured" label for Configured entries.
+// After ENH-163, no production code sets Configured=true for execute Mode 3
+// adapters, but the label rendering path still works for any entry with
+// Configured=true (future-proofing).
+func TestRenderAdaptersTable_ConfiguredLabel(t *testing.T) {
+	entries := []adapterEntry{
+		{Command: "create", Name: "hypothetical", Tier: 2, Tool: "echo hi", Mode: "sync", Default: false, Configured: true},
+	}
+	var buf strings.Builder
+	renderAdaptersTable(&buf, entries, false)
+	out := buf.String()
+	assert.Contains(t, out, "configured",
+		"table must show 'configured' label for Configured entries")
+}
+
+// ENH-160/ENH-163: JSON output includes the configured field (schema preserved).
+// After ENH-163, Mode 3 execute defaults carry Default=true, not Configured=true.
+func TestRunListAdapters_JSON_ConfiguredField(t *testing.T) {
+	entries := []adapterEntry{
+		{Command: "execute", Name: "manual-execute", Tier: 0, Tool: "(built-in)", Mode: "sync", Default: true, Configured: false},
+		{Command: "create", Name: "manual-create", Tier: 0, Tool: "(built-in)", Mode: "sync", Default: true, Configured: false},
+	}
+	var buf strings.Builder
+	err := runListAdapters(&buf, entries, true, false)
+	require.NoError(t, err)
+
+	var result []adapterEntry
+	err = json.Unmarshal([]byte(buf.String()), &result)
+	require.NoError(t, err)
+
+	for _, e := range result {
+		if e.Name == "manual-execute" {
+			assert.True(t, e.Default, "JSON default field should be true for Mode 3 execute default")
+			assert.False(t, e.Configured, "JSON configured field should be false")
+		}
+	}
+}
+
 func TestListCmd_Help(t *testing.T) {
 	cmd := newListCmd()
 	assert.Equal(t, "list <adapters|frameworks|all>", cmd.Use)

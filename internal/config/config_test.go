@@ -31,8 +31,8 @@ func TestLoadValidConfig(t *testing.T) {
 	lc := cfg.Adapters["create"]["local-claude"]
 	assert.Equal(t, "sync", lc.Mode)
 	assert.Equal(t, `claude -p {prompt}`, lc.Command)
-	assert.Equal(t, "gtms/cases/prompts/create-standard.md", lc.PromptTemplate)
-	assert.Equal(t, "gtms/cases/guides/", lc.GuideDir)
+	assert.Equal(t, "gtms/test/prompts/create-standard.md", lc.PromptTemplate)
+	assert.Equal(t, "gtms/test/guides/", lc.GuideDir)
 
 	gc := cfg.Adapters["create"]["github-create"]
 	assert.Equal(t, "async", gc.Mode)

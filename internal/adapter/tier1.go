@@ -276,15 +276,269 @@ func warnUnrecognizedVars(w io.Writer, commandTemplate string, vars map[string]s
 	fmt.Fprintf(w, "    Valid variables: %s\n", strings.Join(valid, ", "))
 }
 
-// InvokeTier1 executes a Tier 1 adapter by substituting variables in the command
-// template and running it via the shell. GTMS handles the result contract for Tier 1.
-func InvokeTier1(ctx context.Context, ac *AdapterContext, commandTemplate string) (*InvocationResult, error) {
-	// Substitute variables in command template
-	vars := map[string]string{
+// quoteState describes the POSIX shell quoting context at a byte position in a
+// Tier 1 command template.
+type quoteState int
+
+const (
+	quoteNone quoteState = iota
+	quoteSingle
+	quoteDouble
+)
+
+// quoteStates returns the POSIX shell quoting state at every byte index of s,
+// and reports whether s ends outside any quote (balanced).
+//
+// It models the three rules that matter for BUG-154 detection:
+//
+//   - Outside quotes, a backslash escapes the next character, so \" is a literal
+//     quote character and NOT a state change.
+//   - Inside single quotes, backslash is NOT special (POSIX). Only ' closes.
+//   - Inside double quotes, a backslash escapes the next character, so \" stays
+//     inside. Only an unescaped " closes.
+//
+// The backslash rule is load-bearing. GTMS's own shipped adapter commands embed
+// escaped quotes inside a double-quoted prose segment (<gtms-file name=\"...\">)
+// and then place a BARE {prompt_file} after it. A scanner that treated each \"
+// as a state change would read that trailing placeholder as "inside quotes" and
+// warn on GTMS's own correct configuration.
+//
+// balanced == false means the template ends inside an unterminated quote. The
+// caller MUST then stay silent: the shape is malformed or exotic, the scanner
+// cannot tell where the placeholder really sits, and BUG-154 requires the
+// heuristic to under-warn rather than over-warn.
+// quoteContext holds per-byte analysis of a command template: which quoting context
+// each byte sits in, and whether it is inside a command substitution ($(...)).
+type quoteContext struct {
+	states  []quoteState
+	inSubst []bool
+}
+
+func analyzeQuoting(s string) (ctx quoteContext, balanced bool) {
+	n := len(s)
+	ctx.states = make([]quoteState, n)
+	ctx.inSubst = make([]bool, n)
+	st := quoteNone
+
+	// substDepth tracks nested $(...) regions. A positive depth means we are
+	// inside at least one command substitution. Each $( pushes; each ) at
+	// positive depth pops. This is tracked separately from the quote-state
+	// machine because $(...) resets the quoting context for its interior while
+	// the outer quote state suspends and resumes when the substitution closes.
+	//
+	// We track it as a simple counter because we only need "is this byte inside
+	// a substitution, yes/no" -- we do not need to know whether the *inner*
+	// quoting is balanced (the outer shell handles that).
+	substDepth := 0
+
+	for i := 0; i < n; i++ {
+		ctx.states[i] = st
+		ctx.inSubst[i] = substDepth > 0
+
+		switch st {
+		case quoteNone:
+			switch s[i] {
+			case '\\':
+				if i+1 < n {
+					i++
+					ctx.states[i] = st
+					ctx.inSubst[i] = substDepth > 0
+				}
+			case '\'':
+				st = quoteSingle
+			case '"':
+				st = quoteDouble
+			case '$':
+				if i+1 < n && s[i+1] == '(' {
+					substDepth++
+					i++
+					ctx.states[i] = st
+					ctx.inSubst[i] = substDepth > 0
+				}
+			case ')':
+				if substDepth > 0 {
+					substDepth--
+				}
+			}
+		case quoteSingle:
+			// POSIX: no escape processing inside single quotes.
+			if s[i] == '\'' {
+				st = quoteNone
+			}
+		case quoteDouble:
+			switch s[i] {
+			case '\\':
+				if i+1 < n {
+					i++
+					ctx.states[i] = st
+					ctx.inSubst[i] = substDepth > 0
+				}
+			case '"':
+				st = quoteNone
+			case '$':
+				if i+1 < n && s[i+1] == '(' {
+					substDepth++
+					i++
+					ctx.states[i] = st
+					ctx.inSubst[i] = substDepth > 0
+				}
+			case ')':
+				if substDepth > 0 {
+					substDepth--
+				}
+			}
+		}
+	}
+	return ctx, st == quoteNone
+}
+
+// warnQuotedPlaceholders scans commandTemplate for RECOGNISED {placeholder} tokens
+// that sit inside a shell-quoted segment, and warns that GTMS already escapes each
+// value as a complete shell token (BUG-154).
+//
+// Tier 1 substitution passes every value through ShellEscape, which yields ONE
+// complete POSIX token (bare when safe, single-quoted when not, '' when empty).
+// The only composition that works is therefore a bare placeholder. When an author
+// wraps one in shell quotes, ShellEscape's quotes become literal characters inside
+// the author's word: the adapter writes to a bogus location, exits 0, and GTMS
+// records a false pass.
+//
+// Deliberate constraints, each pinned by a canonical test case:
+//
+//   - Only RECOGNISED placeholders warn. An unrecognised token is never substituted,
+//     so it is never escaped, so it cannot collide with the author's quotes -- that
+//     is warnUnrecognizedVars' business (BUG-076), not ours. The two diagnostics
+//     never double-fire on the same token.
+//   - Warnings are deduplicated by name, so one offending placeholder yields exactly
+//     one diagnostic.
+//   - A bare placeholder is NEVER named, even when a quoted sibling in the same
+//     template is. Telling an author to unquote something already bare sends them to
+//     fix working code. This is also why we do not print a "valid variables" list the
+//     way warnUnrecognizedVars does -- that list would name every bare placeholder.
+//   - Ambiguous (unbalanced) quoting stays silent. See analyzeQuoting.
+//   - A placeholder inside a $(...) command substitution is suppressed. The placeholder's
+//     real quoting context is the inner shell of the substitution, not the outer double
+//     quotes, and GTMS's escaping is correct there. The suppression is region-based: if
+//     $(...) has already closed before the placeholder, the placeholder is back in the
+//     outer context and DOES warn.
+//
+// Inspection is limited to the Tier 1 command: template. It must NEVER scan a
+// prompt-template file or the assembled prompt: those use the same {placeholder}
+// syntax but follow the deliberately unescaped textual-substitution contract, so
+// quoted prose there is valid.
+//
+// The remedy text offers two routes:
+//   - Prose interpolation -> move it to a prompt-template file, consumed as bare {prompt_file}.
+//   - Shell argument composition or second-shell command -> use a Tier 2 adapter or wrapper
+//     script, where the value arrives as a GTMS_ env var and normal shell quoting applies.
+//
+// Under the complete-token contract there is no way to build a multi-word argument
+// containing an interpolated value in a Tier 1 command, because a bare {x} is its own
+// token. That gap is why the dogfood config originally quoted {tc_name} inside prose.
+// The remedy must name it honestly rather than blessing the quoted form.
+func warnQuotedPlaceholders(w io.Writer, commandTemplate string, vars map[string]string) {
+	ctx, balanced := analyzeQuoting(commandTemplate)
+	if !balanced {
+		// Cannot tell where the placeholder sits. Stay silent (BUG-154).
+		return
+	}
+
+	seen := make(map[string]bool)
+	var quoted []string
+	for _, m := range templateVarPattern.FindAllStringSubmatchIndex(commandTemplate, -1) {
+		open := m[0]
+		name := commandTemplate[m[2]:m[3]]
+		if _, known := vars[name]; !known {
+			continue // unrecognised: BUG-076's business, never ours
+		}
+		if seen[name] {
+			continue
+		}
+		// A placeholder is only warned about when:
+		//   (a) it sits inside quotes (not quoteNone), AND
+		//   (b) it is NOT inside a $(...) command substitution.
+		if ctx.states[open] == quoteNone || ctx.inSubst[open] {
+			continue
+		}
+		seen[name] = true
+		quoted = append(quoted, name)
+	}
+
+	if len(quoted) == 0 {
+		return
+	}
+
+	braced := make([]string, len(quoted))
+	for i, name := range quoted {
+		braced[i] = "{" + name + "}"
+	}
+
+	fmt.Fprintf(w, "⚠ Shell-quoted template variable(s): %s\n", strings.Join(braced, ", "))
+	fmt.Fprintf(w, "    GTMS already shell-escapes each Tier 1 value as one complete shell token,\n")
+	fmt.Fprintf(w, "    so shell quotes around a placeholder can end up inside the value as literal\n")
+	fmt.Fprintf(w, "    quote characters. The adapter then writes to the wrong place and still exits 0.\n")
+	fmt.Fprintf(w, "    Under the complete-token contract there is no Tier 1 way to interpolate a value\n")
+	fmt.Fprintf(w, "    into a multi-word argument, because a bare placeholder is always its own token.\n")
+	fmt.Fprintf(w, "    Two remedies, depending on what you are doing:\n")
+	fmt.Fprintf(w, "    (a) Interpolating into prose: move it to a prompt-template file (textual,\n")
+	fmt.Fprintf(w, "        unescaped substitution) and consume the result as bare {prompt_file}.\n")
+	fmt.Fprintf(w, "    (b) Composing a shell argument or building a command for a second shell:\n")
+	fmt.Fprintf(w, "        use a Tier 2 adapter or wrapper script, where the value arrives as a\n")
+	fmt.Fprintf(w, "        GTMS_ env var and normal shell quoting applies.\n")
+	fmt.Fprintf(w, "    Quoting the whole \"command:\" scalar in gtms.config is YAML syntax, and is fine.\n")
+}
+
+// adapterFacingPath prepares a project-relative path carrier for the external
+// adapter. When ENH-168 working-dir has moved the run cwd off the project root,
+// the relative carrier is absolutized so a runner in a subdir can still resolve
+// the input it is handed.
+//
+// The result is ALWAYS forward-slash (BUG-126): the value is handed to a POSIX
+// shell (sh -c / Tier-2 script) and on to CLIs (e.g. `npx playwright test`) that
+// reject backslash paths on Windows. filepath.Join emits OS-native separators, so
+// the join is normalized with filepath.ToSlash for the shell consumer. cmd.Dir
+// (the cwd) is set separately and rightly stays OS-native -- only the carrier
+// STRINGS need POSIX separators.
+//
+// Applied ONLY to the values handed to the adapter (Tier 1 {testcase_file} /
+// {artefact_file} and the Tier 2 GTMS_ equivalents), never to the ctx fields
+// themselves -- Tier-0 BuiltinAutomate consumes ctx.TestCaseFile as project-relative
+// (filepath.Join(ProjectRoot, TestCaseFile)) and would break if it were absolutized.
+//
+// The RunDir == "" arm is defensive (RunDir is always set today). The live
+// absolutization condition is RunDir != ProjectRoot -- i.e. working-dir is active.
+// When it is not, a relative carrier is already forward-slash and ToSlash is a
+// byte-for-byte no-op (no regression).
+func adapterFacingPath(ac *AdapterContext, p string) string {
+	if p == "" {
+		return p
+	}
+	// Absolutize only when working-dir is active (RunDir != ProjectRoot). RunDir is
+	// always set today; the live condition is RunDir != ProjectRoot.
+	if !filepath.IsAbs(p) && ac.RunDir != "" && ac.RunDir != ac.ProjectRoot {
+		p = filepath.Join(ac.ProjectRoot, filepath.FromSlash(p))
+	}
+	// BUG-126: normalize separators for the shell consumer. No-op on Unix.
+	return filepath.ToSlash(p)
+}
+
+// tier1Vars builds the {placeholder} -> value map for Tier 1 substitution.
+//
+// It is the single definition of which placeholders are RECOGNISED. Both
+// invocation-time diagnostics key off this map: warnUnrecognizedVars warns about
+// tokens absent from it (BUG-076), and warnQuotedPlaceholders warns only about
+// tokens present in it (BUG-154). Tests derive the recognised set from here rather
+// than restating it, so a newly added placeholder cannot silently escape either
+// diagnostic.
+//
+// Values here are RAW. ShellEscape is applied by the caller, after the diagnostics
+// have run against the original template.
+func tier1Vars(ac *AdapterContext) map[string]string {
+	return map[string]string{
 		"prompt":           ac.AssembledPrompt,
 		"prompt_file":      ac.PromptFile,
-		"artefact_file":    ac.ArtefactFile,
-		"testcase_file":    ac.TestCaseFile,
+		"artefact_file":    adapterFacingPath(ac, ac.ArtefactFile),
+		"testcase_file":    adapterFacingPath(ac, ac.TestCaseFile),
 		"output_dir":       ac.OutputDir,
 		"output_subdir":    ac.OutputSubdir,
 		"reference":        ac.Reference,
@@ -305,11 +559,24 @@ func InvokeTier1(ctx context.Context, ac *AdapterContext, commandTemplate string
 		"tc_ids":           ac.TestCaseIDs,
 		"tc_name":          ac.TestCaseName,
 	}
+}
+
+// InvokeTier1 executes a Tier 1 adapter by substituting variables in the command
+// template and running it via the shell. GTMS handles the result contract for Tier 1.
+func InvokeTier1(ctx context.Context, ac *AdapterContext, commandTemplate string) (*InvocationResult, error) {
+	vars := tier1Vars(ac)
 
 	// Warn about unrecognized {variable} tokens in the command template (BUG-076).
 	// Runs on the original commandTemplate BEFORE substitution so that literal
 	// {foo} text in substituted values does not trigger false-positive warnings.
 	warnUnrecognizedVars(os.Stderr, commandTemplate, vars)
+
+	// Warn about recognised placeholders the author wrapped in shell quotes (BUG-154).
+	// Also runs on the ORIGINAL template, before the ShellEscape loop below: quote
+	// characters arriving inside a substituted VALUE are data, not author quoting, and
+	// must never trigger this. Inspects the command: template only -- never a
+	// prompt-template file or the assembled prompt.
+	warnQuotedPlaceholders(os.Stderr, commandTemplate, vars)
 
 	// Shell-escape all values to prevent command injection (BUG-001).
 	// This ensures metacharacters in user-supplied values are treated as
@@ -342,8 +609,8 @@ func InvokeTier1(ctx context.Context, ac *AdapterContext, commandTemplate string
 		cmd.Env = ensureMSYSPath(env)
 	}
 
-	if ac.WorkDir != "" {
-		cmd.Dir = ac.WorkDir
+	if ac.RunDir != "" {
+		cmd.Dir = ac.RunDir
 	}
 
 	// Pipe assembled prompt via stdin for tools that read from stdin.

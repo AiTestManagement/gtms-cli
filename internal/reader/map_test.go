@@ -12,19 +12,19 @@ func TestMap_GroupsByRequirement(t *testing.T) {
 	root := t.TempDir()
 
 	// 2 test cases for REQ-A, 1 for REQ-B
-	writeFile(t, root, filepath.Join("gtms/cases", "tc-aaa1111-login-happy.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-aaa1111-login-happy.md"), `---
 test_case_id: tc-aaa1111
 title: Login Happy Path
 requirement: REQ-A
 ---
 `)
-	writeFile(t, root, filepath.Join("gtms/cases", "tc-aaa2222-login-error.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-aaa2222-login-error.md"), `---
 test_case_id: tc-aaa2222
 title: Login Error Path
 requirement: REQ-A
 ---
 `)
-	writeFile(t, root, filepath.Join("gtms/cases", "tc-bbb1111-checkout-flow.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-bbb1111-checkout-flow.md"), `---
 test_case_id: tc-bbb1111
 title: Checkout Flow
 requirement: REQ-B
@@ -57,13 +57,13 @@ requirement: REQ-B
 func TestMap_UnlinkedTestCases(t *testing.T) {
 	root := t.TempDir()
 
-	writeFile(t, root, filepath.Join("gtms/cases", "tc-aaa1111-linked.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-aaa1111-linked.md"), `---
 test_case_id: tc-aaa1111
 title: Linked Test
 requirement: REQ-A
 ---
 `)
-	writeFile(t, root, filepath.Join("gtms/cases", "tc-bbb1111-orphan.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-bbb1111-orphan.md"), `---
 test_case_id: tc-bbb1111
 title: Unlinked Test
 requirement: ""
@@ -83,7 +83,7 @@ requirement: ""
 func TestMap_SlugDerivation(t *testing.T) {
 	root := t.TempDir()
 
-	writeFile(t, root, filepath.Join("gtms/cases", "tc-a1b2c3d-tier1-sync-happy-path.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-a1b2c3d-tier1-sync-happy-path.md"), `---
 test_case_id: tc-a1b2c3d
 title: Tier 1 Sync Happy Path Test
 requirement: REQ-1
@@ -104,7 +104,7 @@ func TestMap_SlugDerivation_ShortFilename(t *testing.T) {
 	// Test case where filename has no slug portion (e.g. "tc-001.md")
 	root := t.TempDir()
 
-	writeFile(t, root, filepath.Join("gtms/cases", "tc-001.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-001.md"), `---
 test_case_id: tc-001
 title: Short Filename Test
 requirement: REQ-1
@@ -139,7 +139,7 @@ func TestMap_EmptyProject(t *testing.T) {
 func TestMap_WithAutomation(t *testing.T) {
 	root := t.TempDir()
 
-	writeFile(t, root, filepath.Join("gtms/cases", "tc-aaa1111-automated.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-aaa1111-automated.md"), `---
 test_case_id: tc-aaa1111
 title: Automated Test
 requirement: REQ-1
@@ -164,7 +164,7 @@ requirement: REQ-1
 func TestMap_WithExecution(t *testing.T) {
 	root := t.TempDir()
 
-	writeFile(t, root, filepath.Join("gtms/cases", "tc-aaa1111-executed.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-aaa1111-executed.md"), `---
 test_case_id: tc-aaa1111
 title: Executed Test
 requirement: REQ-1
@@ -189,7 +189,7 @@ requirement: REQ-1
 func TestMap_ExecuteStatusReflectsResult(t *testing.T) {
 	root := t.TempDir()
 
-	writeFile(t, root, filepath.Join("gtms/cases", "tc-aaa1111-failing.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-aaa1111-failing.md"), `---
 test_case_id: tc-aaa1111
 title: Failing Test
 requirement: REQ-1
@@ -214,7 +214,7 @@ requirement: REQ-1
 func TestMap_ExecuteStatusReflectsSkippedResult(t *testing.T) {
 	root := t.TempDir()
 
-	writeFile(t, root, filepath.Join("gtms/cases", "tc-aaa1111-skipped.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-aaa1111-skipped.md"), `---
 test_case_id: tc-aaa1111
 title: Skipped Test
 requirement: REQ-1
@@ -239,7 +239,7 @@ requirement: REQ-1
 func TestMap_ExecuteStatusCompleteForPass(t *testing.T) {
 	root := t.TempDir()
 
-	writeFile(t, root, filepath.Join("gtms/cases", "tc-aaa1111-passing.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-aaa1111-passing.md"), `---
 test_case_id: tc-aaa1111
 title: Passing Test
 requirement: REQ-1
@@ -265,20 +265,20 @@ func TestMap_Summary(t *testing.T) {
 	root := t.TempDir()
 
 	// 2 test cases across 2 requirements
-	writeFile(t, root, filepath.Join("gtms/cases", "tc-aaa1111-first.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-aaa1111-first.md"), `---
 test_case_id: tc-aaa1111
 title: First Test
 requirement: REQ-A
 ---
 `)
-	writeFile(t, root, filepath.Join("gtms/cases", "tc-bbb1111-second.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-bbb1111-second.md"), `---
 test_case_id: tc-bbb1111
 title: Second Test
 requirement: REQ-B
 ---
 `)
 	// 1 unlinked
-	writeFile(t, root, filepath.Join("gtms/cases", "tc-ccc1111-unlinked.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-ccc1111-unlinked.md"), `---
 test_case_id: tc-ccc1111
 title: Unlinked
 ---
@@ -310,7 +310,7 @@ title: Unlinked
 func TestMap_ActiveTaskOverride(t *testing.T) {
 	root := t.TempDir()
 
-	writeFile(t, root, filepath.Join("gtms/cases", "tc-aaa1111-pending.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-aaa1111-pending.md"), `---
 test_case_id: tc-aaa1111
 title: Pending Automate
 requirement: REQ-1
@@ -340,7 +340,7 @@ branch: feature/automate
 func TestMap_ActiveTaskOverride_InProgress(t *testing.T) {
 	root := t.TempDir()
 
-	writeFile(t, root, filepath.Join("gtms/cases", "tc-aaa1111-active.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-aaa1111-active.md"), `---
 test_case_id: tc-aaa1111
 title: Active Automate
 requirement: REQ-1
@@ -376,7 +376,7 @@ branch: feature/automate
 func TestMap_ActiveTaskOverride_ExecuteTask(t *testing.T) {
 	root := t.TempDir()
 
-	writeFile(t, root, filepath.Join("gtms/cases", "tc-aaa1111-executing.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-aaa1111-executing.md"), `---
 test_case_id: tc-aaa1111
 title: Executing Test
 requirement: REQ-1
@@ -407,14 +407,14 @@ func TestMap_MalformedTestCase(t *testing.T) {
 	root := t.TempDir()
 
 	// Valid test case
-	writeFile(t, root, filepath.Join("gtms/cases", "tc-aaa1111-valid.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-aaa1111-valid.md"), `---
 test_case_id: tc-aaa1111
 title: Valid Test
 requirement: REQ-1
 ---
 `)
 	// Malformed test case
-	writeFile(t, root, filepath.Join("gtms/cases", "tc-bad.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-bad.md"), `---
 broken: yaml: [[[
 ---
 `)

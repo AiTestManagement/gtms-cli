@@ -159,3 +159,105 @@ func TestIsAlreadyPassing_FrameworkScoped(t *testing.T) {
 	assert.True(t, isAlreadyPassing(root, "tc-00000006", ""))
 	assert.True(t, isAlreadyPassing(root, "tc-00000007", ""))
 }
+
+// seedNonExecutePassingResult writes a terminal handoff under .gtms/results/
+// for the given (TC, framework) with the specified command (e.g. "automate",
+// "prime", "create") and status: complete + result: pass. BUG-129: used to
+// verify that non-execute pass contracts do NOT satisfy isAlreadyPassing.
+func seedNonExecutePassingResult(t *testing.T, root, taskID, tcID, command, framework string) {
+	t.Helper()
+	adapterName := framework + "-runner"
+	if framework == "" {
+		adapterName = "bats-runner"
+	}
+	rc := &result.ResultContract{
+		Task:      taskID,
+		Command:   command,
+		Target:    tcID,
+		Adapter:   adapterName,
+		Mode:      "sync",
+		Framework: framework,
+		Created:   "2026-06-30T10:00:00Z",
+		Status:    "complete",
+		Result:    "pass",
+		Completed: "2026-06-30T10:01:00Z",
+	}
+	dir := filepath.Join(root, ".gtms", "results")
+	require.NoError(t, os.MkdirAll(dir, 0755))
+	_, err := result.Create(root, rc)
+	require.NoError(t, err)
+}
+
+// BUG-129: Tests that verify isAlreadyPassing ignores non-execute commands.
+
+// TestIsAlreadyPassing_IgnoresAutomatePass: an automate-pass contract for
+// (tc, bats) must NOT satisfy isAlreadyPassing -- the core BUG-129 scenario.
+func TestIsAlreadyPassing_IgnoresAutomatePass(t *testing.T) {
+	root := t.TempDir()
+	seedNonExecutePassingResult(t, root, "task-auto01", "tc-00000010", "automate", "bats")
+
+	assert.False(t, isAlreadyPassing(root, "tc-00000010", "bats"),
+		"automate pass must not satisfy isAlreadyPassing")
+}
+
+// TestIsAlreadyPassing_IgnoresPrimePass: a prime-pass contract must NOT
+// satisfy isAlreadyPassing -- closes the full non-execute class.
+func TestIsAlreadyPassing_IgnoresPrimePass(t *testing.T) {
+	root := t.TempDir()
+	seedNonExecutePassingResult(t, root, "task-prime01", "tc-00000011", "prime", "bats")
+
+	assert.False(t, isAlreadyPassing(root, "tc-00000011", "bats"),
+		"prime pass must not satisfy isAlreadyPassing")
+}
+
+// TestIsAlreadyPassing_IgnoresCreatePass: a create-pass contract must NOT
+// satisfy isAlreadyPassing.
+func TestIsAlreadyPassing_IgnoresCreatePass(t *testing.T) {
+	root := t.TempDir()
+	seedNonExecutePassingResult(t, root, "task-create01", "tc-00000012", "create", "bats")
+
+	assert.False(t, isAlreadyPassing(root, "tc-00000012", "bats"),
+		"create pass must not satisfy isAlreadyPassing")
+}
+
+// TestIsAlreadyPassing_ExecutePassStillDetected: an execute-pass contract
+// must still satisfy isAlreadyPassing -- regression guard for the positive
+// case after the BUG-129 command filter was added.
+func TestIsAlreadyPassing_ExecutePassStillDetected(t *testing.T) {
+	root := t.TempDir()
+	seedPassingResult(t, root, "task-exec01", "tc-00000013", "bats")
+
+	assert.True(t, isAlreadyPassing(root, "tc-00000013", "bats"),
+		"execute pass must still satisfy isAlreadyPassing")
+}
+
+// TestIsAlreadyPassing_AutomateThenExecutePass: when both an automate pass
+// and a later execute pass exist for the same (tc, framework), the execute
+// pass wins as the latest terminal contract and isAlreadyPassing returns true.
+func TestIsAlreadyPassing_AutomateThenExecutePass(t *testing.T) {
+	root := t.TempDir()
+	// Seed an automate pass with an earlier timestamp.
+	seedNonExecutePassingResult(t, root, "task-auto02", "tc-00000014", "automate", "bats")
+	// Seed an execute pass with a later timestamp (seedPassingResult uses
+	// 2026-05-19T10:01:00Z which is earlier than seedNonExecutePassingResult's
+	// 2026-06-30T10:01:00Z, so we need a custom seed here).
+	rc := &result.ResultContract{
+		Task:      "task-exec02",
+		Command:   "execute",
+		Target:    "tc-00000014",
+		Adapter:   "bats-runner",
+		Mode:      "sync",
+		Framework: "bats",
+		Created:   "2026-07-01T10:00:00Z",
+		Status:    "complete",
+		Result:    "pass",
+		Completed: "2026-07-01T10:01:00Z",
+	}
+	dir := filepath.Join(root, ".gtms", "results")
+	require.NoError(t, os.MkdirAll(dir, 0755))
+	_, err := result.Create(root, rc)
+	require.NoError(t, err)
+
+	assert.True(t, isAlreadyPassing(root, "tc-00000014", "bats"),
+		"latest execute pass must win over earlier automate pass")
+}

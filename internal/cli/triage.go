@@ -28,13 +28,16 @@ func newTriageCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "triage <test-case-id>",
 		Short: "Classify and triage test failures",
-		Long: `Classify a failed test execution and trigger follow-on actions.
+		Long: `Classify a test failure after execution and trigger follow-on actions.
+Requires a wiring record and at least one recorded execution result for the
+test case; run 'gtms execute <tc-id>' first.
 Specify exactly one of --automation-wrong, --test-wrong, or --app-wrong.
 
   gtms triage tc-a1b2c3d4 --automation-wrong --summary "Selectors changed"
   gtms triage tc-a1b2c3d4 --test-wrong --summary "Expected result changed"
   gtms triage tc-a1b2c3d4 --app-wrong --defect JIRA-789 --summary "Payment gateway 500"
-  gtms triage tc-a1b2c3d4 --app-wrong --summary "bug" --json   — machine-readable JSON output`,
+  gtms triage tc-a1b2c3d4 --app-wrong --summary "bug" --json
+  (--json prints the result as machine-readable JSON)`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			target := strings.ToLower(args[0])
@@ -87,7 +90,7 @@ Specify exactly one of --automation-wrong, --test-wrong, or --app-wrong.
 
 	cmd.Flags().BoolVar(&automationWrong, "automation-wrong", false, "Automation code is broken and needs rework")
 	cmd.Flags().BoolVar(&testWrong, "test-wrong", false, "Test case itself is wrong and needs review")
-	cmd.Flags().BoolVar(&appWrong, "app-wrong", false, "Application has a bug (raise defect)")
+	cmd.Flags().BoolVar(&appWrong, "app-wrong", false, "Application has a bug (record the decision; link a defect ID with --defect)")
 	cmd.Flags().StringVar(&summary, "summary", "", "Summary of the triage decision")
 	cmd.Flags().StringVar(&defect, "defect", "", "Defect ID to link (used with --app-wrong)")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Output as JSON")

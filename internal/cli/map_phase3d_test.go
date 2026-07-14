@@ -24,7 +24,7 @@ import (
 // preserved legacy compact fields.
 func TestMapPhase3D_CLIJSON_WiredEntryShape(t *testing.T) {
 	root := t.TempDir()
-	writeTestFile(t, root, filepath.Join("gtms/cases", "tc-aaa1111-wired.md"), `---
+	writeTestFile(t, root, filepath.Join("gtms/test/cases", "tc-aaa1111-wired.md"), `---
 test_case_id: tc-aaa1111
 title: Wired TC
 requirement: REQ-A
@@ -74,7 +74,7 @@ requirement: REQ-A
 // the JSON null contract for selected_framework when no wiring exists.
 func TestMapPhase3D_CLIJSON_NotWiredSerialisesSelectedFrameworkAsNull(t *testing.T) {
 	root := t.TempDir()
-	writeTestFile(t, root, filepath.Join("gtms/cases", "tc-bbb1111-bare.md"), `---
+	writeTestFile(t, root, filepath.Join("gtms/test/cases", "tc-bbb1111-bare.md"), `---
 test_case_id: tc-bbb1111
 title: Bare TC
 requirement: REQ-B
@@ -106,7 +106,7 @@ requirement: REQ-B
 // the table view.
 func TestMapPhase3D_CLIJSON_MultiFrameworkWorstOfRule(t *testing.T) {
 	root := t.TempDir()
-	writeTestFile(t, root, filepath.Join("gtms/cases", "tc-ccc1111-multifw.md"), `---
+	writeTestFile(t, root, filepath.Join("gtms/test/cases", "tc-ccc1111-multifw.md"), `---
 test_case_id: tc-ccc1111
 title: Multi-framework TC
 requirement: REQ-M
@@ -143,7 +143,7 @@ requirement: REQ-M
 // failure rather than the picker-selected pass.
 func TestMapPhase3D_CLIText_MultiFrameworkRendersFailIcon(t *testing.T) {
 	root := t.TempDir()
-	writeTestFile(t, root, filepath.Join("gtms/cases", "tc-ddd1111-mixed.md"), `---
+	writeTestFile(t, root, filepath.Join("gtms/test/cases", "tc-ddd1111-mixed.md"), `---
 test_case_id: tc-ddd1111
 title: Mixed outcome TC
 requirement: REQ-D
@@ -171,7 +171,7 @@ requirement: REQ-D
 // wired/passing.
 func TestMapPhase3D_CLIJSON_OrphanResultDoesNotLeak(t *testing.T) {
 	root := t.TempDir()
-	writeTestFile(t, root, filepath.Join("gtms/cases", "tc-eee1111-orphan.md"), `---
+	writeTestFile(t, root, filepath.Join("gtms/test/cases", "tc-eee1111-orphan.md"), `---
 test_case_id: tc-eee1111
 title: Orphan result TC
 requirement: REQ-O
@@ -223,7 +223,7 @@ result: pass
 // about the TC's most recent state.
 func TestMapPhase3D_CLIText_InProgressTaskOverridesSiblingFailIcon(t *testing.T) {
 	root := t.TempDir()
-	writeTestFile(t, root, filepath.Join("gtms/cases", "tc-iii1111-inflight.md"), `---
+	writeTestFile(t, root, filepath.Join("gtms/test/cases", "tc-iii1111-inflight.md"), `---
 test_case_id: tc-iii1111
 title: In-flight with sibling fail
 requirement: REQ-I
@@ -275,7 +275,7 @@ branch: feature/exec
 // framework's fail. Same rationale as the in-progress case.
 func TestMapPhase3D_CLIText_TaskErrorOverridesSiblingFailIcon(t *testing.T) {
 	root := t.TempDir()
-	writeTestFile(t, root, filepath.Join("gtms/cases", "tc-iii2222-taskerr.md"), `---
+	writeTestFile(t, root, filepath.Join("gtms/test/cases", "tc-iii2222-taskerr.md"), `---
 test_case_id: tc-iii2222
 title: Task error with older sibling fail
 requirement: REQ-I
@@ -326,7 +326,7 @@ branch: feature/exec
 // branch and ExecuteStatus="error" wasn't checked before LastResult).
 func TestMapPhase3D_CLIText_TaskErrorWithNoOverlayRendersWarningIcon(t *testing.T) {
 	root := t.TempDir()
-	writeTestFile(t, root, filepath.Join("gtms/cases", "tc-iii3333-noverlay-err.md"), `---
+	writeTestFile(t, root, filepath.Join("gtms/test/cases", "tc-iii3333-noverlay-err.md"), `---
 test_case_id: tc-iii3333
 title: Task error, no overlay anywhere
 requirement: REQ-I

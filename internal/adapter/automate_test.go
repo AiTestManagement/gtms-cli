@@ -30,7 +30,7 @@ func setupAutomateTestProject(t *testing.T) (string, *config.Config) {
 	for _, dir := range []string{
 		"gtms/tasks/pending", "gtms/tasks/complete", "gtms/tasks/error",
 		"gtms/tasks/in-progress", "gtms/tasks/in-review",
-		"gtms/cases", "gtms/automation/wiring", "gtms/automation/specs",
+		"gtms/test/cases", "gtms/automation/wiring", "gtms/automation/specs",
 		".gtms/results", ".gtms/worktrees", ".gtms/logs",
 		"testdata",
 	} {
@@ -47,7 +47,7 @@ title: Automate Test Case
 1. Do something
 `
 	require.NoError(t, os.WriteFile(
-		filepath.Join(root, "gtms/cases", "tc-auto-test.md"),
+		filepath.Join(root, "gtms/test/cases", "tc-auto-test.md"),
 		[]byte(testCaseContent), 0644,
 	))
 
@@ -142,7 +142,7 @@ func TestAutomate_Tier1Sync(t *testing.T) {
 	assert.Equal(t, "automate", tf.Type)
 	assert.Equal(t, "tc-auto", tf.Target)
 	assert.Equal(t, "playwright", tf.Framework)
-	assert.Equal(t, "gtms/cases/tc-auto-test.md", tf.Reference)
+	assert.Equal(t, "gtms/test/cases/tc-auto-test.md", tf.Reference)
 
 	// Verify wiring record was created (CON-023 / ENH-145).
 	rec, _, err := wiring.Find(root, "tc-auto", "playwright")
@@ -223,7 +223,7 @@ func TestAutomate_ContextFile_Tier2Env(t *testing.T) {
 	for _, dir := range []string{
 		"gtms/tasks/pending", "gtms/tasks/complete", "gtms/tasks/error",
 		"gtms/tasks/in-progress", "gtms/tasks/in-review",
-		"gtms/cases", "gtms/automation/wiring", "gtms/automation/specs",
+		"gtms/test/cases", "gtms/automation/wiring", "gtms/automation/specs",
 		".gtms/results", ".gtms/worktrees", ".gtms/logs",
 		"testdata",
 	} {
@@ -232,7 +232,7 @@ func TestAutomate_ContextFile_Tier2Env(t *testing.T) {
 
 	// Create test case file
 	require.NoError(t, os.WriteFile(
-		filepath.Join(root, "gtms/cases", "tc-auto-test.md"),
+		filepath.Join(root, "gtms/test/cases", "tc-auto-test.md"),
 		[]byte("---\nid: tc-auto\ntitle: Test\n---\n"), 0644,
 	))
 
@@ -339,6 +339,37 @@ func TestAutomate_ContextFields(t *testing.T) {
 	assert.Contains(t, res.Summary, "automation")
 }
 
+// TestAutomate_BuiltinHonorsConfiguredOutputDir is the BUG-125 end-to-end seam: a
+// Tier-0 built-in automate adapter with output-dir configured must stamp the spec under
+// that dir -- proving the invoker sets ctx.OutputDirConfigured from config AND
+// BuiltinAutomate honours it -- and record it in the wiring artefact, NOT under the
+// framework-native default (gtms/scripts/playwright).
+func TestAutomate_BuiltinHonorsConfiguredOutputDir(t *testing.T) {
+	skipIfShort(t)
+	root, cfg := setupAutomateTestProject(t)
+
+	resolved := &ResolvedAdapter{
+		Command: "automate", Name: "agent-automate",
+		Config:  &config.AdapterConfig{Mode: "sync", OutputDir: "BROWNFIELD/tests"},
+		Tier:    0, Mode: "sync",
+	}
+	flags := CommandFlags{Framework: "playwright"}
+
+	_, err := InvokeWithRoot(context.Background(), root, cfg, resolved, "tc-auto", flags)
+	require.NoError(t, err)
+
+	// Spec stamped under the configured output-dir (root-level TC -> no subdir),
+	// and NOT under the framework default.
+	assert.FileExists(t, filepath.Join(root, "BROWNFIELD", "tests", "tc-auto-test.spec.ts"))
+	assert.NoFileExists(t, filepath.Join(root, "gtms", "scripts", "playwright", "tc-auto-test.spec.ts"))
+
+	// Wiring artefact records the configured location (project-relative, forward slashes).
+	rec, _, err := wiring.Find(root, "tc-auto", "playwright")
+	require.NoError(t, err)
+	require.NotNil(t, rec)
+	assert.Equal(t, "BROWNFIELD/tests/tc-auto-test.spec.ts", rec.Artefact)
+}
+
 // --- CON-023 / ENH-145 canonical-adapter fallback diagnostic ---
 
 // TestWriteAutomateWiring_FallbackDiagnostic_NamesCompetingAdapters pins
@@ -355,9 +386,9 @@ func TestWriteAutomateWiring_FallbackDiagnostic_NamesCompetingAdapters(t *testin
 	root := t.TempDir()
 
 	// Seed a TC spec so the writer can compute testcase-hash.
-	require.NoError(t, os.MkdirAll(filepath.Join(root, "gtms/cases"), 0755))
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "gtms/test/cases"), 0755))
 	require.NoError(t, os.WriteFile(
-		filepath.Join(root, "gtms/cases", "tc-fb01-spec.md"),
+		filepath.Join(root, "gtms/test/cases", "tc-fb01-spec.md"),
 		[]byte("---\nid: tc-fb01\n---\nbody\n"), 0644))
 
 	// Seed a produced artefact so artefact-hash can be computed.
@@ -413,9 +444,9 @@ func TestWriteAutomateWiring_FallbackDiagnostic_NamesCompetingAdapters(t *testin
 // the single-default fast path and no warning is emitted.
 func TestWriteAutomateWiring_DefaultSelectsAdapter_NoWarning(t *testing.T) {
 	root := t.TempDir()
-	require.NoError(t, os.MkdirAll(filepath.Join(root, "gtms/cases"), 0755))
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "gtms/test/cases"), 0755))
 	require.NoError(t, os.WriteFile(
-		filepath.Join(root, "gtms/cases", "tc-fb02-spec.md"),
+		filepath.Join(root, "gtms/test/cases", "tc-fb02-spec.md"),
 		[]byte("---\nid: tc-fb02\n---\nbody\n"), 0644))
 	require.NoError(t, os.MkdirAll(filepath.Join(root, "test/acceptance"), 0755))
 	require.NoError(t, os.WriteFile(
@@ -473,9 +504,9 @@ func minimalBatsConfig() *config.Config {
 // projectRoot is refused at the write-side; no wiring file is created.
 func TestWriteAutomateWiring_RejectsRelativeTraversalOutsideRoot(t *testing.T) {
 	root := t.TempDir()
-	require.NoError(t, os.MkdirAll(filepath.Join(root, "gtms/cases"), 0755))
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "gtms/test/cases"), 0755))
 	require.NoError(t, os.WriteFile(
-		filepath.Join(root, "gtms/cases", "tc-ps01-spec.md"),
+		filepath.Join(root, "gtms/test/cases", "tc-ps01-spec.md"),
 		[]byte("---\nid: tc-ps01\n---\nbody\n"), 0644))
 
 	// File outside root that `..` would land on.
@@ -508,9 +539,9 @@ func TestWriteAutomateWiring_RejectsRelativeTraversalOutsideRoot(t *testing.T) {
 // absolute artefact path outside the project root is refused.
 func TestWriteAutomateWiring_RejectsAbsoluteOutsideRoot(t *testing.T) {
 	root := t.TempDir()
-	require.NoError(t, os.MkdirAll(filepath.Join(root, "gtms/cases"), 0755))
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "gtms/test/cases"), 0755))
 	require.NoError(t, os.WriteFile(
-		filepath.Join(root, "gtms/cases", "tc-ps02-spec.md"),
+		filepath.Join(root, "gtms/test/cases", "tc-ps02-spec.md"),
 		[]byte("---\nid: tc-ps02\n---\nbody\n"), 0644))
 
 	outside := t.TempDir()
@@ -542,9 +573,9 @@ func TestWriteAutomateWiring_RejectsAbsoluteOutsideRoot(t *testing.T) {
 // slash form.
 func TestWriteAutomateWiring_AbsoluteInsideRootNormalisesToRelative(t *testing.T) {
 	root := t.TempDir()
-	require.NoError(t, os.MkdirAll(filepath.Join(root, "gtms/cases"), 0755))
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "gtms/test/cases"), 0755))
 	require.NoError(t, os.WriteFile(
-		filepath.Join(root, "gtms/cases", "tc-ps03-spec.md"),
+		filepath.Join(root, "gtms/test/cases", "tc-ps03-spec.md"),
 		[]byte("---\nid: tc-ps03\n---\nbody\n"), 0644))
 
 	require.NoError(t, os.MkdirAll(filepath.Join(root, "test/acceptance"), 0755))

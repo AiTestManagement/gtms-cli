@@ -34,7 +34,7 @@ import (
 // human renderer continues to work.
 func TestMapPhase3D_WiredJSONExposesENH146Shape(t *testing.T) {
 	root := t.TempDir()
-	writeFile(t, root, filepath.Join("gtms/cases", "tc-aaa1111-wired.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-aaa1111-wired.md"), `---
 test_case_id: tc-aaa1111
 title: Wired TC
 requirement: REQ-A
@@ -88,7 +88,7 @@ requirement: REQ-A
 // Frameworks=[].
 func TestMapPhase3D_NotWiredJSONShape(t *testing.T) {
 	root := t.TempDir()
-	writeFile(t, root, filepath.Join("gtms/cases", "tc-bbb1111-bare.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-bbb1111-bare.md"), `---
 test_case_id: tc-bbb1111
 title: Bare TC
 requirement: REQ-A
@@ -123,7 +123,7 @@ requirement: REQ-A
 // cannot mask sibling wiring.
 func TestMapPhase3D_MultiFrameworkJSONListsAllFrameworks(t *testing.T) {
 	root := t.TempDir()
-	writeFile(t, root, filepath.Join("gtms/cases", "tc-ccc1111-multifw.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-ccc1111-multifw.md"), `---
 test_case_id: tc-ccc1111
 title: Multi-framework TC
 requirement: REQ-M
@@ -163,7 +163,7 @@ requirement: REQ-M
 // ExecuteStatus must surface the failure.
 func TestMapPhase3D_MultiFrameworkCompactRowDoesNotHideFailure(t *testing.T) {
 	root := t.TempDir()
-	writeFile(t, root, filepath.Join("gtms/cases", "tc-ddd1111-mixed.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-ddd1111-mixed.md"), `---
 test_case_id: tc-ddd1111
 title: Mixed outcome TC
 requirement: REQ-M
@@ -192,7 +192,7 @@ requirement: REQ-M
 // wired framework must override a sibling pass in the compact row.
 func TestMapPhase3D_MultiFrameworkCompactRowSurfacesError(t *testing.T) {
 	root := t.TempDir()
-	writeFile(t, root, filepath.Join("gtms/cases", "tc-ddd2222-mixed-err.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-ddd2222-mixed-err.md"), `---
 test_case_id: tc-ddd2222
 title: Mixed pass+adapter-error TC
 requirement: REQ-M
@@ -221,13 +221,13 @@ requirement: REQ-M
 // LastResult must read "error" for the first and "fail" for the second.
 func TestMapPhase3D_AdapterErrorDistinctFromFail(t *testing.T) {
 	root := t.TempDir()
-	writeFile(t, root, filepath.Join("gtms/cases", "tc-eee1111-adaptererr.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-eee1111-adaptererr.md"), `---
 test_case_id: tc-eee1111
 title: Adapter error TC
 requirement: REQ-E
 ---
 `)
-	writeFile(t, root, filepath.Join("gtms/cases", "tc-eee2222-outcomefail.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-eee2222-outcomefail.md"), `---
 test_case_id: tc-eee2222
 title: Outcome fail TC
 requirement: REQ-E
@@ -277,13 +277,13 @@ requirement: REQ-E
 //   - Legacy carriers: AutomateStatus="manual", LastResult=<manual result>
 func TestMapPhase3D_ManualOnlySignal(t *testing.T) {
 	root := t.TempDir()
-	writeFile(t, root, filepath.Join("gtms/cases", "tc-fff1111-manual-pass.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-fff1111-manual-pass.md"), `---
 test_case_id: tc-fff1111
 title: Manual pass TC
 requirement: REQ-MAN
 ---
 `)
-	writeFile(t, root, filepath.Join("gtms/cases", "tc-fff2222-manual-prepared.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-fff2222-manual-prepared.md"), `---
 test_case_id: tc-fff2222
 title: Manual prepared TC
 requirement: REQ-MAN
@@ -339,7 +339,7 @@ requirement: REQ-MAN
 // the map.
 func TestMapPhase3D_OrphanResultIgnored(t *testing.T) {
 	root := t.TempDir()
-	writeFile(t, root, filepath.Join("gtms/cases", "tc-ggg1111-orphan-result.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-ggg1111-orphan-result.md"), `---
 test_case_id: tc-ggg1111
 title: Orphan-result TC
 requirement: REQ-O
@@ -385,7 +385,7 @@ result: pass
 // overlay even when they match wiring.
 func TestMapPhase3D_NonTerminalHandoffIgnored(t *testing.T) {
 	root := t.TempDir()
-	writeFile(t, root, filepath.Join("gtms/cases", "tc-hhh1111-inflight.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-hhh1111-inflight.md"), `---
 test_case_id: tc-hhh1111
 title: In-flight TC
 requirement: REQ-IF
@@ -429,7 +429,7 @@ status: in-progress
 // new gap categories — authoritative reporting stays in `gtms gaps`.
 func TestMapPhase3D_StaleArtefactFlagsStale(t *testing.T) {
 	root := t.TempDir()
-	writeFile(t, root, filepath.Join("gtms/cases", "tc-iii1111-stale.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-iii1111-stale.md"), `---
 test_case_id: tc-iii1111
 title: Stale artefact TC
 requirement: REQ-S
@@ -465,7 +465,7 @@ requirement: REQ-S
 // state is the final overlay.
 func TestMapPhase3D_InProgressExecuteTaskNotHiddenByWorstOfFrameworks(t *testing.T) {
 	root := t.TempDir()
-	writeFile(t, root, filepath.Join("gtms/cases", "tc-ttt1111-inflight.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-ttt1111-inflight.md"), `---
 test_case_id: tc-ttt1111
 title: In-flight with sibling fail
 requirement: REQ-T
@@ -516,7 +516,7 @@ branch: feature/exec
 // winning.
 func TestMapPhase3D_NewExecuteErrorTaskNotHiddenByWorstOfFrameworks(t *testing.T) {
 	root := t.TempDir()
-	writeFile(t, root, filepath.Join("gtms/cases", "tc-ttt2222-taskerr.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-ttt2222-taskerr.md"), `---
 test_case_id: tc-ttt2222
 title: Newer task error + sibling fail
 requirement: REQ-T
@@ -564,7 +564,7 @@ branch: feature/exec
 // existing single-framework supersede behaviour.
 func TestMapPhase3D_PassRecordSupersedesStaleExecuteErrorTask(t *testing.T) {
 	root := t.TempDir()
-	writeFile(t, root, filepath.Join("gtms/cases", "tc-ttt3333-passwin.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-ttt3333-passwin.md"), `---
 test_case_id: tc-ttt3333
 title: Pass record supersedes stale task error
 requirement: REQ-T
@@ -608,7 +608,7 @@ branch: feature/exec
 // reorder didn't accidentally flip it.)
 func TestMapPhase3D_PendingExecuteTaskVisibleWhenNoOverlay(t *testing.T) {
 	root := t.TempDir()
-	writeFile(t, root, filepath.Join("gtms/cases", "tc-ttt4444-pending.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-ttt4444-pending.md"), `---
 test_case_id: tc-ttt4444
 title: Pending execute, no overlay anywhere
 requirement: REQ-T
@@ -644,7 +644,7 @@ branch: feature/exec
 // top-level gap category to the map.
 func TestMapPhase3D_MissingArtefactDoesNotInventGapCategory(t *testing.T) {
 	root := t.TempDir()
-	writeFile(t, root, filepath.Join("gtms/cases", "tc-jjj1111-missing.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-jjj1111-missing.md"), `---
 test_case_id: tc-jjj1111
 title: Missing artefact TC
 requirement: REQ-MA

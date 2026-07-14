@@ -1680,7 +1680,7 @@ func TestBuildAutomationRecord_WritesTestCaseHash(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Join(root, "gtms/automation", "records"), 0755))
 
 	// Create a test case spec so the hash can be computed
-	casesDir := filepath.Join(root, "gtms", "cases")
+	casesDir := filepath.Join(root, "gtms", "test", "cases")
 	require.NoError(t, os.MkdirAll(casesDir, 0755))
 	require.NoError(t, os.WriteFile(
 		filepath.Join(casesDir, "tc-hash01-test.md"),
@@ -1719,7 +1719,7 @@ func TestBuildAutomationRecord_MissingSpecLeavesHashEmpty(t *testing.T) {
 	root := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(root, "gtms/automation", "records"), 0755))
 	// No test case spec exists — hash should be empty (best-effort)
-	require.NoError(t, os.MkdirAll(filepath.Join(root, "gtms", "cases"), 0755))
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "gtms", "test", "cases"), 0755))
 
 	tf := &task.TaskFile{
 		ID:        "task-nohash",

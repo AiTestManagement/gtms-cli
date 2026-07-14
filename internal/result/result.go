@@ -94,6 +94,23 @@ func Validate(rc *ResultContract) error {
 	return nil
 }
 
+// IsTerminalExecuteContract reports whether rc represents a terminal
+// (complete or error) EXECUTE handoff. This is the structural guard
+// shipped by BUG-130: every consumer that derives pass/skip from
+// .gtms/results/ must route through this predicate so the
+// command == "execute" dimension lives in exactly one place.
+//
+// Non-execute commands (create, automate, prime) also write terminal
+// handoffs via the shared invoker path, but those must never be read
+// as test passes. BUG-124 and BUG-129 were two independent bugs from
+// this single root cause; this predicate closes the class.
+func IsTerminalExecuteContract(rc *ResultContract) bool {
+	if rc == nil {
+		return false
+	}
+	return rc.Command == "execute" && (rc.Status == "complete" || rc.Status == "error")
+}
+
 // Create writes a new handoff contract to .gtms/results/{task-id}.handoff.yaml.
 // Returns the filepath of the created file.
 func Create(projectRoot string, rc *ResultContract) (string, error) {

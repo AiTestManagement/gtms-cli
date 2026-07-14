@@ -34,7 +34,7 @@ func setupBootstrapFixture(t *testing.T, pending bool) string {
 `)
 
 	// TC spec
-	tcDir := filepath.Join("gtms", "cases", "bootstrap")
+	tcDir := filepath.Join("gtms", "test", "cases", "bootstrap")
 	writeFile(t, root, filepath.Join(tcDir, "tc-b102a001-bootstrap-field.md"), `---
 test_case_id: tc-b102a001
 title: Bootstrap field test
@@ -190,7 +190,7 @@ func TestWiringBootstrap_MultiFrameworkMixed(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Dir(artefact2Abs), 0755))
 	require.NoError(t, os.WriteFile(artefact2Abs, []byte("// playwright stub\n"), 0644))
 
-	tcSpecPath := filepath.Join(root, "gtms", "cases", "bootstrap", "tc-b102a001-bootstrap-field.md")
+	tcSpecPath := filepath.Join(root, "gtms", "test", "cases", "bootstrap", "tc-b102a001-bootstrap-field.md")
 	tcHash, err := pipeline.HashFile(tcSpecPath)
 	require.NoError(t, err)
 	artefact2Hash, err := pipeline.HashFile(artefact2Abs)

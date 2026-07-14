@@ -14,13 +14,13 @@ func setupResetFixture(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
 
-	writeTestFile(t, root, filepath.Join("gtms/cases", "tc-aaa1111-login-happy.md"), `---
+	writeTestFile(t, root, filepath.Join("gtms/test/cases", "tc-aaa1111-login-happy.md"), `---
 test_case_id: tc-aaa1111
 title: Login Happy Path
 requirement: REQ-A
 ---
 `)
-	writeTestFile(t, root, filepath.Join("gtms/cases", "tc-bbb2222-checkout-flow.md"), `---
+	writeTestFile(t, root, filepath.Join("gtms/test/cases", "tc-bbb2222-checkout-flow.md"), `---
 test_case_id: tc-bbb2222
 title: Checkout Flow
 requirement: REQ-B
@@ -115,7 +115,7 @@ func TestRunReset_FolderWithHyphen(t *testing.T) {
 	root := t.TempDir()
 
 	// Create a TC in a folder with a hyphen
-	writeTestFile(t, root, filepath.Join("gtms/cases", "folder-a", "tc-aaa00010-sample.md"), `---
+	writeTestFile(t, root, filepath.Join("gtms/test/cases", "folder-a", "tc-aaa00010-sample.md"), `---
 test_case_id: tc-aaa00010
 title: Sample in folder-a
 requirement: REQ-001

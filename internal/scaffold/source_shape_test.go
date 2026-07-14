@@ -6,6 +6,7 @@ package scaffold
 // See ENH-088 for the full audit and migration rationale.
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -17,6 +18,12 @@ import (
 )
 
 // --- Audit #13: promptCreateStandard references {tc_ids} and ID contract ---
+//
+// KEEP-ALIVE for ENH-176: this test pins the promptCreateStandard constant so
+// it survives until ENH-176 wires the starter template into `gtms init`. Under
+// DOC-018 Direction 2 the constant is otherwise uncalled by product code; this
+// guard is the reason it is not dead-code-eliminated. Do not delete with the
+// constant -- they retire together under ENH-176 or not at all.
 
 func TestSourceShape_PromptCreateStandardReferencesTcIds(t *testing.T) {
 	src, err := os.ReadFile("templates.go")
@@ -73,13 +80,13 @@ func TestSourceShape_ScaffoldTemplatesAllTcIDsHave8HexChars(t *testing.T) {
 
 // TestSourceShape_StarterGuideMatchesDogfoodMirror guards the embedded-template
 // parity rule: the Go-source constant that `gtms init` stamps into fresh
-// projects, and the checked-in copy at gtms/cases/guides/test-case-template.md
+// projects, and the checked-in copy at gtms/test/guides/gtms-test-case-authoring-guide.md
 // that this repo dogfoods, must stay byte-for-byte identical. BUG-099 inverted
 // the skeleton frontmatter contract; BUG-100 swept the documented shape across
 // both files. Without this guard a future edit to one without the other
 // silently re-introduces the drift.
 func TestSourceShape_StarterGuideMatchesDogfoodMirror(t *testing.T) {
-	mirror, err := os.ReadFile("../../gtms/cases/guides/test-case-template.md")
+	mirror, err := os.ReadFile("../../gtms/test/guides/gtms-test-case-authoring-guide.md")
 	require.NoError(t, err)
 	// Normalise: the Go raw string literal uses LF; the on-disk mirror may be
 	// CRLF on Windows checkouts. Strip trailing newlines/CR from both sides so
@@ -87,7 +94,7 @@ func TestSourceShape_StarterGuideMatchesDogfoodMirror(t *testing.T) {
 	want := strings.TrimRight(starterGuideContent, "\n")
 	got := strings.TrimRight(strings.ReplaceAll(string(mirror), "\r\n", "\n"), "\n")
 	assert.Equal(t, want, got,
-		"starterGuideContent and gtms/cases/guides/test-case-template.md have drifted; "+
+		"starterGuideContent and gtms/test/guides/gtms-test-case-authoring-guide.md have drifted; "+
 			"edit both in lockstep")
 }
 
@@ -215,4 +222,173 @@ func TestTestsExecuteCommand_PassedFailedSkippedTriple(t *testing.T) {
 	tripleLine := regexp.MustCompile(`(?m)^.*passed.*failed.*skipped.*$`)
 	assert.True(t, tripleLine.Match(content),
 		"tests-execute.md must include a line listing passed/failed/skipped together")
+}
+
+// --- BUG-114: templates.go must not contain "init --adapter" ---
+
+// TestSourceShape_TemplatesGoNoInitAdapterFlag guards against re-introducing
+// stale "gtms init --adapter" references in scaffold template strings. BUG-114
+// removed the hidden --adapter flag and its migration diagnostic; any template
+// that recommends the retired flag ships wrong advice to new projects.
+func TestSourceShape_TemplatesGoNoInitAdapterFlag(t *testing.T) {
+	src, err := os.ReadFile("templates.go")
+	require.NoError(t, err)
+
+	assert.False(t, strings.Contains(string(src), "init --adapter"),
+		"templates.go must not contain 'init --adapter' (BUG-114: hidden flag removed)")
+}
+
+// --- BUG-134: test-case specs must not contain "gtms init --adapter" ---
+
+// TestSourceShape_SpecsNoInitAdapterFlag walks all tc-*.md files under
+// gtms/test/cases/ and asserts that none contain the retired "gtms init --adapter"
+// CLI form. Four specs in remove-hidden-adapter-flag-and-migration-diagnostic/
+// are allowlisted because they quote the retired form deliberately (negative tests).
+//
+// This is a pure unit test (no os/exec, no git, no shell) -- runs in all tiers
+// including `go test -short`.
+func TestSourceShape_SpecsNoInitAdapterFlag(t *testing.T) {
+	projectRoot := filepath.Join("..", "..")
+	casesDir := filepath.Join(projectRoot, "gtms", "test", "cases")
+
+	// Allowlisted directory: specs here quote "gtms init --adapter" on purpose.
+	allowDir := "remove-hidden-adapter-flag-and-migration-diagnostic"
+
+	var violations []string
+	err := filepath.Walk(casesDir, func(path string, info os.FileInfo, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if info.IsDir() {
+			return nil
+		}
+		// Only check tc-*.md spec files.
+		base := filepath.Base(path)
+		if !strings.HasPrefix(base, "tc-") || !strings.HasSuffix(base, ".md") {
+			return nil
+		}
+		// Skip allowlisted directory.
+		rel, relErr := filepath.Rel(casesDir, path)
+		if relErr != nil {
+			return relErr
+		}
+		if strings.HasPrefix(filepath.ToSlash(rel), allowDir+"/") {
+			return nil
+		}
+		data, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return readErr
+		}
+		content := string(data)
+		// Check for the direct pattern and flag-reordered variants
+		// (e.g. "gtms init --name X --adapter minimal").
+		// "--adapter minimal" and "--adapter claude" are stale preset names
+		// that should never appear in any spec context.
+		if strings.Contains(content, "gtms init --adapter") ||
+			strings.Contains(content, "--adapter minimal") ||
+			strings.Contains(content, "--adapter claude") {
+			violations = append(violations, rel)
+		}
+		return nil
+	})
+	require.NoError(t, err, "walking gtms/test/cases/")
+
+	assert.Empty(t, violations,
+		"BUG-134: %d spec(s) still contain 'gtms init --adapter' (retired CLI form). "+
+			"Use '--preset <name>' instead. Violations:\n%s",
+		len(violations), strings.Join(violations, "\n"))
+}
+
+// --- BUG-142: bug record scope: field vocabulary enforcement ---
+
+// TestBugRecordScope_PresentAndConforming walks all BUG-*.md files under
+// PRPs/bugs/ and PRPs/bugs/complete/ and asserts that every record numbered
+// BUG-023 or higher carries a `scope:` field with value `code` or `test-only`.
+// Records BUG-001..022 are exempt -- they predate the field's introduction.
+//
+// This is a pure unit test (no os/exec, no git, no shell) -- runs in all tiers
+// including `go test -short`.
+func TestBugRecordScope_PresentAndConforming(t *testing.T) {
+	projectRoot := filepath.Join("..", "..")
+
+	// Allowed scope values.
+	allowed := map[string]bool{
+		"code":      true,
+		"test-only": true,
+	}
+
+	// Directories containing bug records.
+	dirs := []string{
+		filepath.Join(projectRoot, "PRPs", "bugs"),
+		filepath.Join(projectRoot, "PRPs", "bugs", "complete"),
+	}
+
+	// Match `scope: <value>` in YAML frontmatter (between --- delimiters).
+	scopeRe := regexp.MustCompile(`(?m)^scope:\s*(.+?)(?:\s*#.*)?$`)
+	bugNumRe := regexp.MustCompile(`^BUG-(\d+)`)
+
+	var missing []string
+	var badValue []string
+
+	for _, dir := range dirs {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			// Directory may not exist in test environments; skip.
+			continue
+		}
+		for _, e := range entries {
+			if e.IsDir() {
+				continue
+			}
+			name := e.Name()
+			if !strings.HasPrefix(name, "BUG-") || !strings.HasSuffix(name, ".md") {
+				continue
+			}
+
+			// Extract bug number; exempt BUG-001..022.
+			m := bugNumRe.FindStringSubmatch(name)
+			if m == nil {
+				continue
+			}
+			num := 0
+			for _, ch := range m[1] {
+				num = num*10 + int(ch-'0')
+			}
+			if num <= 22 {
+				continue // predates the scope field
+			}
+
+			data, readErr := os.ReadFile(filepath.Join(dir, name))
+			if readErr != nil {
+				t.Errorf("cannot read %s: %v", name, readErr)
+				continue
+			}
+
+			// Extract YAML frontmatter (between first and second ---).
+			content := string(data)
+			parts := strings.SplitN(content, "---", 3)
+			if len(parts) < 3 {
+				missing = append(missing, name+" (no frontmatter)")
+				continue
+			}
+			fm := parts[1]
+
+			sm := scopeRe.FindStringSubmatch(fm)
+			if sm == nil {
+				missing = append(missing, name)
+				continue
+			}
+			val := strings.TrimSpace(sm[1])
+			if !allowed[val] {
+				badValue = append(badValue, fmt.Sprintf("%s (scope: %s)", name, val))
+			}
+		}
+	}
+
+	assert.Empty(t, missing,
+		"BUG-142: %d bug record(s) numbered BUG-023+ are missing the scope: field.\n%s",
+		len(missing), strings.Join(missing, "\n"))
+	assert.Empty(t, badValue,
+		"BUG-142: %d bug record(s) have a scope: value outside {code, test-only}.\n%s",
+		len(badValue), strings.Join(badValue, "\n"))
 }

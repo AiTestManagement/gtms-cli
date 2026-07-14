@@ -31,7 +31,7 @@ import (
 // per-framework overlay.
 func TestENH146_Overview_NormalWiredHasPinnedShape(t *testing.T) {
 	root := t.TempDir()
-	writeTestFile(t, root, filepath.Join("gtms/cases", "tc-eee0001-x.md"),
+	writeTestFile(t, root, filepath.Join("gtms/test/cases", "tc-eee0001-x.md"),
 		"---\ntest_case_id: tc-eee0001\ntitle: Wired pass\n---\n")
 	seedLegacyRecord(t, root, legacyRecord{
 		TC: "tc-eee0001", Framework: "bats", Result: "pass",
@@ -72,7 +72,7 @@ func TestENH146_Overview_NormalWiredHasPinnedShape(t *testing.T) {
 // no false pass/fail signal.
 func TestENH146_Overview_NotRunHere(t *testing.T) {
 	root := t.TempDir()
-	writeTestFile(t, root, filepath.Join("gtms/cases", "tc-eee0002-x.md"),
+	writeTestFile(t, root, filepath.Join("gtms/test/cases", "tc-eee0002-x.md"),
 		"---\ntest_case_id: tc-eee0002\ntitle: Wired not run\n---\n")
 	seedLegacyRecord(t, root, legacyRecord{TC: "tc-eee0002", Framework: "bats"})
 
@@ -99,7 +99,7 @@ func TestENH146_Overview_NotRunHere(t *testing.T) {
 // last_status_here:"error" / last_result_here unset — never as pass/fail.
 func TestENH146_Overview_StatusErrorRendersExecutionError(t *testing.T) {
 	root := t.TempDir()
-	writeTestFile(t, root, filepath.Join("gtms/cases", "tc-eee0003-x.md"),
+	writeTestFile(t, root, filepath.Join("gtms/test/cases", "tc-eee0003-x.md"),
 		"---\ntest_case_id: tc-eee0003\ntitle: Adapter error\n---\n")
 	seedLegacyRecord(t, root, legacyRecord{
 		TC: "tc-eee0003", Framework: "bats", AdapterError: true,
@@ -125,7 +125,7 @@ func TestENH146_Overview_StatusErrorRendersExecutionError(t *testing.T) {
 // overlay (ENH-146 terminal-handoff discipline).
 func TestENH146_Overview_NonTerminalHandoffsExcluded(t *testing.T) {
 	root := t.TempDir()
-	writeTestFile(t, root, filepath.Join("gtms/cases", "tc-eee0004-x.md"),
+	writeTestFile(t, root, filepath.Join("gtms/test/cases", "tc-eee0004-x.md"),
 		"---\ntest_case_id: tc-eee0004\ntitle: Pending only\n---\n")
 	// Wiring only, no terminal handoff via the seed helper.
 	seedLegacyRecord(t, root, legacyRecord{TC: "tc-eee0004", Framework: "bats"})
@@ -178,7 +178,7 @@ framework: bats
 // when both are current+automated, and both records still appear in frameworks[].
 func TestENH146_Overview_MultiFrameworkPicker(t *testing.T) {
 	root := t.TempDir()
-	writeTestFile(t, root, filepath.Join("gtms/cases", "tc-eee0005-x.md"),
+	writeTestFile(t, root, filepath.Join("gtms/test/cases", "tc-eee0005-x.md"),
 		"---\ntest_case_id: tc-eee0005\ntitle: Multi-fw\n---\n")
 	seedLegacyRecord(t, root, legacyRecord{TC: "tc-eee0005", Framework: "bats", Result: "pass"})
 	seedLegacyRecord(t, root, legacyRecord{
@@ -208,12 +208,12 @@ func TestENH146_Overview_MultiFrameworkPicker(t *testing.T) {
 // written and verifies wiring_drift:"testcase" surfaces in --json.
 func TestENH146_Overview_StaleTestcaseHash(t *testing.T) {
 	root := t.TempDir()
-	writeTestFile(t, root, filepath.Join("gtms/cases", "tc-eee0006-x.md"),
+	writeTestFile(t, root, filepath.Join("gtms/test/cases", "tc-eee0006-x.md"),
 		"---\ntest_case_id: tc-eee0006\ntitle: original\n---\n")
 	seedLegacyRecord(t, root, legacyRecord{TC: "tc-eee0006", Framework: "bats"})
 
 	// Mutate the spec after wiring is written so testcase-hash diverges.
-	writeTestFile(t, root, filepath.Join("gtms/cases", "tc-eee0006-x.md"),
+	writeTestFile(t, root, filepath.Join("gtms/test/cases", "tc-eee0006-x.md"),
 		"---\ntest_case_id: tc-eee0006\ntitle: mutated\n---\n")
 
 	var buf bytes.Buffer
@@ -232,7 +232,7 @@ func TestENH146_Overview_StaleTestcaseHash(t *testing.T) {
 // written and verifies wiring_drift:"artefact" surfaces in --json.
 func TestENH146_Overview_StaleArtefactHash(t *testing.T) {
 	root := t.TempDir()
-	writeTestFile(t, root, filepath.Join("gtms/cases", "tc-eee0007-x.md"),
+	writeTestFile(t, root, filepath.Join("gtms/test/cases", "tc-eee0007-x.md"),
 		"---\ntest_case_id: tc-eee0007\ntitle: x\n---\n")
 	seedLegacyRecord(t, root, legacyRecord{TC: "tc-eee0007", Framework: "bats"})
 
@@ -257,7 +257,7 @@ func TestENH146_Overview_StaleArtefactHash(t *testing.T) {
 // claiming an artefact-hash mismatch when the artefact cannot be hashed.
 func TestENH146_Overview_MissingArtefact(t *testing.T) {
 	root := t.TempDir()
-	writeTestFile(t, root, filepath.Join("gtms/cases", "tc-eee0008-x.md"),
+	writeTestFile(t, root, filepath.Join("gtms/test/cases", "tc-eee0008-x.md"),
 		"---\ntest_case_id: tc-eee0008\ntitle: missing\n---\n")
 	seedLegacyRecord(t, root, legacyRecord{
 		TC: "tc-eee0008", Framework: "bats",
@@ -288,7 +288,7 @@ func TestENH146_Overview_MissingArtefact(t *testing.T) {
 // back to the empty string, which assert.Empty satisfies.
 func TestENH146_Overview_ManualOnlyTC(t *testing.T) {
 	root := t.TempDir()
-	writeTestFile(t, root, filepath.Join("gtms/cases", "tc-eee0009-x.md"),
+	writeTestFile(t, root, filepath.Join("gtms/test/cases", "tc-eee0009-x.md"),
 		"---\ntest_case_id: tc-eee0009\ntitle: manual only\n---\n")
 	seedLegacyRecord(t, root, legacyRecord{TC: "tc-eee0009", Framework: "manual", Result: "pass"})
 
@@ -318,7 +318,7 @@ func TestENH146_Overview_ManualOnlyTC(t *testing.T) {
 // (ENH-146 Edge Case 5).
 func TestENH146_Overview_OrphanResultFileIgnored(t *testing.T) {
 	root := t.TempDir()
-	writeTestFile(t, root, filepath.Join("gtms/cases", "tc-eee0010-x.md"),
+	writeTestFile(t, root, filepath.Join("gtms/test/cases", "tc-eee0010-x.md"),
 		"---\ntest_case_id: tc-eee0010\ntitle: orphan results\n---\n")
 
 	// Hand-place a result file but no wiring.
@@ -360,7 +360,7 @@ completed: "2026-05-19T10:01:00Z"
 // (Git context is also surfaced when populated.)
 func TestENH146_Detail_PreservesResultContractFields(t *testing.T) {
 	root := t.TempDir()
-	writeTestFile(t, root, filepath.Join("gtms/cases", "tc-eee0011-x.md"),
+	writeTestFile(t, root, filepath.Join("gtms/test/cases", "tc-eee0011-x.md"),
 		"---\ntest_case_id: tc-eee0011\ntitle: Detail probe\nrequirement: REQ-D\n---\n")
 
 	// Use a hand-built terminal handoff so we can stamp git-* without
@@ -443,7 +443,7 @@ git-dirty: false
 // and an empty frameworks[].
 func TestENH146_Detail_ManualOnlyHasNoFrameworksRow(t *testing.T) {
 	root := t.TempDir()
-	writeTestFile(t, root, filepath.Join("gtms/cases", "tc-eee0012-x.md"),
+	writeTestFile(t, root, filepath.Join("gtms/test/cases", "tc-eee0012-x.md"),
 		"---\ntest_case_id: tc-eee0012\ntitle: manual only\n---\n")
 	seedLegacyRecord(t, root, legacyRecord{TC: "tc-eee0012", Framework: "manual", Result: "pass"})
 
@@ -464,7 +464,7 @@ func TestENH146_Detail_ManualOnlyHasNoFrameworksRow(t *testing.T) {
 // as table-renderer carriers, but are json:"-").
 func TestENH146_Detail_LegacyCarriersAbsent(t *testing.T) {
 	root := t.TempDir()
-	writeTestFile(t, root, filepath.Join("gtms/cases", "tc-eee0013-x.md"),
+	writeTestFile(t, root, filepath.Join("gtms/test/cases", "tc-eee0013-x.md"),
 		"---\ntest_case_id: tc-eee0013\ntitle: t\nrequirement: R\n---\n")
 	seedLegacyRecord(t, root, legacyRecord{TC: "tc-eee0013", Framework: "bats", Result: "pass"})
 
@@ -481,7 +481,7 @@ func TestENH146_Detail_LegacyCarriersAbsent(t *testing.T) {
 // can't see (Go's encoder/decoder happily silently maps either key).
 func TestENH146_Detail_TestcaseKeyPresent_TestCaseIdAbsent(t *testing.T) {
 	root := t.TempDir()
-	writeTestFile(t, root, filepath.Join("gtms/cases", "tc-eee0014-x.md"),
+	writeTestFile(t, root, filepath.Join("gtms/test/cases", "tc-eee0014-x.md"),
 		"---\ntest_case_id: tc-eee0014\ntitle: keytest\nrequirement: R\n---\n")
 	seedLegacyRecord(t, root, legacyRecord{TC: "tc-eee0014", Framework: "bats", Result: "pass"})
 
@@ -501,7 +501,7 @@ func TestENH146_Detail_TestcaseKeyPresent_TestCaseIdAbsent(t *testing.T) {
 // with no qualifying wiring framework.
 func TestENH146_Overview_SelectedFrameworkIsNullForManualOnly(t *testing.T) {
 	root := t.TempDir()
-	writeTestFile(t, root, filepath.Join("gtms/cases", "tc-eee0015-x.md"),
+	writeTestFile(t, root, filepath.Join("gtms/test/cases", "tc-eee0015-x.md"),
 		"---\ntest_case_id: tc-eee0015\ntitle: manual only\n---\n")
 	seedLegacyRecord(t, root, legacyRecord{TC: "tc-eee0015", Framework: "manual", Result: "pass"})
 
@@ -517,7 +517,7 @@ func TestENH146_Overview_SelectedFrameworkIsNullForManualOnly(t *testing.T) {
 // stray result-only TC (no wiring) emits selected_framework:null.
 func TestENH146_Overview_SelectedFrameworkIsNullForOrphan(t *testing.T) {
 	root := t.TempDir()
-	writeTestFile(t, root, filepath.Join("gtms/cases", "tc-eee0016-x.md"),
+	writeTestFile(t, root, filepath.Join("gtms/test/cases", "tc-eee0016-x.md"),
 		"---\ntest_case_id: tc-eee0016\ntitle: orphan\n---\n")
 
 	resultsDir := filepath.Join(root, ".gtms", "results")
@@ -548,7 +548,7 @@ completed: "2026-05-19T10:01:00Z"
 // "fresh draft" case).
 func TestENH146_Overview_SelectedFrameworkIsNullForBareTC(t *testing.T) {
 	root := t.TempDir()
-	writeTestFile(t, root, filepath.Join("gtms/cases", "tc-eee0017-x.md"),
+	writeTestFile(t, root, filepath.Join("gtms/test/cases", "tc-eee0017-x.md"),
 		"---\ntest_case_id: tc-eee0017\ntitle: bare draft\n---\n")
 
 	var buf bytes.Buffer
@@ -562,7 +562,7 @@ func TestENH146_Overview_SelectedFrameworkIsNullForBareTC(t *testing.T) {
 // also emits `selected_framework: null` for the manual-only case.
 func TestENH146_Detail_SelectedFrameworkIsNullForManualOnly(t *testing.T) {
 	root := t.TempDir()
-	writeTestFile(t, root, filepath.Join("gtms/cases", "tc-eee0018-x.md"),
+	writeTestFile(t, root, filepath.Join("gtms/test/cases", "tc-eee0018-x.md"),
 		"---\ntest_case_id: tc-eee0018\ntitle: manual only\n---\n")
 	seedLegacyRecord(t, root, legacyRecord{TC: "tc-eee0018", Framework: "manual", Result: "pass"})
 
@@ -577,7 +577,7 @@ func TestENH146_Detail_SelectedFrameworkIsNullForManualOnly(t *testing.T) {
 // null) when wiring exists.
 func TestENH146_Detail_SelectedFrameworkIsStringWhenWired(t *testing.T) {
 	root := t.TempDir()
-	writeTestFile(t, root, filepath.Join("gtms/cases", "tc-eee0019-x.md"),
+	writeTestFile(t, root, filepath.Join("gtms/test/cases", "tc-eee0019-x.md"),
 		"---\ntest_case_id: tc-eee0019\ntitle: wired\nrequirement: R\n---\n")
 	seedLegacyRecord(t, root, legacyRecord{TC: "tc-eee0019", Framework: "bats", Result: "pass"})
 

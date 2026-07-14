@@ -23,7 +23,7 @@ func setupTriageProject(t *testing.T) string {
   repo: github.com/example/triage
 `)
 
-	writeFile(t, root, filepath.Join("gtms/cases", "tc-007-checkout.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-007-checkout.md"), `---
 test_case_id: tc-007
 title: Checkout Flow - Guest User
 requirement: JIRA-456
@@ -188,7 +188,7 @@ func TestRecordTriage_TestWrong(t *testing.T) {
 
 	// CON-023 / ENH-146: triage no longer mutates wiring. test-wrong
 	// updates the TC spec status only.
-	tcPath := filepath.Join(root, "gtms/cases", "tc-007-checkout.md")
+	tcPath := filepath.Join(root, "gtms/test/cases", "tc-007-checkout.md")
 	content, err := os.ReadFile(tcPath)
 	require.NoError(t, err)
 	assert.Contains(t, string(content), "needs-review")
@@ -366,7 +366,7 @@ func TestTriageIntegration_FullLifecycle(t *testing.T) {
 	root := setupTriageProject(t)
 
 	// Add a second TC with wiring + a failing terminal handoff.
-	writeFile(t, root, filepath.Join("gtms/cases", "tc-008-login.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-008-login.md"), `---
 test_case_id: tc-008
 title: Login Flow
 requirement: JIRA-789
@@ -491,7 +491,7 @@ func TestBUG011_TriageRoundtripPreservesFields(t *testing.T) {
 	writeFile(t, root, "gtms.config", "project:\n  name: x\n  repo: x\n")
 
 	// Test case with all frontmatter fields including priority, type, created
-	writeFile(t, root, filepath.Join("gtms/cases", "tc-rt-001.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-rt-001.md"), `---
 test_case_id: tc-rt-001
 title: Roundtrip Preservation Test
 requirement: BUG-011
@@ -518,7 +518,7 @@ created: 2026-02-21
 	require.NoError(t, err)
 
 	// Read back the file and verify fields survived the roundtrip
-	content, err := os.ReadFile(filepath.Join(root, "gtms/cases", "tc-rt-001.md"))
+	content, err := os.ReadFile(filepath.Join(root, "gtms/test/cases", "tc-rt-001.md"))
 	require.NoError(t, err)
 	s := string(content)
 
@@ -556,7 +556,7 @@ func TestENH040_RecordTriage_ErrorResult_AutomationWrong(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, root, "gtms.config", "project:\n  name: x\n  repo: x\n")
 
-	writeFile(t, root, filepath.Join("gtms/cases", "tc-e40-triage.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-e40-triage.md"), `---
 test_case_id: tc-e40
 title: Error Triage Test
 requirement: REQ-1
@@ -595,7 +595,7 @@ requirement: REQ-1
 func TestTriage_Join_AmbiguousAdapterAcrossWiring(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, root, "gtms.config", "project:\n  name: x\n  repo: x\n")
-	writeFile(t, root, filepath.Join("gtms/cases", "tc-amb01-shared.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-amb01-shared.md"), `---
 test_case_id: tc-amb01
 title: Shared-adapter TC
 requirement: REQ-A

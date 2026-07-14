@@ -20,13 +20,13 @@ func setupStatusFixture(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
 
-	writeTestFile(t, root, filepath.Join("gtms/cases", "tc-aaa1111-login-happy.md"), `---
+	writeTestFile(t, root, filepath.Join("gtms/test/cases", "tc-aaa1111-login-happy.md"), `---
 test_case_id: tc-aaa1111
 title: Login Happy Path
 requirement: REQ-A
 ---
 `)
-	writeTestFile(t, root, filepath.Join("gtms/cases", "tc-bbb1111-checkout-flow.md"), `---
+	writeTestFile(t, root, filepath.Join("gtms/test/cases", "tc-bbb1111-checkout-flow.md"), `---
 test_case_id: tc-bbb1111
 title: Checkout Flow
 requirement: REQ-B
@@ -208,7 +208,7 @@ func TestRunStatusOverview_NoKeyInJSON(t *testing.T) {
 
 func TestBUG017_FailedExecuteShowsXInTable(t *testing.T) {
 	root := t.TempDir()
-	writeTestFile(t, root, filepath.Join("gtms/cases", "tc-aaa1111-checkout.md"), `---
+	writeTestFile(t, root, filepath.Join("gtms/test/cases", "tc-aaa1111-checkout.md"), `---
 test_case_id: tc-aaa1111
 title: Checkout Test
 requirement: REQ-A
@@ -244,7 +244,7 @@ branch: main
 
 func TestBUG017_FailedExecuteInJSON(t *testing.T) {
 	root := t.TempDir()
-	writeTestFile(t, root, filepath.Join("gtms/cases", "tc-aaa1111-checkout.md"), `---
+	writeTestFile(t, root, filepath.Join("gtms/test/cases", "tc-aaa1111-checkout.md"), `---
 test_case_id: tc-aaa1111
 title: Checkout Test
 requirement: REQ-A
@@ -293,7 +293,7 @@ branch: main
 
 func TestBUG017_FailedExecuteDetailView(t *testing.T) {
 	root := t.TempDir()
-	writeTestFile(t, root, filepath.Join("gtms/cases", "tc-aaa1111-checkout.md"), `---
+	writeTestFile(t, root, filepath.Join("gtms/test/cases", "tc-aaa1111-checkout.md"), `---
 test_case_id: tc-aaa1111
 title: Checkout Test
 requirement: REQ-A
@@ -333,15 +333,15 @@ func TestRunStatusOverview_ScopeFeedback(t *testing.T) {
 	var buf bytes.Buffer
 
 	scope := &reader.ScopeInfo{
-		ScanDir:   filepath.Join(root, "gtms/cases"),
-		RelPath:   "gtms/cases/login/",
+		ScanDir:   filepath.Join(root, "gtms/test/cases"),
+		RelPath:   "gtms/test/cases/login/",
 		Recursive: false,
 	}
 	err := runStatusOverview(&buf, root, scope, false, "", false)
 	require.NoError(t, err)
 
 	out := buf.String()
-	assert.Contains(t, out, "Scope: gtms/cases/login/")
+	assert.Contains(t, out, "Scope: gtms/test/cases/login/")
 	assert.Contains(t, out, "use -r for recursive")
 }
 
@@ -350,15 +350,15 @@ func TestRunStatusOverview_ScopeFeedbackRecursive(t *testing.T) {
 	var buf bytes.Buffer
 
 	scope := &reader.ScopeInfo{
-		ScanDir:   filepath.Join(root, "gtms/cases"),
-		RelPath:   "gtms/cases/login/",
+		ScanDir:   filepath.Join(root, "gtms/test/cases"),
+		RelPath:   "gtms/test/cases/login/",
 		Recursive: true,
 	}
 	err := runStatusOverview(&buf, root, scope, false, "", false)
 	require.NoError(t, err)
 
 	out := buf.String()
-	assert.Contains(t, out, "Scope: gtms/cases/login/")
+	assert.Contains(t, out, "Scope: gtms/test/cases/login/")
 	assert.NotContains(t, out, "use -r for recursive")
 }
 
@@ -367,8 +367,8 @@ func TestRunStatusOverview_ScopeFeedbackBeforeEmpty(t *testing.T) {
 	var buf bytes.Buffer
 
 	scope := &reader.ScopeInfo{
-		ScanDir:   filepath.Join(root, "gtms/cases", "empty"),
-		RelPath:   "gtms/cases/empty/",
+		ScanDir:   filepath.Join(root, "gtms/test/cases", "empty"),
+		RelPath:   "gtms/test/cases/empty/",
 		Recursive: false,
 	}
 	err := runStatusOverview(&buf, root, scope, false, "", false)
@@ -376,7 +376,7 @@ func TestRunStatusOverview_ScopeFeedbackBeforeEmpty(t *testing.T) {
 
 	out := buf.String()
 	// Scope feedback should appear even when no test cases are found
-	assert.Contains(t, out, "Scope: gtms/cases/empty/")
+	assert.Contains(t, out, "Scope: gtms/test/cases/empty/")
 	assert.Contains(t, out, "No test cases found.")
 }
 
@@ -398,13 +398,13 @@ func setupFolderSummaryFixture(t *testing.T) string {
 	root := t.TempDir()
 
 	// Folder "login" — 2 TCs, 1 automated with pass
-	writeTestFile(t, root, filepath.Join("gtms/cases", "login", "tc-aaa1111-login-happy.md"), `---
+	writeTestFile(t, root, filepath.Join("gtms/test/cases", "login", "tc-aaa1111-login-happy.md"), `---
 test_case_id: tc-aaa1111
 title: Login Happy Path
 requirement: REQ-A
 ---
 `)
-	writeTestFile(t, root, filepath.Join("gtms/cases", "login", "tc-aaa2222-login-error.md"), `---
+	writeTestFile(t, root, filepath.Join("gtms/test/cases", "login", "tc-aaa2222-login-error.md"), `---
 test_case_id: tc-aaa2222
 title: Login Error
 requirement: REQ-A
@@ -418,7 +418,7 @@ requirement: REQ-A
 	})
 
 	// Folder "checkout" — 1 TC, no automation
-	writeTestFile(t, root, filepath.Join("gtms/cases", "checkout", "tc-bbb1111-checkout.md"), `---
+	writeTestFile(t, root, filepath.Join("gtms/test/cases", "checkout", "tc-bbb1111-checkout.md"), `---
 test_case_id: tc-bbb1111
 title: Checkout Flow
 requirement: REQ-B
@@ -455,13 +455,13 @@ func TestRunStatusFolderSummary_Table(t *testing.T) {
 func TestRunStatusFolderSummary_DraftAnnotation(t *testing.T) {
 	root := t.TempDir()
 
-	writeTestFile(t, root, filepath.Join("gtms/cases", "feature", "tc-aaa1111-draft.md"), `---
+	writeTestFile(t, root, filepath.Join("gtms/test/cases", "feature", "tc-aaa1111-draft.md"), `---
 test_case_id: tc-aaa1111
 title: Draft Test
 status: draft
 ---
 `)
-	writeTestFile(t, root, filepath.Join("gtms/cases", "feature", "tc-aaa2222-ready.md"), `---
+	writeTestFile(t, root, filepath.Join("gtms/test/cases", "feature", "tc-aaa2222-ready.md"), `---
 test_case_id: tc-aaa2222
 title: Ready Test
 ---
@@ -478,19 +478,19 @@ title: Ready Test
 func TestRunStatusFolderSummary_DraftAnnotationPlural(t *testing.T) {
 	root := t.TempDir()
 
-	writeTestFile(t, root, filepath.Join("gtms/cases", "feature", "tc-aaa1111-draft1.md"), `---
+	writeTestFile(t, root, filepath.Join("gtms/test/cases", "feature", "tc-aaa1111-draft1.md"), `---
 test_case_id: tc-aaa1111
 title: Draft Test 1
 status: draft
 ---
 `)
-	writeTestFile(t, root, filepath.Join("gtms/cases", "feature", "tc-aaa2222-draft2.md"), `---
+	writeTestFile(t, root, filepath.Join("gtms/test/cases", "feature", "tc-aaa2222-draft2.md"), `---
 test_case_id: tc-aaa2222
 title: Draft Test 2
 status: draft
 ---
 `)
-	writeTestFile(t, root, filepath.Join("gtms/cases", "feature", "tc-aaa3333-ready.md"), `---
+	writeTestFile(t, root, filepath.Join("gtms/test/cases", "feature", "tc-aaa3333-ready.md"), `---
 test_case_id: tc-aaa3333
 title: Ready Test
 ---
@@ -590,7 +590,7 @@ func TestFormatDetailLabel_Manual(t *testing.T) {
 func TestRunStatusOverview_ManualInAutomateColumn(t *testing.T) {
 	root := t.TempDir()
 
-	writeTestFile(t, root, filepath.Join("gtms/cases", "tc-aaa1111-manual.md"), `---
+	writeTestFile(t, root, filepath.Join("gtms/test/cases", "tc-aaa1111-manual.md"), `---
 test_case_id: tc-aaa1111
 title: Manual Test
 ---
@@ -609,7 +609,7 @@ title: Manual Test
 func TestRunStatusOverview_ManualInJSON(t *testing.T) {
 	root := t.TempDir()
 
-	writeTestFile(t, root, filepath.Join("gtms/cases", "tc-aaa1111-manual.md"), `---
+	writeTestFile(t, root, filepath.Join("gtms/test/cases", "tc-aaa1111-manual.md"), `---
 test_case_id: tc-aaa1111
 title: Manual Test
 ---
@@ -639,12 +639,12 @@ func TestRunStatusFolderSummary_ManualExcludedFromAutomated(t *testing.T) {
 	root := t.TempDir()
 
 	// 2 TCs: one manual, one automated
-	writeTestFile(t, root, filepath.Join("gtms/cases", "feature", "tc-aaa1111-manual.md"), `---
+	writeTestFile(t, root, filepath.Join("gtms/test/cases", "feature", "tc-aaa1111-manual.md"), `---
 test_case_id: tc-aaa1111
 title: Manual Test
 ---
 `)
-	writeTestFile(t, root, filepath.Join("gtms/cases", "feature", "tc-bbb2222-auto.md"), `---
+	writeTestFile(t, root, filepath.Join("gtms/test/cases", "feature", "tc-bbb2222-auto.md"), `---
 test_case_id: tc-bbb2222
 title: Automated Test
 ---
@@ -775,7 +775,7 @@ func TestRunStatusDetail_NoFrameworkWhenNoResult(t *testing.T) {
 func TestBUG085_StatusDetailDoesNotDoubleRenderExecuteTimestamp(t *testing.T) {
 	root := t.TempDir()
 
-	writeTestFile(t, root, filepath.Join("gtms/cases", "tc-bug085-sample.md"), `---
+	writeTestFile(t, root, filepath.Join("gtms/test/cases", "tc-bug085-sample.md"), `---
 test_case_id: tc-bug085
 title: BUG-085 fixture
 requirement: REQ-X
@@ -905,7 +905,7 @@ func TestRunStatusFolderSummary_SkipColumnHeaderPresent(t *testing.T) {
 	// tc-a024501b BATS fixture checks `grep -qi 'skip'` against the full
 	// output, so any case of the word "skip" in the header or key satisfies it.
 	root := t.TempDir()
-	writeTestFile(t, root, filepath.Join("gtms/cases", "feature", "tc-aaa1111-pass.md"), `---
+	writeTestFile(t, root, filepath.Join("gtms/test/cases", "feature", "tc-aaa1111-pass.md"), `---
 test_case_id: tc-aaa1111
 title: Pass
 ---
@@ -924,17 +924,17 @@ func TestRunStatusFolderSummary_SkipCountRenderedAsDigit(t *testing.T) {
 	// 2 skipped + 1 pass in foldera — the literal digit "2" must appear in
 	// the foldera row.
 	root := t.TempDir()
-	writeTestFile(t, root, filepath.Join("gtms/cases", "foldera", "tc-10101010-skipped.md"), `---
+	writeTestFile(t, root, filepath.Join("gtms/test/cases", "foldera", "tc-10101010-skipped.md"), `---
 test_case_id: tc-10101010
 title: Skipped one
 ---
 `)
-	writeTestFile(t, root, filepath.Join("gtms/cases", "foldera", "tc-20202020-skipped.md"), `---
+	writeTestFile(t, root, filepath.Join("gtms/test/cases", "foldera", "tc-20202020-skipped.md"), `---
 test_case_id: tc-20202020
 title: Skipped two
 ---
 `)
-	writeTestFile(t, root, filepath.Join("gtms/cases", "foldera", "tc-30303030-pass.md"), `---
+	writeTestFile(t, root, filepath.Join("gtms/test/cases", "foldera", "tc-30303030-pass.md"), `---
 test_case_id: tc-30303030
 title: Passing
 ---
@@ -1005,9 +1005,9 @@ func TestRunStatusFolderSummary_KeyFooter(t *testing.T) {
 
 func TestRunStatusFolderSummary_CreateColumnAlwaysCheck(t *testing.T) {
 	// Even with no automation and no execution, CREATE must show ✓ —
-	// a TC existing in gtms/cases/ IS the creation.
+	// a TC existing in gtms/test/cases/ IS the creation.
 	root := t.TempDir()
-	writeTestFile(t, root, filepath.Join("gtms/cases", "feature", "tc-aaa1111-fresh.md"), `---
+	writeTestFile(t, root, filepath.Join("gtms/test/cases", "feature", "tc-aaa1111-fresh.md"), `---
 test_case_id: tc-aaa1111
 title: Fresh test case
 ---
@@ -1026,13 +1026,13 @@ title: Fresh test case
 func TestRunStatusFolderSummary_TCColumnHasDraftAnnotation(t *testing.T) {
 	// ENH-066's draft annotation moves to the TC column under ENH-089.
 	root := t.TempDir()
-	writeTestFile(t, root, filepath.Join("gtms/cases", "feature", "tc-aaa1111-draft.md"), `---
+	writeTestFile(t, root, filepath.Join("gtms/test/cases", "feature", "tc-aaa1111-draft.md"), `---
 test_case_id: tc-aaa1111
 title: Draft Test
 status: draft
 ---
 `)
-	writeTestFile(t, root, filepath.Join("gtms/cases", "feature", "tc-aaa2222-ready.md"), `---
+	writeTestFile(t, root, filepath.Join("gtms/test/cases", "feature", "tc-aaa2222-ready.md"), `---
 test_case_id: tc-aaa2222
 title: Ready Test
 ---
@@ -1048,7 +1048,7 @@ title: Ready Test
 
 func TestRunStatusFolderSummary_FailureRendersXMark(t *testing.T) {
 	root := t.TempDir()
-	writeTestFile(t, root, filepath.Join("gtms/cases", "checkout", "tc-aaa1111-checkout.md"), `---
+	writeTestFile(t, root, filepath.Join("gtms/test/cases", "checkout", "tc-aaa1111-checkout.md"), `---
 test_case_id: tc-aaa1111
 title: Checkout
 ---
@@ -1066,7 +1066,7 @@ title: Checkout
 
 func TestRunStatusFolderSummary_InFlightRendersFilledCircle(t *testing.T) {
 	root := t.TempDir()
-	writeTestFile(t, root, filepath.Join("gtms/cases", "feature", "tc-aaa1111-test.md"), `---
+	writeTestFile(t, root, filepath.Join("gtms/test/cases", "feature", "tc-aaa1111-test.md"), `---
 test_case_id: tc-aaa1111
 title: Test
 ---
@@ -1095,12 +1095,12 @@ branch: main
 func TestRunStatusFolderSummary_JSONHasNewFields(t *testing.T) {
 	// Backward-compatible additive change to JSON.
 	root := t.TempDir()
-	writeTestFile(t, root, filepath.Join("gtms/cases", "feature", "tc-aaa1111-pass.md"), `---
+	writeTestFile(t, root, filepath.Join("gtms/test/cases", "feature", "tc-aaa1111-pass.md"), `---
 test_case_id: tc-aaa1111
 title: Pass
 ---
 `)
-	writeTestFile(t, root, filepath.Join("gtms/cases", "feature", "tc-aaa2222-fail.md"), `---
+	writeTestFile(t, root, filepath.Join("gtms/test/cases", "feature", "tc-aaa2222-fail.md"), `---
 test_case_id: tc-aaa2222
 title: Fail
 ---
@@ -1144,7 +1144,7 @@ func setupLogDetailFixture(t *testing.T, lastResult, logBody, logSpill string) s
 	t.Helper()
 	root := t.TempDir()
 
-	writeTestFile(t, root, filepath.Join("gtms/cases", "tc-logui01-failure.md"), `---
+	writeTestFile(t, root, filepath.Join("gtms/test/cases", "tc-logui01-failure.md"), `---
 test_case_id: tc-logui01
 title: Failing thing
 requirement: ENH-077
@@ -1296,7 +1296,7 @@ func TestFormatExecuteLabel_Skipped(t *testing.T) {
 func TestRunStatusOverview_SkippedRendering(t *testing.T) {
 	root := t.TempDir()
 
-	writeTestFile(t, root, filepath.Join("gtms/cases", "tc-skip01-test.md"), `---
+	writeTestFile(t, root, filepath.Join("gtms/test/cases", "tc-skip01-test.md"), `---
 test_case_id: tc-skip01
 title: Skipped Test
 ---
@@ -1318,7 +1318,7 @@ title: Skipped Test
 func TestRunStatusOverview_SkippedInJSON(t *testing.T) {
 	root := t.TempDir()
 
-	writeTestFile(t, root, filepath.Join("gtms/cases", "tc-skip01-test.md"), `---
+	writeTestFile(t, root, filepath.Join("gtms/test/cases", "tc-skip01-test.md"), `---
 test_case_id: tc-skip01
 title: Skipped Test
 ---
@@ -1682,7 +1682,7 @@ func TestBUG082_CLIStatusNoFramework_PesterOnlyCountsAsAutomated(t *testing.T) {
 	// so the Pester folder shows as automated.
 	root := t.TempDir()
 
-	writeTestFile(t, root, filepath.Join("gtms/cases", "pester-only", "tc-aaa1111-pester.md"), `---
+	writeTestFile(t, root, filepath.Join("gtms/test/cases", "pester-only", "tc-aaa1111-pester.md"), `---
 test_case_id: tc-aaa1111
 title: Pester Test
 ---
@@ -1717,7 +1717,7 @@ title: Pester Test
 func TestBUG082_CLIStatusNoFramework_JSON_PesterOnlyCountsAsAutomated(t *testing.T) {
 	root := t.TempDir()
 
-	writeTestFile(t, root, filepath.Join("gtms/cases", "pester-only", "tc-aaa1111-pester.md"), `---
+	writeTestFile(t, root, filepath.Join("gtms/test/cases", "pester-only", "tc-aaa1111-pester.md"), `---
 test_case_id: tc-aaa1111
 title: Pester Test
 ---
@@ -1755,7 +1755,7 @@ title: Pester Test
 func TestBUG082_CLIGapsNoFramework_PesterOnlyCountsAsAutomated(t *testing.T) {
 	root := t.TempDir()
 
-	writeTestFile(t, root, filepath.Join("gtms/cases", "pester-only", "tc-aaa1111-pester.md"), `---
+	writeTestFile(t, root, filepath.Join("gtms/test/cases", "pester-only", "tc-aaa1111-pester.md"), `---
 test_case_id: tc-aaa1111
 title: Pester Test
 ---

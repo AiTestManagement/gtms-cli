@@ -22,21 +22,27 @@ func newGapsCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "gaps [folder]",
 		Short: "Show test coverage gaps",
-		Long: `Analyze the project for test coverage gaps across the CON-023 / ENH-146
-wiring-aware categories: missing tests, missing automation, currently failing,
+		Long: `Analyse the project for test coverage gaps across the wiring-aware
+categories: missing automation, currently failing,
 execution errors, runtime-skipped, stale wiring (testcase / artefact),
 missing artefacts, and manual test cases with spec drift.
 
-  gtms gaps              — text output (all test cases)
-  gtms gaps bug-022      — scoped to gtms/cases/bug-022/
-  gtms gaps tc-a1b2c3d4  — error (positional arg is a folder; use 'gtms status tc-...' for per-TC views)
-  gtms gaps --json       — machine-readable JSON output
-  gtms gaps -r           — include test cases from subdirectories
-  gtms gaps --framework bats  — filter by automation framework`,
+  gtms gaps              -- folder summary table (per-folder gap counts)
+  gtms gaps bug-022      -- scoped to gtms/test/cases/bug-022/ (full category breakdown)
+  gtms gaps tc-a1b2c3d4  -- error (positional arg is a folder; use 'gtms status tc-...' for per-TC views)
+  gtms gaps --json       -- machine-readable JSON output
+  gtms gaps -r           -- include test cases from subdirectories
+  gtms gaps --framework bats  -- show one framework's coverage`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			root := GetProjectRoot()
 			cfg := GetConfig()
+
+			// BUG-128 v2: non-fatal "did you mean" hint (stderr only).
+			if hint := frameworkHint(framework, knownFrameworks(cfg, root)); hint != "" {
+				fmt.Fprintln(os.Stderr, hint)
+			}
+
 			defaultFw := config.DefaultFramework(cfg)
 			if framework != "" {
 				defaultFw = framework
@@ -64,7 +70,7 @@ missing artefacts, and manual test cases with spec drift.
 			// the arg is TC-shaped AND no folder of that name exists.
 			normalised := normaliseTarget(args[0])
 			if isTestCaseID(normalised) {
-				folderPath := filepath.Join(layout.CasesDir(root), normalised)
+				folderPath := filepath.Join(layout.TestCasesDir(root), normalised)
 				if info, statErr := os.Stat(folderPath); statErr != nil || !info.IsDir() {
 					output.Errorf("argument must be a folder, not a TC ID",
 						"Use 'gtms status "+normalised+"' for per-TC detail.")
@@ -84,7 +90,7 @@ missing artefacts, and manual test cases with spec drift.
 
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Output as JSON")
 	cmd.Flags().BoolVarP(&recursive, "recursive", "r", false, "Include test cases from subdirectories")
-	cmd.Flags().StringVar(&framework, "framework", "", "Filter by automation framework")
+	cmd.Flags().StringVar(&framework, "framework", "", "Select one framework per test case (non-matching test cases show as not-set)")
 
 	return cmd
 }
@@ -107,7 +113,7 @@ func runGapsFolderSummary(w io.Writer, projectRoot string, jsonOut bool, default
 		return nil
 	}
 
-	// CON-023 / ENH-146: "Not run here" is not a gap — fresh clones legitimately
+	// CON-023 / ENH-146: "Not run here" is not a gap -- fresh clones legitimately
 	// have all wiring un-run locally. The NOT EXECUTED column is therefore
 	// dropped from the folder-summary human surface. The `not_executed`
 	// JSON field is kept on GapsFolderSummaryEntry for shape stability but
@@ -179,9 +185,11 @@ func runGaps(w io.Writer, projectRoot string, scope *reader.ScopeInfo, jsonOut b
 
 	// CON-023 / ENH-146 wiring-aware category set. Retired prints
 	// ("Automated but never executed", "Spec coverage but no automation
-	// record", "Stale execution results") removed — the underlying GapReport
+	// record", "Stale execution results") removed -- the underlying GapReport
 	// fields are Go-internal carriers (json:"-") with no populated data.
-	printGapCategory(w, "Requirements without test cases", report.NoTests)
+	// BUG-138: "Requirements without test cases" retired -- the NoTests
+	// category was never populated (no requirements-inventory source).
+	// The JSON "no_tests" key is kept for shape stability (see writeGapsJSON).
 	printGapCategory(w, "Test cases without automation", report.NoAutomation)
 	printGapCategoryWithSince(w, "Currently failing", report.CurrentlyFailing)
 	printGapCategory(w, "Execution errors", report.ExecutionErrors)
@@ -219,8 +227,10 @@ func printGapCategoryWithSince(w io.Writer, title string, entries []reader.GapEn
 // writeGapsJSON outputs the gap report as indented JSON.
 // Nil slices are initialized to empty slices so they serialize as [] not null.
 // CON-023 / ENH-146 retired SpecButNoRecord / NeverExecuted / StaleExecution
-// (json:"-" carriers — not normalized here).
+// (json:"-" carriers -- not normalized here).
 func writeGapsJSON(w io.Writer, report *reader.GapReport) error {
+	// BUG-138: NoTests retired from the human surface but kept in JSON
+	// for shape stability (always []).
 	if report.NoTests == nil {
 		report.NoTests = []reader.GapEntry{}
 	}

@@ -24,7 +24,7 @@ func setupCreateStatusFixture(t *testing.T, taskID, target string, tcFiles []str
 	require.NoError(t, os.MkdirAll(filepath.Join(root, "gtms/tasks", "complete"), 0755))
 	require.NoError(t, os.MkdirAll(filepath.Join(root, ".gtms", "results"), 0755))
 
-	tcDir := filepath.Join(root, "gtms/cases", target)
+	tcDir := filepath.Join(root, "gtms/test/cases", target)
 	require.NoError(t, os.MkdirAll(tcDir, 0755))
 
 	// Create TC fixture files and build artefact path list
@@ -33,7 +33,7 @@ func setupCreateStatusFixture(t *testing.T, taskID, target string, tcFiles []str
 		filename := fmt.Sprintf("%s-slug.md", tc.id)
 		content := fmt.Sprintf("---\ntest_case_id: %s\ntitle: %s\n---\n\n# %s\n", tc.id, tc.title, tc.title)
 		require.NoError(t, os.WriteFile(filepath.Join(tcDir, filename), []byte(content), 0644))
-		artefactPaths = append(artefactPaths, fmt.Sprintf("gtms/cases/%s/%s", target, filename))
+		artefactPaths = append(artefactPaths, fmt.Sprintf("gtms/test/cases/%s/%s", target, filename))
 	}
 
 	// Create completed task file

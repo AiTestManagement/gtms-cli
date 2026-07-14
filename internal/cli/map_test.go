@@ -28,13 +28,13 @@ func setupMapFixture(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
 
-	writeTestFile(t, root, filepath.Join("gtms/cases", "tc-aaa1111-login-happy.md"), `---
+	writeTestFile(t, root, filepath.Join("gtms/test/cases", "tc-aaa1111-login-happy.md"), `---
 test_case_id: tc-aaa1111
 title: Login Happy Path
 requirement: REQ-A
 ---
 `)
-	writeTestFile(t, root, filepath.Join("gtms/cases", "tc-bbb1111-checkout-flow.md"), `---
+	writeTestFile(t, root, filepath.Join("gtms/test/cases", "tc-bbb1111-checkout-flow.md"), `---
 test_case_id: tc-bbb1111
 title: Checkout Flow
 requirement: REQ-B
@@ -260,7 +260,7 @@ func TestBUG081_MapTcIdJSONLinkedSiblingsPreserved(t *testing.T) {
 
 	// Add a sibling TC under the same requirement (REQ-A) so we can assert
 	// that the filtered JSON keeps the whole group, not just the requested TC.
-	writeTestFile(t, root, filepath.Join("gtms/cases", "tc-aaa2222-login-locked.md"), `---
+	writeTestFile(t, root, filepath.Join("gtms/test/cases", "tc-aaa2222-login-locked.md"), `---
 test_case_id: tc-aaa2222
 title: Login Locked Account
 requirement: REQ-A
@@ -290,7 +290,7 @@ requirement: REQ-A
 
 func TestBUG081_MapTcIdJSONUnlinkedShape(t *testing.T) {
 	root := setupMapFixture(t)
-	writeTestFile(t, root, filepath.Join("gtms/cases", "tc-ccc1111-orphan.md"), `---
+	writeTestFile(t, root, filepath.Join("gtms/test/cases", "tc-ccc1111-orphan.md"), `---
 test_case_id: tc-ccc1111
 title: Orphan Test Case
 requirement: ""
@@ -337,7 +337,7 @@ func TestRunMap_DetailSingleTC_Unlinked(t *testing.T) {
 	root := setupMapFixture(t)
 
 	// Add an unlinked test case
-	writeTestFile(t, root, filepath.Join("gtms/cases", "tc-ccc1111-orphan.md"), `---
+	writeTestFile(t, root, filepath.Join("gtms/test/cases", "tc-ccc1111-orphan.md"), `---
 test_case_id: tc-ccc1111
 title: Orphan Test Case
 requirement: ""
@@ -392,15 +392,15 @@ func TestRunMap_ScopeFeedback(t *testing.T) {
 	var buf bytes.Buffer
 
 	scope := &reader.ScopeInfo{
-		ScanDir:   filepath.Join(root, "gtms/cases"),
-		RelPath:   "gtms/cases/login/",
+		ScanDir:   filepath.Join(root, "gtms/test/cases"),
+		RelPath:   "gtms/test/cases/login/",
 		Recursive: false,
 	}
 	err := runMap(&buf, root, scope, false, "", false, "", false)
 	require.NoError(t, err)
 
 	out := buf.String()
-	assert.Contains(t, out, "Scope: gtms/cases/login/")
+	assert.Contains(t, out, "Scope: gtms/test/cases/login/")
 	assert.Contains(t, out, "use -r for recursive")
 }
 
@@ -409,15 +409,15 @@ func TestRunMap_ScopeFeedbackRecursive(t *testing.T) {
 	var buf bytes.Buffer
 
 	scope := &reader.ScopeInfo{
-		ScanDir:   filepath.Join(root, "gtms/cases"),
-		RelPath:   "gtms/cases/login/",
+		ScanDir:   filepath.Join(root, "gtms/test/cases"),
+		RelPath:   "gtms/test/cases/login/",
 		Recursive: true,
 	}
 	err := runMap(&buf, root, scope, false, "", false, "", false)
 	require.NoError(t, err)
 
 	out := buf.String()
-	assert.Contains(t, out, "Scope: gtms/cases/login/")
+	assert.Contains(t, out, "Scope: gtms/test/cases/login/")
 	assert.NotContains(t, out, "use -r for recursive")
 }
 
@@ -427,13 +427,13 @@ func TestRunMap_NoArgRecursive(t *testing.T) {
 	root := t.TempDir()
 
 	// TCs in subfolders — scope=nil should find them
-	writeTestFile(t, root, filepath.Join("gtms/cases", "login", "tc-aaa1111-login.md"), `---
+	writeTestFile(t, root, filepath.Join("gtms/test/cases", "login", "tc-aaa1111-login.md"), `---
 test_case_id: tc-aaa1111
 title: Login Test
 requirement: REQ-A
 ---
 `)
-	writeTestFile(t, root, filepath.Join("gtms/cases", "checkout", "tc-bbb1111-checkout.md"), `---
+	writeTestFile(t, root, filepath.Join("gtms/test/cases", "checkout", "tc-bbb1111-checkout.md"), `---
 test_case_id: tc-bbb1111
 title: Checkout Test
 requirement: REQ-B
@@ -457,7 +457,7 @@ func TestRunMap_ReRecordUpdatesResult(t *testing.T) {
 	root := t.TempDir()
 
 	// Create a test case
-	writeTestFile(t, root, filepath.Join("gtms/cases", "tc-fff1111-rerecord.md"), `---
+	writeTestFile(t, root, filepath.Join("gtms/test/cases", "tc-fff1111-rerecord.md"), `---
 test_case_id: tc-fff1111
 title: Re-record Test
 requirement: REQ-X
@@ -500,7 +500,7 @@ requirement: REQ-X
 func TestRunMap_ManualAutomateShowsManual(t *testing.T) {
 	root := t.TempDir()
 
-	writeTestFile(t, root, filepath.Join("gtms/cases", "tc-eee1111-manual-test.md"), `---
+	writeTestFile(t, root, filepath.Join("gtms/test/cases", "tc-eee1111-manual-test.md"), `---
 test_case_id: tc-eee1111
 title: Manual Test
 requirement: REQ-Y

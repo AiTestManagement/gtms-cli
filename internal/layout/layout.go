@@ -1,10 +1,10 @@
 // Package layout centralises the GTMS-managed directory names so they are
 // defined in one place. Production code reads layout paths through Current()
-// or helper functions instead of repeating literal strings like "gtms/cases"
+// or helper functions instead of repeating literal strings like "gtms/test/cases"
 // or "gtms/automation".
 //
 // ENH-093 introduced the package. ENH-098 flipped the defaults to the nested
-// layout (e.g. "gtms/cases") and added InitFromParent() for renamed parents.
+// layout (e.g. "gtms/test/cases") and added InitFromParent() for renamed parents.
 //
 // Current().* values store paths with forward-slash separators. Callers must
 // use filepath.Join at the boundary to produce OS-native paths.
@@ -20,8 +20,24 @@ import (
 // Paths holds the names of the GTMS-managed directories.
 // Each field is a project-relative path segment (e.g. "test-cases").
 type Paths struct {
-	// Cases is the directory containing test case spec files.
-	Cases string
+	// Parent is the top-level parent directory name (e.g. "gtms").
+	Parent string
+
+	// TestCases is the directory containing test case spec files.
+	// ENH-164: changed from "gtms/cases" to "gtms/test/cases".
+	TestCases string
+
+	// TestTemplates is the directory containing role-specific TC skeleton templates (ENH-161/164).
+	TestTemplates string
+
+	// TestGuides is the directory containing prompt and reference material (ENH-164).
+	TestGuides string
+
+	// TestPrompts is the directory containing Tier 1 adapter prompt templates (ENH-165).
+	// Previously the prompt templates lived at gtms/cases/prompts/ as the sole vestigial
+	// content left over after ENH-164's gtms/cases/ -> gtms/test/ refactor. ENH-165
+	// moves them to gtms/test/prompts/ so gtms/cases/ can be fully retired.
+	TestPrompts string
 
 	// Automation is the directory containing automation records and specs.
 	Automation string
@@ -82,27 +98,55 @@ func InitFromParent(parentDirName string) {
 
 func pathsForParent(parentDirName string) Paths {
 	return Paths{
-		Cases:      parentDirName + "/cases",
-		Automation: parentDirName + "/automation",
-		Tasks:      parentDirName + "/tasks",
-		Execution:  parentDirName + "/execution",
-		Scripts:    parentDirName + "/scripts",
-		Manual:     parentDirName + "/manual",
-		Schemas:    parentDirName + "/schemas",
+		Parent:        parentDirName,
+		TestCases:     parentDirName + "/test/cases",
+		TestTemplates: parentDirName + "/test/templates",
+		TestGuides:    parentDirName + "/test/guides",
+		TestPrompts:   parentDirName + "/test/prompts",
+		Automation:    parentDirName + "/automation",
+		Tasks:         parentDirName + "/tasks",
+		Execution:     parentDirName + "/execution",
+		Scripts:       parentDirName + "/scripts",
+		Manual:        parentDirName + "/manual",
+		Schemas:       parentDirName + "/schemas",
 	}
 }
 
-// ParentDir returns the parent directory name from the current Cases path.
-// For "gtms/cases" it returns "gtms"; for "testing/cases" it returns "testing".
+// ParentDir returns the top-level parent directory name.
+// For "gtms" it returns "gtms"; for a renamed parent like "testing" it returns "testing".
 func ParentDir() string {
 	paths := Current()
-	return filepath.Dir(paths.Cases)
+	return paths.Parent
 }
 
-// CasesDir returns the absolute path to the test-cases directory.
-func CasesDir(projectRoot string) string {
+// TestCasesDir returns the absolute path to the test-cases directory.
+// ENH-164: renamed from CasesDir to mirror the on-disk path gtms/test/cases.
+func TestCasesDir(projectRoot string) string {
 	paths := Current()
-	return filepath.Join(projectRoot, paths.Cases)
+	return filepath.Join(projectRoot, paths.TestCases)
+}
+
+// TestTemplatesDir returns the absolute path to the test templates directory.
+// ENH-164: gtms/test/templates/ holds role-specific TC skeleton templates.
+func TestTemplatesDir(projectRoot string) string {
+	paths := Current()
+	return filepath.Join(projectRoot, paths.TestTemplates)
+}
+
+// TestGuidesDir returns the absolute path to the test guides directory.
+// ENH-164: gtms/test/guides/ holds prompt and reference material.
+func TestGuidesDir(projectRoot string) string {
+	paths := Current()
+	return filepath.Join(projectRoot, paths.TestGuides)
+}
+
+// TestPromptsDir returns the absolute path to the test prompts directory.
+// ENH-165: gtms/test/prompts/ holds Tier 1 adapter prompt templates
+// (e.g. create-standard.md). Previously this content lived at
+// gtms/cases/prompts/ as the sole vestigial slot left after ENH-164.
+func TestPromptsDir(projectRoot string) string {
+	paths := Current()
+	return filepath.Join(projectRoot, paths.TestPrompts)
 }
 
 // AutomationDir returns the absolute path to the test-automation directory.
@@ -185,6 +229,14 @@ func ManualRecordsDir(projectRoot string) string {
 func ManualTemplatesDir(projectRoot string) string {
 	paths := Current()
 	return filepath.Join(projectRoot, paths.Manual, "templates")
+}
+
+// AutomationTemplatesDir returns the absolute path to the automate skeleton
+// template directory. ENH-162: gtms/automation/templates/ holds per-framework
+// automate skeleton templates (bats.template.bats, playwright.template.spec.ts).
+func AutomationTemplatesDir(projectRoot string) string {
+	paths := Current()
+	return filepath.Join(projectRoot, paths.Automation, "templates")
 }
 
 // SchemasDir returns the absolute path to the JSON schemas directory.

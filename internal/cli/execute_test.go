@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -95,7 +96,7 @@ func TestRunBulkExecute_TamperedWiring_RelativeTraversal_Errored(t *testing.T) {
 	root := t.TempDir()
 
 	// Test case spec under a single-TC folder.
-	writeTestFile(t, root, filepath.Join("gtms/cases", "pathsafe", "tc-deadbeef-unsafe.md"), `---
+	writeTestFile(t, root, filepath.Join("gtms/test/cases", "pathsafe", "tc-deadbeef-unsafe.md"), `---
 test_case_id: tc-deadbeef
 title: Path-safety regression
 ---
@@ -151,13 +152,13 @@ func TestRunBulkExecute_TamperedWiring_FailFast_HaltsBatch(t *testing.T) {
 
 	// Two TCs: first one is unsafe, second one is safe. With --fail-fast,
 	// the safe TC must never run.
-	specA := filepath.Join("gtms/cases", "pathsafe-ff", "tc-11111111-unsafe.md")
+	specA := filepath.Join("gtms/test/cases", "pathsafe-ff", "tc-11111111-unsafe.md")
 	writeTestFile(t, root, specA, `---
 test_case_id: tc-11111111
 title: Unsafe wiring (first)
 ---
 `)
-	specB := filepath.Join("gtms/cases", "pathsafe-ff", "tc-22222222-safe.md")
+	specB := filepath.Join("gtms/test/cases", "pathsafe-ff", "tc-22222222-safe.md")
 	writeTestFile(t, root, specB, `---
 test_case_id: tc-22222222
 title: Safe wiring (second)
@@ -230,4 +231,164 @@ title: Safe wiring (second)
 	// stderr is non-empty so we know the redirect worked and the
 	// NotContains assertion is meaningful.
 	require.NotEmpty(t, strings.TrimSpace(stderr), "stderr capture must not be empty (sanity check)")
+}
+
+// ENH-163: isMode3ExecuteAdapterName must recognise all four Mode 3 names.
+func TestIsMode3ExecuteAdapterName(t *testing.T) {
+	// Positive cases: all four Mode 3 names.
+	for _, name := range []string{
+		"manual-execute",
+		"agent-execute",
+		"manual-execute-script",
+		"agent-execute-script",
+	} {
+		assert.True(t, isMode3ExecuteAdapterName(name), "%s must be recognised as Mode 3", name)
+	}
+
+	// Negative cases.
+	for _, name := range []string{
+		"bats-runner",
+		"playwright-runner",
+		"local-runner",
+		"manual-create",
+		"agent-automate",
+		"manual-prime",
+		"",
+	} {
+		assert.False(t, isMode3ExecuteAdapterName(name), "%q must NOT be recognised as Mode 3", name)
+	}
+}
+
+// ENH-163: bulk execute with defaults.execute=manual-execute on a folder
+// of unwired TCs must bypass wiring (no "not wired" skips). The adapter
+// itself may error (no git repo, etc.) but the critical assertion is that
+// it attempted to run rather than skipping with "not wired".
+func TestRunBulkExecute_Mode3DefaultBypassesWiring(t *testing.T) {
+	skipIfShort(t)
+
+	root := t.TempDir()
+
+	// Two test case specs, neither with wiring records.
+	writeTestFile(t, root, filepath.Join("gtms/test/cases", "manual-folder", "tc-aaaaaaaa-first.md"), `---
+test_case_id: tc-aaaaaaaa
+title: First manual TC
+---
+`)
+	writeTestFile(t, root, filepath.Join("gtms/test/cases", "manual-folder", "tc-bbbbbbbb-second.md"), `---
+test_case_id: tc-bbbbbbbb
+title: Second manual TC
+---
+`)
+
+	// Prime result files so manual-execute has something to read.
+	manualDir := filepath.Join(root, "gtms", "manual", "records")
+	require.NoError(t, os.MkdirAll(manualDir, 0755))
+	for _, tc := range []string{"tc-aaaaaaaa", "tc-bbbbbbbb"} {
+		content := fmt.Sprintf("test_case_id: %s\nframework: manual\nresult: pass\ntest_case_hash: deadbeef\n", tc)
+		require.NoError(t, os.WriteFile(
+			filepath.Join(manualDir, tc+"--manual.result.yaml"),
+			[]byte(content), 0644))
+	}
+
+	// Config with defaults.execute = manual-execute (Mode 3 default).
+	cfg := &config.Config{
+		Adapters: map[string]map[string]*config.AdapterConfig{},
+		Defaults: map[string]string{"execute": "manual-execute"},
+	}
+
+	restore := withExecuteGlobals(t, root, cfg)
+	defer restore()
+
+	cmd := &cobra.Command{Use: "execute"}
+	cmd.SetContext(context.Background())
+
+	stderr := captureStderr(t, func() {
+		_ = runBulkExecute(cmd, root, "manual-folder",
+			"", "", "test-user", "",
+			false, false, false, false,
+		)
+	})
+
+	// Primary assertion: the Mode 3 bypass must prevent "not wired" skips.
+	// The adapter may error for other reasons (no git init, etc.) but the
+	// wiring gate must NOT be the cause.
+	assert.NotContains(t, stderr, "not wired",
+		"Mode 3 default must bypass wiring -- no 'not wired' skips expected")
+	// Both TCs should appear in stderr (they were attempted, not skipped).
+	assert.Contains(t, stderr, "tc-aaaaaaaa", "first TC must be processed")
+	assert.Contains(t, stderr, "tc-bbbbbbbb", "second TC must be processed")
+}
+
+// ENH-163: bulk execute with defaults.execute=bats-runner on a folder
+// with a mix of wired and unwired TCs must skip the unwired ones.
+func TestRunBulkExecute_NonMode3DefaultKeepsWiringSkips(t *testing.T) {
+	skipIfShort(t)
+
+	root := t.TempDir()
+
+	// One wired TC, one unwired TC.
+	specWired := filepath.Join("gtms/test/cases", "mixed-folder", "tc-cccccccc-wired.md")
+	writeTestFile(t, root, specWired, `---
+test_case_id: tc-cccccccc
+title: Wired TC
+---
+`)
+	writeTestFile(t, root, filepath.Join("gtms/test/cases", "mixed-folder", "tc-dddddddd-unwired.md"), `---
+test_case_id: tc-dddddddd
+title: Unwired TC
+---
+`)
+
+	// Write wiring + artefact for the wired TC.
+	artefactRel := "test/acceptance/tc-cccccccc.bats"
+	artefactAbs := filepath.Join(root, filepath.FromSlash(artefactRel))
+	require.NoError(t, os.MkdirAll(filepath.Dir(artefactAbs), 0755))
+	require.NoError(t, os.WriteFile(artefactAbs, []byte("# bats"), 0644))
+
+	tcHash, err := pipeline.HashFile(filepath.Join(root, filepath.FromSlash(specWired)))
+	require.NoError(t, err)
+	artHash, err := pipeline.HashFile(artefactAbs)
+	require.NoError(t, err)
+	_, err = wiring.Write(root, &wiring.WiringRecord{
+		TestCase:     "tc-cccccccc",
+		TestCaseHash: tcHash,
+		Framework:    "bats",
+		Adapter:      "bats-runner",
+		Artefact:     artefactRel,
+		ArtefactHash: artHash,
+	})
+	require.NoError(t, err)
+
+	cfg := &config.Config{
+		Adapters: map[string]map[string]*config.AdapterConfig{
+			"execute": {
+				"bats-runner": {
+					Framework: "bats", Mode: "sync",
+					Command: "echo PASS",
+				},
+			},
+		},
+		Defaults: map[string]string{"execute": "bats-runner"},
+	}
+
+	restore := withExecuteGlobals(t, root, cfg)
+	defer restore()
+
+	cmd := &cobra.Command{Use: "execute"}
+	cmd.SetContext(context.Background())
+
+	var runErr error
+	stderr := captureStderr(t, func() {
+		runErr = runBulkExecute(cmd, root, "mixed-folder",
+			"", "", "test-user", "",
+			false, false, false, false,
+		)
+	})
+
+	// The unwired TC must be skipped.
+	_ = runErr // may error due to skip count
+	assert.Contains(t, stderr, "tc-dddddddd",
+		"unwired TC must appear in stderr")
+	assert.Contains(t, stderr, "not wired",
+		"unwired TC must be skipped with 'not wired' reason")
 }

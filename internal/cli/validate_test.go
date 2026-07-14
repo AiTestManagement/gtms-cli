@@ -204,8 +204,8 @@ func TestValidateFolderArg_InvalidInputs(t *testing.T) {
 	}{
 		{"dot", "."},
 		{"dotdot", ".."},
-		{"full cases prefix", "gtms/cases/foo"},
-		{"full cases alone", "gtms/cases"},
+		{"full cases prefix", "gtms/test/cases/foo"},
+		{"full cases alone", "gtms/test/cases"},
 		{"short cases prefix", "cases/foo"},
 		{"short cases alone", "cases"},
 		{"empty after trim", "/"},
@@ -231,9 +231,9 @@ func TestValidateFolderArg_InvalidInputs(t *testing.T) {
 }
 
 func TestValidateFolderArg_TestCasesPrefixHelpfulError(t *testing.T) {
-	_, err := validateFolderArg("gtms/cases/foo")
+	_, err := validateFolderArg("gtms/test/cases/foo")
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "don't include the gtms/cases/ prefix")
+	assert.Contains(t, err.Error(), "don't include the gtms/test/cases/ prefix")
 	assert.Contains(t, err.Error(), "gtms create foo")
 }
 

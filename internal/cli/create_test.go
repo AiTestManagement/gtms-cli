@@ -25,11 +25,11 @@ func writeTCFixture(t *testing.T, dir, tcID, title string) string {
 
 func TestFormatCreateOutput_ListsSingleTC(t *testing.T) {
 	root := t.TempDir()
-	tcDir := filepath.Join(root, "gtms/cases", "my-feature")
+	tcDir := filepath.Join(root, "gtms/test/cases", "my-feature")
 	require.NoError(t, os.MkdirAll(tcDir, 0755))
 
 	fname := writeTCFixture(t, tcDir, "tc-aaa11111", "Login happy path")
-	relPath := filepath.Join("gtms/cases", "my-feature", fname)
+	relPath := filepath.Join("gtms/test/cases", "my-feature", fname)
 
 	res := &adapter.InvokeResult{
 		TaskID:        "task-abc12345",
@@ -48,7 +48,7 @@ func TestFormatCreateOutput_ListsSingleTC(t *testing.T) {
 	})
 
 	// ENH-120: headline names TC IDs and cases folder
-	assert.Contains(t, out, "Created 1 test case in gtms/cases/my-feature/:")
+	assert.Contains(t, out, "Created 1 test case in gtms/test/cases/my-feature/:")
 	assert.Contains(t, out, "tc-aaa11111")
 	assert.Contains(t, out, "Login happy path")
 	// ENH-120: task filename and branch NOT in non-verbose output
@@ -60,7 +60,7 @@ func TestFormatCreateOutput_ListsSingleTC(t *testing.T) {
 
 func TestFormatCreateOutput_ListsBulkTCsUnderThreshold(t *testing.T) {
 	root := t.TempDir()
-	tcDir := filepath.Join(root, "gtms/cases", "sprint-14")
+	tcDir := filepath.Join(root, "gtms/test/cases", "sprint-14")
 	require.NoError(t, os.MkdirAll(tcDir, 0755))
 
 	var paths []string
@@ -68,7 +68,7 @@ func TestFormatCreateOutput_ListsBulkTCsUnderThreshold(t *testing.T) {
 		id := fmt.Sprintf("tc-%08x", i)
 		title := fmt.Sprintf("Test case number %d", i)
 		fname := writeTCFixture(t, tcDir, id, title)
-		paths = append(paths, filepath.Join("gtms/cases", "sprint-14", fname))
+		paths = append(paths, filepath.Join("gtms/test/cases", "sprint-14", fname))
 	}
 
 	res := &adapter.InvokeResult{
@@ -88,7 +88,7 @@ func TestFormatCreateOutput_ListsBulkTCsUnderThreshold(t *testing.T) {
 	})
 
 	// ENH-120: artefact-focused headline
-	assert.Contains(t, out, "Created 3 test cases in gtms/cases/sprint-14/:")
+	assert.Contains(t, out, "Created 3 test cases in gtms/test/cases/sprint-14/:")
 	assert.Contains(t, out, "tc-00000001")
 	assert.Contains(t, out, "tc-00000002")
 	assert.Contains(t, out, "tc-00000003")
@@ -99,7 +99,7 @@ func TestFormatCreateOutput_ListsBulkTCsUnderThreshold(t *testing.T) {
 
 func TestFormatCreateOutput_ListsBulkTCsOverThreshold(t *testing.T) {
 	root := t.TempDir()
-	tcDir := filepath.Join(root, "gtms/cases", "big-feature")
+	tcDir := filepath.Join(root, "gtms/test/cases", "big-feature")
 	require.NoError(t, os.MkdirAll(tcDir, 0755))
 
 	var paths []string
@@ -107,7 +107,7 @@ func TestFormatCreateOutput_ListsBulkTCsOverThreshold(t *testing.T) {
 		id := fmt.Sprintf("tc-%08x", i)
 		title := fmt.Sprintf("Test case number %d", i)
 		fname := writeTCFixture(t, tcDir, id, title)
-		paths = append(paths, filepath.Join("gtms/cases", "big-feature", fname))
+		paths = append(paths, filepath.Join("gtms/test/cases", "big-feature", fname))
 	}
 
 	res := &adapter.InvokeResult{
@@ -127,7 +127,7 @@ func TestFormatCreateOutput_ListsBulkTCsOverThreshold(t *testing.T) {
 	})
 
 	// ENH-120: artefact-focused headline with count and sample
-	assert.Contains(t, out, "Created 7 test cases in gtms/cases/big-feature/:")
+	assert.Contains(t, out, "Created 7 test cases in gtms/test/cases/big-feature/:")
 	// First 5 should be listed
 	assert.Contains(t, out, "tc-00000001")
 	assert.Contains(t, out, "tc-00000005")
@@ -142,18 +142,18 @@ func TestFormatCreateOutput_ListsBulkTCsOverThreshold(t *testing.T) {
 
 func TestFormatCreateOutput_MalformedFrontmatter(t *testing.T) {
 	root := t.TempDir()
-	tcDir := filepath.Join(root, "gtms/cases", "bad-fm")
+	tcDir := filepath.Join(root, "gtms/test/cases", "bad-fm")
 	require.NoError(t, os.MkdirAll(tcDir, 0755))
 
 	// Valid file
 	validFname := writeTCFixture(t, tcDir, "tc-aaa11111", "Good test case")
-	validPath := filepath.Join("gtms/cases", "bad-fm", validFname)
+	validPath := filepath.Join("gtms/test/cases", "bad-fm", validFname)
 
 	// Malformed file (no frontmatter)
 	badFname := "tc-bbb22222-broken.md"
 	badContent := "# No frontmatter here\nJust plain markdown.\n"
 	require.NoError(t, os.WriteFile(filepath.Join(tcDir, badFname), []byte(badContent), 0644))
-	badPath := filepath.Join("gtms/cases", "bad-fm", badFname)
+	badPath := filepath.Join("gtms/test/cases", "bad-fm", badFname)
 
 	res := &adapter.InvokeResult{
 		TaskID:        "task-xyz12345",
@@ -172,7 +172,7 @@ func TestFormatCreateOutput_MalformedFrontmatter(t *testing.T) {
 	})
 
 	// ENH-120: artefact-focused headline
-	assert.Contains(t, out, "Created 2 test cases in gtms/cases/bad-fm/:")
+	assert.Contains(t, out, "Created 2 test cases in gtms/test/cases/bad-fm/:")
 	assert.Contains(t, out, "tc-aaa11111")
 	assert.Contains(t, out, "Good test case")
 	assert.Contains(t, out, "tc-bbb22222")
@@ -182,12 +182,12 @@ func TestFormatCreateOutput_MalformedFrontmatter(t *testing.T) {
 
 func TestFormatCreateOutput_TruncatesLongTitle(t *testing.T) {
 	root := t.TempDir()
-	tcDir := filepath.Join(root, "gtms/cases", "long-titles")
+	tcDir := filepath.Join(root, "gtms/test/cases", "long-titles")
 	require.NoError(t, os.MkdirAll(tcDir, 0755))
 
 	longTitle := strings.Repeat("a", 180)
 	fname := writeTCFixture(t, tcDir, "tc-ccc33333", longTitle)
-	relPath := filepath.Join("gtms/cases", "long-titles", fname)
+	relPath := filepath.Join("gtms/test/cases", "long-titles", fname)
 
 	res := &adapter.InvokeResult{
 		TaskID:        "task-xyz12345",
@@ -242,11 +242,11 @@ func TestFormatCreateOutput_EmptyArtifactPaths(t *testing.T) {
 
 func TestReadTCFrontmatter_ValidFile(t *testing.T) {
 	root := t.TempDir()
-	dir := filepath.Join(root, "gtms/cases", "feature")
+	dir := filepath.Join(root, "gtms/test/cases", "feature")
 	require.NoError(t, os.MkdirAll(dir, 0755))
 
 	fname := writeTCFixture(t, dir, "tc-12345678", "My Test Title")
-	relPath := filepath.Join("gtms/cases", "feature", fname)
+	relPath := filepath.Join("gtms/test/cases", "feature", fname)
 
 	id, title := readTCFrontmatter(root, relPath)
 	assert.Equal(t, "tc-12345678", id)
@@ -257,7 +257,7 @@ func TestReadTCFrontmatter_ValidFile(t *testing.T) {
 // must fall back to `name:` so named skeletons don't surface as "(untitled)".
 func TestReadTCFrontmatter_FallsBackToNameWhenTitleEmpty(t *testing.T) {
 	root := t.TempDir()
-	dir := filepath.Join(root, "gtms/cases", "feature")
+	dir := filepath.Join(root, "gtms/test/cases", "feature")
 	require.NoError(t, os.MkdirAll(dir, 0755))
 
 	// Mirrors the skeleton adapter shape: name: present, no title:.
@@ -265,7 +265,7 @@ func TestReadTCFrontmatter_FallsBackToNameWhenTitleEmpty(t *testing.T) {
 	content := "---\ntest_case_id: tc-12345678\nname: \"user-can-login\"\nstatus: draft\n---\n\n## Steps\n"
 	require.NoError(t, os.WriteFile(path, []byte(content), 0644))
 
-	relPath := filepath.Join("gtms/cases", "feature", "tc-12345678-user-can-login.md")
+	relPath := filepath.Join("gtms/test/cases", "feature", "tc-12345678-user-can-login.md")
 	id, title := readTCFrontmatter(root, relPath)
 	assert.Equal(t, "tc-12345678", id)
 	assert.Equal(t, "user-can-login", title)
@@ -274,14 +274,14 @@ func TestReadTCFrontmatter_FallsBackToNameWhenTitleEmpty(t *testing.T) {
 // Both fields empty → "(untitled)" sentinel preserved.
 func TestReadTCFrontmatter_UntitledWhenBothEmpty(t *testing.T) {
 	root := t.TempDir()
-	dir := filepath.Join(root, "gtms/cases", "feature")
+	dir := filepath.Join(root, "gtms/test/cases", "feature")
 	require.NoError(t, os.MkdirAll(dir, 0755))
 
 	path := filepath.Join(dir, "tc-deadbeef.md")
 	content := "---\ntest_case_id: tc-deadbeef\nname: \"\"\n---\n"
 	require.NoError(t, os.WriteFile(path, []byte(content), 0644))
 
-	relPath := filepath.Join("gtms/cases", "feature", "tc-deadbeef.md")
+	relPath := filepath.Join("gtms/test/cases", "feature", "tc-deadbeef.md")
 	id, title := readTCFrontmatter(root, relPath)
 	assert.Equal(t, "tc-deadbeef", id)
 	assert.Equal(t, "(untitled)", title)
@@ -290,14 +290,14 @@ func TestReadTCFrontmatter_UntitledWhenBothEmpty(t *testing.T) {
 // `title:` wins when both are present (regression guard for AI-adapter path).
 func TestReadTCFrontmatter_TitlePreferredOverName(t *testing.T) {
 	root := t.TempDir()
-	dir := filepath.Join(root, "gtms/cases", "feature")
+	dir := filepath.Join(root, "gtms/test/cases", "feature")
 	require.NoError(t, os.MkdirAll(dir, 0755))
 
 	path := filepath.Join(dir, "tc-cafef00d.md")
 	content := "---\ntest_case_id: tc-cafef00d\ntitle: \"Login happy path\"\nname: \"login-happy\"\n---\n"
 	require.NoError(t, os.WriteFile(path, []byte(content), 0644))
 
-	relPath := filepath.Join("gtms/cases", "feature", "tc-cafef00d.md")
+	relPath := filepath.Join("gtms/test/cases", "feature", "tc-cafef00d.md")
 	id, title := readTCFrontmatter(root, relPath)
 	assert.Equal(t, "tc-cafef00d", id)
 	assert.Equal(t, "Login happy path", title)
@@ -305,7 +305,7 @@ func TestReadTCFrontmatter_TitlePreferredOverName(t *testing.T) {
 
 func TestReadTCFrontmatter_MissingFile(t *testing.T) {
 	root := t.TempDir()
-	relPath := filepath.Join("gtms/cases", "feature", "tc-deadbeef-missing.md")
+	relPath := filepath.Join("gtms/test/cases", "feature", "tc-deadbeef-missing.md")
 
 	id, title := readTCFrontmatter(root, relPath)
 	assert.Equal(t, "tc-deadbeef", id)

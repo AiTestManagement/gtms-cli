@@ -6,18 +6,33 @@ guidance: true
 
 adapters:
   create:
-    skeleton:
+    manual-create-script:                          # add as default to start using script
       mode: sync
-      script: gtms/adapters/create-skeleton.sh
+      script: gtms/adapters/manual-create-script.sh
+    agent-create-script:                           # add as default to start using script
+      mode: sync
+      script: gtms/adapters/agent-create-script.sh
   prime:
-    manual-prime:
+    manual-prime-script:                           # add as default to start using script
       mode: sync
-      script: gtms/adapters/manual-prime.sh
+      script: gtms/adapters/manual-prime-script.sh
       framework: manual
-  execute:
-    manual-execute:
+    agent-prime-script:                            # add as default to start using script
       mode: sync
-      script: gtms/adapters/manual-execute.sh
+      script: gtms/adapters/agent-prime-script.sh
+      framework: manual
+  automate:
+    agent-automate:                                # built-in Tier 0 automate; the agent fills the stamped skeleton
+      mode: sync
+      framework: bats
+  execute:
+    manual-execute-script:                         # add as default to start using script
+      mode: sync
+      script: gtms/adapters/manual-execute-script.sh
+      framework: manual
+    agent-execute-script:                          # add as default to start using script
+      mode: sync
+      script: gtms/adapters/agent-execute-script.sh
       framework: manual
     bats-runner:
       mode: sync
@@ -27,6 +42,7 @@ adapters:
       artefact-glob: "test/acceptance/**/{testcase}*.bats"
 
 defaults:
-  create: skeleton
+  create: manual-create
   prime: manual-prime
+  automate: agent-automate
   execute: bats-runner

@@ -203,10 +203,10 @@ func deleteSingleTC(projectRoot, tcID string, keepSpec, dryRun bool, result *Del
 	return nil
 }
 
-// findTestCaseSpecs walks gtms/cases/ recursively to find spec files for the given TC ID.
+// findTestCaseSpecs walks gtms/test/cases/ recursively to find spec files for the given TC ID.
 // Matches filenames like tc-{id}-slug.md or tc-{id}.md.
 func findTestCaseSpecs(projectRoot, tcID string) ([]string, error) {
-	tcDir := layout.CasesDir(projectRoot)
+	tcDir := layout.TestCasesDir(projectRoot)
 	if _, err := os.Stat(tcDir); os.IsNotExist(err) {
 		return nil, nil
 	}

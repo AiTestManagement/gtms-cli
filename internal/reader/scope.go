@@ -8,7 +8,7 @@ type ScopeInfo struct {
 	ScanDir string
 
 	// RelPath is the scope directory relative to project root, using forward slashes.
-	// Examples: "gtms/cases/", "gtms/cases/login/", "gtms/cases/login/oauth/"
+	// Examples: "gtms/test/cases/", "gtms/test/cases/login/", "gtms/test/cases/login/oauth/"
 	RelPath string
 
 	// Recursive is true when the -r flag was passed.

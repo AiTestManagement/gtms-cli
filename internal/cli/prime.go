@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/aitestmanagement/gtms-cli/internal/adapter"
+	"github.com/aitestmanagement/gtms-cli/internal/config"
 	"github.com/aitestmanagement/gtms-cli/internal/git"
 	"github.com/aitestmanagement/gtms-cli/internal/layout"
 	"github.com/aitestmanagement/gtms-cli/internal/output"
@@ -29,7 +30,7 @@ func newPrimeCmd() *cobra.Command {
 	var updateHashFlag bool
 
 	cmd := &cobra.Command{
-		Use:   "prime [test-case-id]",
+		Use:   "prime <test-case-id>",
 		Short: "Prepare a manual test result template",
 		Long: `Stamp a blank manual result template for a test case.
 
@@ -38,22 +39,28 @@ and contains the schema directive, test case identity fields, and an empty
 result: field for the tester to fill in.
 
 Three modes:
-  First prime   — stamps a fresh template (default).
-  --update-hash — refreshes test_case_hash and strips drift fields while
-                  preserving any filled result: value and prior EXECUTE status.
-  --force       — destructive overwrite (loses all filled content).
+  First prime   -- stamps a fresh template (default).
+  --update-hash -- refreshes test_case_hash on an existing result file and
+                  strips drift fields, preserving any filled result: value
+                  and prior EXECUTE status (manual framework only).
+  --force       -- destructive overwrite (loses all filled content).
 
 Examples:
-  gtms prime tc-a1b2c3d4                         — stamp manual result template
-  gtms prime tc-a1b2c3d4 --update-hash           — refresh hash, keep result
-  gtms prime tc-a1b2c3d4 --force                 — overwrite an existing result file
+  gtms prime tc-a1b2c3d4                         -- stamp manual result template
+  gtms prime tc-a1b2c3d4 --update-hash           -- refresh hash, keep result
+  gtms prime tc-a1b2c3d4 --force                 -- overwrite an existing result file
 
 Zero-AI manual testing flow:
-  1. gtms init                                              — scaffold project
-  2. gtms create demo                                       — create test case specs
-  3. gtms prime tc-xxxxxxxx --framework manual               — stamp result template
+  1. gtms init                                          -- scaffold project
+  2. gtms create demo                                   -- stamp a test case skeleton, then fill it in
+  3. gtms prime tc-xxxxxxxx                             -- stamp result template
   4. Edit gtms/manual/records/tc-xxxxxxxx--manual.result.yaml (set result: pass|fail|skip)
-  5. gtms execute tc-xxxxxxxx --adapter manual-execute       — record the result`,
+  5. gtms execute tc-xxxxxxxx --adapter manual-execute  -- record the result
+
+Adapter execution:
+  With no --adapter or default, prime uses the built-in manual-prime.
+  Adapters run identically on every OS.
+  See "Adapter Execution Model" in USER-GUIDE.md.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
@@ -89,17 +96,26 @@ Zero-AI manual testing flow:
 
 			// Validate: test case exists
 			if !testcase.Exists(root, target) {
-				msg := fmt.Sprintf("Test case '%s' not found in gtms/cases/", target)
+				msg := fmt.Sprintf("Test case '%s' not found in gtms/test/cases/", target)
 				output.Errorf(msg, "Create the test case first with 'gtms create'.")
 				return output.AsDisplayed(fmt.Errorf(msg))
 			}
 
-			// ENH-150: Post-fill validation gate — catches frontmatter corruption
+			// ENH-150: Post-fill validation gate -- catches frontmatter corruption
 			// before the adapter is invoked (ID mismatch, missing fields, duplicates).
 			if violations := adapter.ValidateTestCasePostFill(root, target); len(violations) > 0 {
 				summary := adapter.FormatValidationErrors(violations)
 				output.Errorf(summary, "Fix the test case frontmatter and try again.")
 				return output.AsDisplayed(fmt.Errorf(summary))
+			}
+
+			// BUG-121: Validate --framework flag if provided (mirrors execute.go:113).
+			// Guard sits before framework resolution so invalid values never reach
+			// the adapter or the --update-hash shortcut.
+			if frameworkFlag != "" && !config.ValidateFramework(frameworkFlag) {
+				msg := fmt.Sprintf("Invalid framework '%s'. Framework must contain only lowercase letters, digits, and hyphens.", frameworkFlag)
+				output.Errorf(msg, "Example: --framework playwright")
+				return output.AsDisplayed(fmt.Errorf(msg))
 			}
 
 			// ENH-134: --update-hash on the manual framework preserves execute
@@ -203,8 +219,16 @@ Zero-AI manual testing flow:
 				return err
 			}
 
-			// BUG-080: dedicated prime output — no longer reuses automate formatting
+			// BUG-080: dedicated prime output -- no longer reuses automate formatting
 			formatPrimeOutput(result)
+
+			// BUG-135: propagate adapter-level failures as non-zero exit code,
+			// matching the contract in create.go and execute.go.
+			// Use bare Summary (no "task failed:" prefix) because formatPrimeOutput
+			// already prints the "Task failed:" headline.
+			if result != nil && result.Status == "error" {
+				return output.AsDisplayed(fmt.Errorf("%s", result.Summary))
+			}
 
 			return nil
 		},
@@ -212,16 +236,16 @@ Zero-AI manual testing flow:
 
 	cmd.Flags().StringVar(&adapterFlag, "adapter", "", "Adapter to use (default: manual-prime)")
 	cmd.Flags().StringVar(&frameworkFlag, "framework", "", "Test framework (default: manual)")
-	cmd.Flags().StringVar(&executedByFlag, "executed-by", "", "Identity to record on the executed_by field")
+	cmd.Flags().StringVar(&executedByFlag, "executed-by", "", "Identity to record on the executed_by field (defaults to GTMS_EXECUTED_BY, then git user.name)")
 	cmd.Flags().StringVar(&contextFileFlag, "context-file", "", "Path to context file")
 	cmd.Flags().BoolVar(&forceFlag, "force", false, "Overwrite existing result file")
-	cmd.Flags().BoolVar(&updateHashFlag, "update-hash", false, "Refresh test_case_hash only, preserving execute history")
+	cmd.Flags().BoolVar(&updateHashFlag, "update-hash", false, "Refresh test_case_hash and clear drift fields, preserving execute history")
 
 	return cmd
 }
 
 // formatPrimeOutput prints the result of a prime command.
-// BUG-080: dedicated renderer — uses "Primed" wording and reads from the
+// BUG-080: dedicated renderer -- uses "Primed" wording and reads from the
 // "prime" guidance key, not the "automate" key.
 func formatPrimeOutput(res *adapter.InvokeResult) {
 	if res.Status == "error" {
@@ -259,7 +283,7 @@ func formatPrimeOutput(res *adapter.InvokeResult) {
 // validatePrimeFolderStructure checks that the required directories for prime exist.
 func validatePrimeFolderStructure(root string) error {
 	paths := layout.Current()
-	required := []string{paths.Tasks, paths.Cases}
+	required := []string{paths.Tasks, paths.TestCases}
 	for _, dir := range required {
 		path := filepath.Join(root, dir)
 		if _, err := os.Stat(path); os.IsNotExist(err) {
@@ -288,7 +312,7 @@ func manualUpdateHash(root, target string) error {
 	absResultFile := filepath.Join(root, manualPaths.Manual, "records", resultFile)
 
 	if _, statErr := os.Stat(absResultFile); os.IsNotExist(statErr) {
-		return fmt.Errorf("no manual result file found at %s — run gtms prime %s --framework manual first",
+		return fmt.Errorf("no manual result file found at %s -- run gtms prime %s --framework manual first",
 			relResultFile, target)
 	}
 	_ = relResultFile // path retained above for the error message

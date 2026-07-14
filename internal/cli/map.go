@@ -24,21 +24,31 @@ func newMapCmd() *cobra.Command {
 		Short: "Show test cases grouped by requirement",
 		Long: `Show which test cases cover each requirement and their pipeline progress.
 
-Unlike 'status' (which lists every test case individually) or 'gaps' (which
-finds what's missing), 'map' groups test cases by the requirement they trace
-to — answering "what am I actually testing?"
+Unlike 'status' (which summarises folders and lists test cases when scoped) or
+'gaps' (which finds what's missing), 'map' groups test cases by the requirement
+they trace to -- answering "what am I actually testing?"
 
-  gtms map                      — slug view, all requirements
-  gtms map bug-022              — scoped to gtms/cases/bug-022/
-  gtms map --detail             — full titles, all requirements
-  gtms map tc-a1b2c3d           — full detail for one test case in its requirement group
-  gtms map --json               — machine-readable JSON output
-  gtms map -r                   — include test cases from subdirectories
-  gtms map --framework bats     — filter by automation framework`,
+Requirements come from each test case's 'requirement:' frontmatter field. Test
+cases without one appear in an UNLINKED TEST CASES section and are counted in
+the summary.
+
+  gtms map                      -- slug view, all requirements
+  gtms map bug-022              -- scoped to gtms/test/cases/bug-022/
+  gtms map --detail             -- full titles, all requirements
+  gtms map tc-a1b2c3d4          -- full detail for one test case in its requirement group
+  gtms map --json               -- machine-readable JSON output
+  gtms map bug-022 -r           -- folder scope, including subdirectories
+  gtms map --framework bats     -- show one framework's pipeline state`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			root := GetProjectRoot()
 			cfg := GetConfig()
+
+			// BUG-128 v2: non-fatal "did you mean" hint (stderr only).
+			if hint := frameworkHint(framework, knownFrameworks(cfg, root)); hint != "" {
+				fmt.Fprintln(os.Stderr, hint)
+			}
+
 			defaultFw := config.DefaultFramework(cfg)
 			if framework != "" {
 				defaultFw = framework
@@ -72,7 +82,7 @@ to — answering "what am I actually testing?"
 	cmd.Flags().BoolVar(&detail, "detail", false, "Show full titles in two-line format")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Output as JSON")
 	cmd.Flags().BoolVarP(&recursive, "recursive", "r", false, "Include test cases from subdirectories")
-	cmd.Flags().StringVar(&framework, "framework", "", "Filter by automation framework")
+	cmd.Flags().StringVar(&framework, "framework", "", "Select one framework per test case (non-matching test cases show as not-set)")
 
 	return cmd
 }
@@ -88,7 +98,7 @@ func runMap(w io.Writer, projectRoot string, scope *reader.ScopeInfo, detail boo
 	}
 
 	// JSON mode: always output valid JSON, even if empty.
-	// BUG-081: when a TC ID was supplied, honour it on the JSON path too —
+	// BUG-081: when a TC ID was supplied, honour it on the JSON path too --
 	// mirror the text-mode group-preserving semantic from writeMapSingleTC.
 	if jsonOut {
 		if detailID != "" {
@@ -137,7 +147,7 @@ func writeMapJSON(w io.Writer, report *reader.MapReport) error {
 }
 
 // writeMapSingleTCJSON emits a TC-scoped, group-preserving filtered MapReport.
-// BUG-081: mirrors the text-mode semantic of writeMapSingleTC — when the TC
+// BUG-081: mirrors the text-mode semantic of writeMapSingleTC -- when the TC
 // belongs to a requirement group, the group is preserved with all sibling
 // TCs intact; when the TC is unlinked, only that entry is returned. Unknown
 // TC IDs error out (no silent empty payload).
@@ -177,7 +187,7 @@ func writeMapSingleTCJSON(w io.Writer, report *reader.MapReport, detailID string
 			return writeMapJSON(w, filtered)
 		}
 	}
-	// BUG-081: not-found is an argument-validation error, not render output —
+	// BUG-081: not-found is an argument-validation error, not render output --
 	// emit to stderr so JSON consumers can `2>/dev/null | jq` cleanly, in
 	// line with the rest of the GTMS CLI's argument-error convention.
 	output.Errorf(fmt.Sprintf("Test case %s not found.", detailID), "")

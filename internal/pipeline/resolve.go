@@ -60,7 +60,7 @@ func ResolveArtefact(projectRoot, storedPath, testCaseID string) (string, error)
 	var matches []string
 
 	// ENH-098: derive parent dir name from layout defaults.
-	// For "gtms/cases" this gives "gtms"; for "testing/cases" it gives "testing".
+	// For "gtms/test/cases" this gives "gtms"; for "testing/cases" it gives "testing".
 	parentDirName := layout.ParentDir()
 
 	err := filepath.Walk(projectRoot, func(path string, info os.FileInfo, err error) error {
@@ -126,14 +126,14 @@ func AbsArtefactPath(projectRoot, artefactPath string) string {
 
 // ResolveTestCaseSpec returns the project-relative forward-slash path to the
 // test case spec for the given TC ID. It honours subfolder-scoped cases
-// (e.g. gtms/cases/{subfolder}/{tc}.md) by delegating to testcase.FindSource.
+// (e.g. gtms/test/cases/{subfolder}/{tc}.md) by delegating to testcase.FindSource.
 //
 // ENH-117: single pipeline-level resolver used by all automation-record write
 // paths. Callers must NOT compute the spec path locally.
 func ResolveTestCaseSpec(projectRoot, tcID string) (string, error) {
 	p := testcase.FindSource(projectRoot, tcID)
 	if p == "" {
-		return "", fmt.Errorf("test case spec for %s not found under %s", tcID, layout.CasesDir(projectRoot))
+		return "", fmt.Errorf("test case spec for %s not found under %s", tcID, layout.TestCasesDir(projectRoot))
 	}
 	return p, nil
 }

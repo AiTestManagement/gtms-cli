@@ -25,22 +25,31 @@ func newStatusCmd() *cobra.Command {
 		Long: `Show the pipeline dashboard. With no arguments, displays a folder summary.
 Use 'gaps' for coverage analysis or 'map' for requirement traceability.
 
-  gtms status              — folder summary (test case counts per folder)
-  gtms status bug-022      — scoped to gtms/cases/bug-022/
-  gtms status tc-a1b2c3d4       — detail view for one test case
-  gtms status --json       — machine-readable JSON output
-  gtms status -r           — include test cases from subdirectories
-  gtms status --framework bats  — filter by automation framework`,
+  gtms status              -- folder summary (per-folder pipeline rollup)
+  gtms status bug-022      -- scoped to gtms/test/cases/bug-022/
+  gtms status tc-a1b2c3d4       -- detail view for one test case
+  gtms status --json       -- machine-readable JSON output
+  gtms status -r           -- flat per test case list (all folders)
+  gtms status --framework bats  -- show one framework's pipeline state`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			root := GetProjectRoot()
 			cfg := GetConfig()
+
+			// BUG-128 v2: non-fatal "did you mean" hint for near-typo
+			// framework names. Fires only when --framework is unrecognised
+			// AND within edit distance <= 2 of a known name. Never errors,
+			// never changes stdout/JSON/exit code.
+			if hint := frameworkHint(framework, knownFrameworks(cfg, root)); hint != "" {
+				fmt.Fprintln(os.Stderr, hint)
+			}
+
 			defaultFw := config.DefaultFramework(cfg)
 			if framework != "" {
 				defaultFw = framework
 			}
 			// ENH-082: an explicit --framework flag enables strict per-TC
-			// filtering — TCs without a matching framework record render as
+			// filtering -- TCs without a matching framework record render as
 			// em-dashes instead of falling back to a different framework.
 			// A config-level default keeps its current fallback behaviour.
 			strict := framework != ""
@@ -76,8 +85,8 @@ Use 'gaps' for coverage analysis or 'map' for requirement traceability.
 	}
 
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Output as JSON")
-	cmd.Flags().BoolVarP(&recursive, "recursive", "r", false, "Include test cases from subdirectories")
-	cmd.Flags().StringVar(&framework, "framework", "", "Filter by automation framework")
+	cmd.Flags().BoolVarP(&recursive, "recursive", "r", false, "Include test cases from subdirectories; with no folder, show the flat per test case view")
+	cmd.Flags().StringVar(&framework, "framework", "", "Select one framework per test case (non-matching test cases show as not-set)")
 
 	return cmd
 }
@@ -148,7 +157,7 @@ func runStatusOverview(w io.Writer, projectRoot string, scope *reader.ScopeInfo,
 //
 // ENH-089: cells use icon-forward rendering (✓ ● ○ ✗) with fraction suffix
 // only on non-✓ cells. CREATE column always shows ✓ (a TC existing in
-// gtms/cases/ IS the creation). AUTOMATE/EXECUTE columns apply the
+// gtms/test/cases/ IS the creation). AUTOMATE/EXECUTE columns apply the
 // documented priority rule via the formatFolder*Cell helpers below.
 func runStatusFolderSummary(w io.Writer, projectRoot string, jsonOut bool, defaultFramework string) error {
 	entries, err := reader.PipelineFolderSummary(projectRoot, defaultFramework)
@@ -233,7 +242,7 @@ func formatFolderAutomateCell(e reader.FolderSummaryEntry) string {
 // preserved and the user still sees why the ratio isn't 3/3.
 func formatFolderExecuteCell(e reader.FolderSummaryEntry) string {
 	if e.Created == 0 {
-		// No TCs in folder — treat as ✓ (vacuously all-pass). Defensive only.
+		// No TCs in folder -- treat as ✓ (vacuously all-pass). Defensive only.
 		return output.IconComplete
 	}
 	fraction := fmt.Sprintf("%d/%d", e.Passing, e.Created)
@@ -260,7 +269,7 @@ func formatFolderExecuteCell(e reader.FolderSummaryEntry) string {
 // summary already emits this number via FolderSummaryEntry.Skipped.
 //
 // Rendering:
-//   - No skips -> "—" (em-dash, same "not applicable" glyph the other columns use).
+//   - No skips -> "--" (em-dash, same "not applicable" glyph the other columns use).
 //   - Skips present -> "⊘ N" so the glyph and the numeric count stay together
 //     even if future layout changes split columns.
 func formatFolderSkipCell(e reader.FolderSummaryEntry) string {
@@ -298,12 +307,12 @@ func statusHint(entries []reader.PipelineEntry) string {
 		// BUG-080: when the project is unambiguously manual-prime-oriented,
 		// surface the first-class gtms prime command instead of gtms automate.
 		if shouldRewriteToPrime() {
-			return "gtms prime <tc-id> --framework manual  — stamp a manual result template"
+			return "gtms prime <tc-id> --framework manual  -- stamp a manual result template"
 		}
-		return "gtms automate " + adapterHint("automate") + "<tc-id>  — automate a test case"
+		return "gtms automate " + adapterHint("automate") + "<tc-id>  -- automate a test case"
 	}
 	if needsExecute {
-		return "gtms execute " + adapterHint("execute") + "<tc-id>   — run an automated test"
+		return "gtms execute " + adapterHint("execute") + "<tc-id>   -- run an automated test"
 	}
 	return ""
 }
@@ -314,7 +323,7 @@ func statusHint(entries []reader.PipelineEntry) string {
 // BUG-080 round-2: the rewrite only fires when the project is unambiguously
 // manual-prime-oriented. The real adapter resolver
 // (internal/adapter/resolver.go) does not pick a "first registered" adapter
-// when no default is set — it errors out — so a status hint that picks a
+// when no default is set -- it errors out -- so a status hint that picks a
 // first-registered would propose a command (gtms prime) the user hadn't
 // signalled they wanted in an ambiguous multi-adapter project.
 //
@@ -407,7 +416,7 @@ func runStatusDetail(w io.Writer, projectRoot, testCaseID string, jsonOut bool, 
 	fmt.Fprintln(w, header)
 	fmt.Fprintln(w, strings.Repeat("\u2500", len(header)))
 
-	// Stage statuses — per-stage timestamps are appended inside the paren
+	// Stage statuses -- per-stage timestamps are appended inside the paren
 	// clause via appendDate (which skips on em-dash / empty inputs).
 	createLabel := appendDate(formatDetailLabel(detail.CreateStatus, detail.Requirement), detail.CreateDate)
 	fmt.Fprintf(w, "CREATE:     %s (%s)\n",
@@ -426,7 +435,7 @@ func runStatusDetail(w io.Writer, projectRoot, testCaseID string, jsonOut bool, 
 
 	execLabel := formatExecuteLabel(detail.ExecuteStatus, detail.LastResult, detail.LastResultDate)
 	// Timestamp goes BEFORE the framework-bracket append so the output
-	// reads "Pass, 2026-04-16 14:32 UTC [bats]" — substring matches on
+	// reads "Pass, 2026-04-16 14:32 UTC [bats]" -- substring matches on
 	// "[bats]" / "fail [playwright]" stay intact.
 	execLabel = appendDate(execLabel, formatRunAt(detail.LastRunAt))
 	if detail.Framework != "" && detail.LastResult != "none" && detail.LastResult != "" {
@@ -435,7 +444,7 @@ func runStatusDetail(w io.Writer, projectRoot, testCaseID string, jsonOut bool, 
 	execIcon := formatStageStatus(detail.ExecuteStatus)
 	if detail.Stale {
 		execIcon += " " + output.IconWarning
-		execLabel += " — script modified since last run"
+		execLabel += " -- script modified since last run"
 	}
 	fmt.Fprintf(w, "EXECUTE:    %s (%s)\n", execIcon, execLabel)
 
@@ -584,7 +593,7 @@ func capitalize(s string) string {
 // rendered as ", <value>" to keep the view compact.
 //
 // Skip rules:
-//   - If the label is empty or an em-dash ("—"), do not append — the stage
+//   - If the label is empty or an em-dash ("--"), do not append -- the stage
 //     has never run and a trailing date would be misleading.
 //   - If the date is empty, do not append.
 func appendDate(label, date string) string {

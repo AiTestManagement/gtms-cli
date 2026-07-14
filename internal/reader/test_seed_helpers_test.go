@@ -45,6 +45,7 @@ type legacyRecord struct {
 	TC               string // testcase ID (required)
 	Framework        string // framework (required; "manual" routes to manual-record path)
 	Adapter          string // adapter name; defaults to "{framework}-runner"
+	Command          string // handoff command; defaults to "execute" (BUG-124: set "automate" to model an automate-stage handoff)
 	Artefact         string // artefact path; defaults to test/acceptance/{tc}.bats
 	TestCaseHash     string // testcase content hash; defaults to "0011223344556677"
 	ArtefactHash     string // artefact content hash; defaults to "aabbccddeeff0011"
@@ -172,9 +173,14 @@ func seedLegacyRecord(t *testing.T, root string, r legacyRecord) {
 		contractResult = "skip"
 	}
 
+	contractCommand := r.Command
+	if contractCommand == "" {
+		contractCommand = "execute"
+	}
+
 	rc := &result.ResultContract{
 		Task:        taskID,
-		Command:     "execute",
+		Command:     contractCommand,
 		Target:      r.TC,
 		Adapter:     r.Adapter,
 		Mode:        "sync",

@@ -74,28 +74,28 @@ func validateFolderArg(folder string) (string, error) {
 
 	paths := layout.Current()
 	if folder == "." || folder == ".." {
-		return "", fmt.Errorf("'%s' is not a valid folder name — specify a folder within %s/\n    Example: gtms create bug-022", folder, paths.Cases)
+		return "", fmt.Errorf("'%s' is not a valid folder name — specify a folder within %s/\n    Example: gtms create bug-022", folder, paths.TestCases)
 	}
 
-	// Check for full prefix (e.g. "gtms/cases/foo") — ENH-093: routed through layout package
-	casesPrefix := paths.Cases + "/"
-	if strings.HasPrefix(folder, casesPrefix) || folder == paths.Cases {
+	// Check for full prefix (e.g. "gtms/test/cases/foo") — ENH-093: routed through layout package
+	casesPrefix := paths.TestCases + "/"
+	if strings.HasPrefix(folder, casesPrefix) || folder == paths.TestCases {
 		trimmed := strings.TrimPrefix(folder, casesPrefix)
 		if trimmed == "" || trimmed == folder {
-			return "", fmt.Errorf("don't include the %s/ prefix — GTMS adds it automatically\n    Example: gtms create <folder>", paths.Cases)
+			return "", fmt.Errorf("don't include the %s/ prefix — GTMS adds it automatically\n    Example: gtms create <folder>", paths.TestCases)
 		}
-		return "", fmt.Errorf("don't include the %s/ prefix — GTMS adds it automatically\n    Example: gtms create %s", paths.Cases, trimmed)
+		return "", fmt.Errorf("don't include the %s/ prefix — GTMS adds it automatically\n    Example: gtms create %s", paths.TestCases, trimmed)
 	}
 
 	// Check for short-form prefix (e.g. "cases/foo") — common user mistake
-	shortCasesDir := filepath.Base(paths.Cases)
+	shortCasesDir := filepath.Base(paths.TestCases)
 	shortPrefix := shortCasesDir + "/"
 	if strings.HasPrefix(folder, shortPrefix) || folder == shortCasesDir {
 		trimmed := strings.TrimPrefix(folder, shortPrefix)
 		if trimmed == "" || trimmed == folder {
-			return "", fmt.Errorf("don't include the %s/ prefix — GTMS adds it automatically\n    Example: gtms create <folder>", paths.Cases)
+			return "", fmt.Errorf("don't include the %s/ prefix — GTMS adds it automatically\n    Example: gtms create <folder>", paths.TestCases)
 		}
-		return "", fmt.Errorf("don't include the %s/ prefix — GTMS adds it automatically\n    Example: gtms create %s", paths.Cases, trimmed)
+		return "", fmt.Errorf("don't include the %s/ prefix — GTMS adds it automatically\n    Example: gtms create %s", paths.TestCases, trimmed)
 	}
 
 	if len(folder) > maxFolderArgLength {

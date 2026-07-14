@@ -561,12 +561,12 @@ func TestStreamingInvoke_ArtefactUsesRelativePaths(t *testing.T) {
 
 	assert.NotEmpty(t, rc.Artefact, "artefact should be populated from SavedFiles")
 	assert.NotContains(t, rc.Artefact, root, "artefact should not contain absolute project root")
-	assert.Contains(t, rc.Artefact, "gtms/cases/tc-100.md", "artefact should contain relative path")
-	assert.Contains(t, rc.Artefact, "gtms/cases/tc-101.md", "artefact should contain both file paths")
+	assert.Contains(t, rc.Artefact, "gtms/test/cases/tc-100.md", "artefact should contain relative path")
+	assert.Contains(t, rc.Artefact, "gtms/test/cases/tc-101.md", "artefact should contain both file paths")
 
 	// Verify files were actually written
-	assert.FileExists(t, filepath.Join(root, "gtms/cases", "tc-100.md"))
-	assert.FileExists(t, filepath.Join(root, "gtms/cases", "tc-101.md"))
+	assert.FileExists(t, filepath.Join(root, "gtms/test/cases", "tc-100.md"))
+	assert.FileExists(t, filepath.Join(root, "gtms/test/cases", "tc-101.md"))
 }
 
 // --- BUG-021: OutputSubdir appended to streaming output directory ---

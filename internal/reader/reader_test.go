@@ -24,7 +24,7 @@ func setupFixtureProject(t *testing.T) string {
 `)
 
 	// Create test case files
-	writeFile(t, root, filepath.Join("gtms/cases", "natural", "tc-007-checkout-guest.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "natural", "tc-007-checkout-guest.md"), `---
 test_case_id: tc-007
 title: Checkout Flow - Guest User
 requirement: JIRA-456
@@ -41,7 +41,7 @@ created: 2026-02-19
 3. Checkout as guest
 `)
 
-	writeFile(t, root, filepath.Join("gtms/cases", "natural", "tc-008-checkout-registered.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "natural", "tc-008-checkout-registered.md"), `---
 test_case_id: tc-008
 title: Checkout Flow - Registered User
 requirement: JIRA-456
@@ -56,7 +56,7 @@ tags: [checkout, registered]
 4. Checkout
 `)
 
-	writeFile(t, root, filepath.Join("gtms/cases", "natural", "tc-009-login-sso.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "natural", "tc-009-login-sso.md"), `---
 test_case_id: tc-009
 title: Login - SSO
 requirement: JIRA-789
@@ -209,7 +209,7 @@ func TestPipelineStatus_EmptyProject(t *testing.T) {
 func TestPipelineStatus_NoAutomationDir(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, root, "gtms.config", "project:\n  name: x\n  repo: x\n")
-	writeFile(t, root, filepath.Join("gtms/cases", "tc-001.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-001.md"), `---
 test_case_id: tc-001
 title: Some Test
 requirement: REQ-1
@@ -230,7 +230,7 @@ status: ready
 func TestPipelineStatus_SlugDerived(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, root, "gtms.config", "project:\n  name: x\n  repo: x\n")
-	writeFile(t, root, filepath.Join("gtms/cases", "tc-a1b2c3d-tier1-sync-happy-path.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-a1b2c3d-tier1-sync-happy-path.md"), `---
 test_case_id: tc-a1b2c3d
 title: Tier 1 Sync Happy Path
 requirement: REQ-1
@@ -247,7 +247,7 @@ requirement: REQ-1
 func TestPipelineDetail_SlugDerived(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, root, "gtms.config", "project:\n  name: x\n  repo: x\n")
-	writeFile(t, root, filepath.Join("gtms/cases", "tc-a1b2c3d-tier1-sync-happy-path.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-a1b2c3d-tier1-sync-happy-path.md"), `---
 test_case_id: tc-a1b2c3d
 title: Tier 1 Sync Happy Path
 requirement: REQ-1
@@ -265,7 +265,7 @@ func TestPipelineStatus_MalformedFrontmatter(t *testing.T) {
 	writeFile(t, root, "gtms.config", "project:\n  name: x\n  repo: x\n")
 
 	// Valid file
-	writeFile(t, root, filepath.Join("gtms/cases", "tc-001.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-001.md"), `---
 test_case_id: tc-001
 title: Valid Test
 requirement: REQ-1
@@ -274,7 +274,7 @@ status: ready
 `)
 
 	// Malformed file - should be skipped without crashing
-	writeFile(t, root, filepath.Join("gtms/cases", "tc-bad.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-bad.md"), `---
 this is not valid yaml: [
 broken: {{
 ---
@@ -290,7 +290,7 @@ broken: {{
 func TestPipelineStatus_MalformedAutomation(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, root, "gtms.config", "project:\n  name: x\n  repo: x\n")
-	writeFile(t, root, filepath.Join("gtms/cases", "tc-001.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-001.md"), `---
 test_case_id: tc-001
 title: Valid Test
 requirement: REQ-1
@@ -314,7 +314,7 @@ status: ready
 func TestPipelineStatus_MalformedTask(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, root, "gtms.config", "project:\n  name: x\n  repo: x\n")
-	writeFile(t, root, filepath.Join("gtms/cases", "tc-001.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-001.md"), `---
 test_case_id: tc-001
 title: Valid Test
 requirement: REQ-1
@@ -335,7 +335,7 @@ broken yaml [[[
 func TestPipelineStatus_InProgressTask(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, root, "gtms.config", "project:\n  name: x\n  repo: x\n")
-	writeFile(t, root, filepath.Join("gtms/cases", "tc-001.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-001.md"), `---
 test_case_id: tc-001
 title: Test Case
 requirement: REQ-1
@@ -364,7 +364,7 @@ branch: feature/automate-tc-001
 func TestBUG017_FailedExecuteTaskShowsFailedStatus(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, root, "gtms.config", "project:\n  name: x\n  repo: x\n")
-	writeFile(t, root, filepath.Join("gtms/cases", "tc-a7b9c1d-checkout.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-a7b9c1d-checkout.md"), `---
 test_case_id: tc-a7b9c1d
 title: Checkout Test
 requirement: REQ-1
@@ -403,7 +403,7 @@ branch: main
 func TestBUG017_FailedExecuteOverridesPreviousPass(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, root, "gtms.config", "project:\n  name: x\n  repo: x\n")
-	writeFile(t, root, filepath.Join("gtms/cases", "tc-001.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-001.md"), `---
 test_case_id: tc-001
 title: Test With Pass Then Fail
 requirement: REQ-1
@@ -444,7 +444,7 @@ branch: main
 func TestBUG017_FailedExecuteInPipelineDetail(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, root, "gtms.config", "project:\n  name: x\n  repo: x\n")
-	writeFile(t, root, filepath.Join("gtms/cases", "tc-a7b9c1d-checkout.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-a7b9c1d-checkout.md"), `---
 test_case_id: tc-a7b9c1d
 title: Checkout Test
 requirement: REQ-1
@@ -479,7 +479,7 @@ branch: main
 func TestBUG018_NewerCompleteOverridesOlderFailed(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, root, "gtms.config", "project:\n  name: x\n  repo: x\n")
-	writeFile(t, root, filepath.Join("gtms/cases", "tc-001.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-001.md"), `---
 test_case_id: tc-001
 title: Test With Fail Then Pass
 requirement: REQ-1
@@ -529,7 +529,7 @@ branch: main
 func TestBUG018_NewerFailedOverridesOlderComplete(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, root, "gtms.config", "project:\n  name: x\n  repo: x\n")
-	writeFile(t, root, filepath.Join("gtms/cases", "tc-001.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-001.md"), `---
 test_case_id: tc-001
 title: Test With Pass Then Fail
 requirement: REQ-1
@@ -580,7 +580,7 @@ branch: main
 func TestBUG018_FailedOnlyStillShowsFailed(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, root, "gtms.config", "project:\n  name: x\n  repo: x\n")
-	writeFile(t, root, filepath.Join("gtms/cases", "tc-001.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-001.md"), `---
 test_case_id: tc-001
 title: Test Failed Only
 requirement: REQ-1
@@ -615,7 +615,7 @@ branch: main
 func TestBUG018_NewerCompleteInPipelineDetail(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, root, "gtms.config", "project:\n  name: x\n  repo: x\n")
-	writeFile(t, root, filepath.Join("gtms/cases", "tc-001.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-001.md"), `---
 test_case_id: tc-001
 title: Detail View Test
 requirement: REQ-1
@@ -716,7 +716,7 @@ func TestPipelineDetail_CarriesLogAndLogSpill(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, root, "gtms.config", "project:\n  name: x\n  repo: x\n")
 
-	writeFile(t, root, filepath.Join("gtms/cases", "tc-logdet.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-logdet.md"), `---
 test_case_id: tc-logdet
 title: Detail log carrier
 requirement: ENH-077
@@ -777,7 +777,7 @@ func TestGaps_WithFailingTest(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, root, "gtms.config", "project:\n  name: x\n  repo: x\n")
 
-	writeFile(t, root, filepath.Join("gtms/cases", "tc-001.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-001.md"), `---
 test_case_id: tc-001
 title: Failing Test
 requirement: REQ-1
@@ -847,7 +847,7 @@ func TestBUG009_GapsScansSpecFiles(t *testing.T) {
 	// with status command) AND in SpecButNoRecord (new category).
 	root := t.TempDir()
 	writeFile(t, root, "gtms.config", "project:\n  name: x\n  repo: x\n")
-	writeFile(t, root, filepath.Join("gtms/cases", "tc-001.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-001.md"), `---
 test_case_id: tc-001
 title: Has Spec But No Record
 requirement: REQ-1
@@ -875,7 +875,7 @@ func TestBUG009_RecordExistsButNoSpec(t *testing.T) {
 	// A TC with an automation record but NO spec file is NOT in NoAutomation (has record).
 	root := t.TempDir()
 	writeFile(t, root, "gtms.config", "project:\n  name: x\n  repo: x\n")
-	writeFile(t, root, filepath.Join("gtms/cases", "tc-001.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-001.md"), `---
 test_case_id: tc-001
 title: Has Record But No Spec
 requirement: REQ-1
@@ -907,7 +907,7 @@ func TestBUG015_GapsConsistentWithStatus(t *testing.T) {
 	// in both NoAutomation (consistent with status) and SpecButNoRecord.
 	root := t.TempDir()
 	writeFile(t, root, "gtms.config", "project:\n  name: x\n  repo: x\n")
-	writeFile(t, root, filepath.Join("gtms/cases", "tc-001.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-001.md"), `---
 test_case_id: tc-001
 title: Has Spec No Record
 requirement: REQ-1
@@ -940,7 +940,7 @@ func TestBUG015_SpecAndRecordNotInSpecButNoRecord(t *testing.T) {
 	// appear in SpecButNoRecord.
 	root := t.TempDir()
 	writeFile(t, root, "gtms.config", "project:\n  name: x\n  repo: x\n")
-	writeFile(t, root, filepath.Join("gtms/cases", "tc-001.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-001.md"), `---
 test_case_id: tc-001
 title: Has Both Spec And Record
 requirement: REQ-1
@@ -971,7 +971,7 @@ func TestBUG015_NoSpecNoRecordNotInSpecButNoRecord(t *testing.T) {
 	// in NoAutomation but NOT in SpecButNoRecord.
 	root := t.TempDir()
 	writeFile(t, root, "gtms.config", "project:\n  name: x\n  repo: x\n")
-	writeFile(t, root, filepath.Join("gtms/cases", "tc-001.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-001.md"), `---
 test_case_id: tc-001
 title: Has Nothing
 requirement: REQ-1
@@ -1008,7 +1008,7 @@ func TestPipelineStatus_NoMdFiles(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, root, "gtms.config", "project:\n  name: x\n  repo: x\n")
 	// Create cases dir with a non-md file
-	writeFile(t, root, filepath.Join("gtms/cases", "README.txt"), "Not a test case")
+	writeFile(t, root, filepath.Join("gtms/test/cases", "README.txt"), "Not a test case")
 
 	entries, err := PipelineStatus(root, nil, "", false)
 	require.NoError(t, err)
@@ -1019,7 +1019,7 @@ func TestPipelineStatus_EmptyFrontmatter(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, root, "gtms.config", "project:\n  name: x\n  repo: x\n")
 	// File with valid frontmatter but empty ID
-	writeFile(t, root, filepath.Join("gtms/cases", "empty.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "empty.md"), `---
 test_case_id: ""
 title: Empty ID
 ---
@@ -1035,14 +1035,14 @@ func TestPipelineStatus_NestedTestCases(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, root, "gtms.config", "project:\n  name: x\n  repo: x\n")
 	// Test cases in nested subdirectories
-	writeFile(t, root, filepath.Join("gtms/cases", "checkout", "tc-001.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "checkout", "tc-001.md"), `---
 test_case_id: tc-001
 title: Nested Checkout
 requirement: REQ-1
 status: ready
 ---
 `)
-	writeFile(t, root, filepath.Join("gtms/cases", "login", "tc-002.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "login", "tc-002.md"), `---
 test_case_id: tc-002
 title: Nested Login
 requirement: REQ-2
@@ -1080,7 +1080,7 @@ func TestScanAutomationRecords_NonAutomationFiles(t *testing.T) {
 func TestBUG011_StatusParsesTestCaseID(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, root, "gtms.config", "project:\n  name: x\n  repo: x\n")
-	writeFile(t, root, filepath.Join("gtms/cases", "tc-bug011-test.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-bug011-test.md"), `---
 test_case_id: tc-bug011
 title: BUG-011 Regression Test
 requirement: BUG-011
@@ -1104,7 +1104,7 @@ created: 2026-02-21
 func TestBUG011_StatusNormalizesUppercaseID(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, root, "gtms.config", "project:\n  name: x\n  repo: x\n")
-	writeFile(t, root, filepath.Join("gtms/cases", "tc-upper-test.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-upper-test.md"), `---
 test_case_id: TC-UPPER
 title: Uppercase ID Test
 requirement: BUG-011
@@ -1120,7 +1120,7 @@ requirement: BUG-011
 func TestBUG011_DetailFindsTestCaseID(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, root, "gtms.config", "project:\n  name: x\n  repo: x\n")
-	writeFile(t, root, filepath.Join("gtms/cases", "tc-bug011-detail.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-bug011-detail.md"), `---
 test_case_id: tc-bug011
 title: BUG-011 Detail Test
 requirement: BUG-011
@@ -1148,7 +1148,7 @@ func setupSubfolderFixture(t *testing.T) string {
 	writeFile(t, root, "gtms.config", "project:\n  name: x\n  repo: x\n")
 
 	// Root-level test case
-	writeFile(t, root, filepath.Join("gtms/cases", "tc-root.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-root.md"), `---
 test_case_id: tc-root
 title: Root Level
 requirement: REQ-ROOT
@@ -1156,13 +1156,13 @@ requirement: REQ-ROOT
 `)
 
 	// Login subfolder
-	writeFile(t, root, filepath.Join("gtms/cases", "login", "tc-login1.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "login", "tc-login1.md"), `---
 test_case_id: tc-login1
 title: Login Happy
 requirement: REQ-LOGIN
 ---
 `)
-	writeFile(t, root, filepath.Join("gtms/cases", "login", "tc-login2.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "login", "tc-login2.md"), `---
 test_case_id: tc-login2
 title: Login Error
 requirement: REQ-LOGIN
@@ -1170,7 +1170,7 @@ requirement: REQ-LOGIN
 `)
 
 	// Nested subfolder under login
-	writeFile(t, root, filepath.Join("gtms/cases", "login", "oauth", "tc-oauth1.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "login", "oauth", "tc-oauth1.md"), `---
 test_case_id: tc-oauth1
 title: OAuth Flow
 requirement: REQ-LOGIN
@@ -1178,7 +1178,7 @@ requirement: REQ-LOGIN
 `)
 
 	// Payments subfolder
-	writeFile(t, root, filepath.Join("gtms/cases", "payments", "tc-pay1.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "payments", "tc-pay1.md"), `---
 test_case_id: tc-pay1
 title: Payment Flow
 requirement: REQ-PAY
@@ -1186,7 +1186,7 @@ requirement: REQ-PAY
 `)
 
 	// Nested refunds under payments
-	writeFile(t, root, filepath.Join("gtms/cases", "payments", "refunds", "tc-refund1.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "payments", "refunds", "tc-refund1.md"), `---
 test_case_id: tc-refund1
 title: Refund Flow
 requirement: REQ-PAY
@@ -1198,34 +1198,34 @@ requirement: REQ-PAY
 
 func TestPipelineStatus_ShallowAtRoot(t *testing.T) {
 	root := setupSubfolderFixture(t)
-	tcDir := filepath.Join(root, "gtms/cases")
+	tcDir := filepath.Join(root, "gtms/test/cases")
 
-	scope := &ScopeInfo{ScanDir: tcDir, RelPath: "gtms/cases/", Recursive: false}
+	scope := &ScopeInfo{ScanDir: tcDir, RelPath: "gtms/test/cases/", Recursive: false}
 	entries, err := PipelineStatus(root, scope, "", false)
 	require.NoError(t, err)
 
-	// Shallow at gtms/cases/ root: only tc-root (no subdirectory test cases)
+	// Shallow at gtms/test/cases/ root: only tc-root (no subdirectory test cases)
 	require.Len(t, entries, 1)
 	assert.Equal(t, "tc-root", entries[0].TestCaseID)
 }
 
 func TestPipelineStatus_RecursiveAtRoot(t *testing.T) {
 	root := setupSubfolderFixture(t)
-	tcDir := filepath.Join(root, "gtms/cases")
+	tcDir := filepath.Join(root, "gtms/test/cases")
 
-	scope := &ScopeInfo{ScanDir: tcDir, RelPath: "gtms/cases/", Recursive: true}
+	scope := &ScopeInfo{ScanDir: tcDir, RelPath: "gtms/test/cases/", Recursive: true}
 	entries, err := PipelineStatus(root, scope, "", false)
 	require.NoError(t, err)
 
-	// Recursive at gtms/cases/ root: all 6 test cases
+	// Recursive at gtms/test/cases/ root: all 6 test cases
 	assert.Len(t, entries, 6)
 }
 
 func TestPipelineStatus_ShallowAtLogin(t *testing.T) {
 	root := setupSubfolderFixture(t)
-	loginDir := filepath.Join(root, "gtms/cases", "login")
+	loginDir := filepath.Join(root, "gtms/test/cases", "login")
 
-	scope := &ScopeInfo{ScanDir: loginDir, RelPath: "gtms/cases/login/", Recursive: false}
+	scope := &ScopeInfo{ScanDir: loginDir, RelPath: "gtms/test/cases/login/", Recursive: false}
 	entries, err := PipelineStatus(root, scope, "", false)
 	require.NoError(t, err)
 
@@ -1239,9 +1239,9 @@ func TestPipelineStatus_ShallowAtLogin(t *testing.T) {
 
 func TestPipelineStatus_RecursiveAtLogin(t *testing.T) {
 	root := setupSubfolderFixture(t)
-	loginDir := filepath.Join(root, "gtms/cases", "login")
+	loginDir := filepath.Join(root, "gtms/test/cases", "login")
 
-	scope := &ScopeInfo{ScanDir: loginDir, RelPath: "gtms/cases/login/", Recursive: true}
+	scope := &ScopeInfo{ScanDir: loginDir, RelPath: "gtms/test/cases/login/", Recursive: true}
 	entries, err := PipelineStatus(root, scope, "", false)
 	require.NoError(t, err)
 
@@ -1251,9 +1251,9 @@ func TestPipelineStatus_RecursiveAtLogin(t *testing.T) {
 
 func TestPipelineStatus_ShallowExcludesSiblings(t *testing.T) {
 	root := setupSubfolderFixture(t)
-	loginDir := filepath.Join(root, "gtms/cases", "login")
+	loginDir := filepath.Join(root, "gtms/test/cases", "login")
 
-	scope := &ScopeInfo{ScanDir: loginDir, RelPath: "gtms/cases/login/", Recursive: false}
+	scope := &ScopeInfo{ScanDir: loginDir, RelPath: "gtms/test/cases/login/", Recursive: false}
 	entries, err := PipelineStatus(root, scope, "", false)
 	require.NoError(t, err)
 
@@ -1277,10 +1277,10 @@ func TestPipelineStatus_NilScopeIsUnscoped(t *testing.T) {
 
 func TestPipelineStatus_EmptySubfolder(t *testing.T) {
 	root := setupSubfolderFixture(t)
-	emptyDir := filepath.Join(root, "gtms/cases", "empty")
-	mkdirAll(t, root, filepath.Join("gtms/cases", "empty"))
+	emptyDir := filepath.Join(root, "gtms/test/cases", "empty")
+	mkdirAll(t, root, filepath.Join("gtms/test/cases", "empty"))
 
-	scope := &ScopeInfo{ScanDir: emptyDir, RelPath: "gtms/cases/empty/", Recursive: false}
+	scope := &ScopeInfo{ScanDir: emptyDir, RelPath: "gtms/test/cases/empty/", Recursive: false}
 	entries, err := PipelineStatus(root, scope, "", false)
 	require.NoError(t, err)
 	assert.Len(t, entries, 0)
@@ -1288,9 +1288,9 @@ func TestPipelineStatus_EmptySubfolder(t *testing.T) {
 
 func TestGaps_ScopedToLogin(t *testing.T) {
 	root := setupSubfolderFixture(t)
-	loginDir := filepath.Join(root, "gtms/cases", "login")
+	loginDir := filepath.Join(root, "gtms/test/cases", "login")
 
-	scope := &ScopeInfo{ScanDir: loginDir, RelPath: "gtms/cases/login/", Recursive: false}
+	scope := &ScopeInfo{ScanDir: loginDir, RelPath: "gtms/test/cases/login/", Recursive: false}
 	report, err := Gaps(root, scope, "", false)
 	require.NoError(t, err)
 
@@ -1303,9 +1303,9 @@ func TestGaps_ScopedToLogin(t *testing.T) {
 
 func TestMap_ScopedToLogin(t *testing.T) {
 	root := setupSubfolderFixture(t)
-	loginDir := filepath.Join(root, "gtms/cases", "login")
+	loginDir := filepath.Join(root, "gtms/test/cases", "login")
 
-	scope := &ScopeInfo{ScanDir: loginDir, RelPath: "gtms/cases/login/", Recursive: false}
+	scope := &ScopeInfo{ScanDir: loginDir, RelPath: "gtms/test/cases/login/", Recursive: false}
 	report, err := Map(root, scope, "", false)
 	require.NoError(t, err)
 
@@ -1383,7 +1383,7 @@ func TestIsStaleArtefact_FileMissing(t *testing.T) {
 func TestMap_StaleFlag_WhenHashMismatch(t *testing.T) {
 	root := t.TempDir()
 
-	writeFile(t, root, filepath.Join("gtms/cases", "tc-map01-stale.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-map01-stale.md"), `---
 test_case_id: tc-map01
 title: Stale Map Test
 requirement: REQ-S
@@ -1410,7 +1410,7 @@ func TestMap_StaleFlag_WhenHashMatches(t *testing.T) {
 	root := t.TempDir()
 
 	content := "fresh artefact content"
-	writeFile(t, root, filepath.Join("gtms/cases", "tc-map02-fresh.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-map02-fresh.md"), `---
 test_case_id: tc-map02
 title: Fresh Map Test
 requirement: REQ-F
@@ -1442,7 +1442,7 @@ requirement: REQ-F
 func TestENH040_PipelineStatus_ErrorExecuteStatus(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, root, "gtms.config", "project:\n  name: x\n  repo: x\n")
-	writeFile(t, root, filepath.Join("gtms/cases", "tc-e40a-error-test.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-e40a-error-test.md"), `---
 test_case_id: tc-e40a
 title: Error Execute Test
 requirement: REQ-1
@@ -1468,7 +1468,7 @@ requirement: REQ-1
 func TestENH040_PipelineStatus_FailExecuteStatus(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, root, "gtms.config", "project:\n  name: x\n  repo: x\n")
-	writeFile(t, root, filepath.Join("gtms/cases", "tc-e40b-fail-test.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-e40b-fail-test.md"), `---
 test_case_id: tc-e40b
 title: Fail Execute Test
 requirement: REQ-1
@@ -1493,7 +1493,7 @@ requirement: REQ-1
 func TestENH040_PipelineDetail_ErrorExecuteStatus(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, root, "gtms.config", "project:\n  name: x\n  repo: x\n")
-	writeFile(t, root, filepath.Join("gtms/cases", "tc-e40c-detail-error.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-e40c-detail-error.md"), `---
 test_case_id: tc-e40c
 title: Detail Error Test
 requirement: REQ-1
@@ -1520,7 +1520,7 @@ func TestENH040_Gaps_ExecutionErrors_Category(t *testing.T) {
 	writeFile(t, root, "gtms.config", "project:\n  name: x\n  repo: x\n")
 
 	// tc-e40d has error result
-	writeFile(t, root, filepath.Join("gtms/cases", "tc-e40d-error-gap.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-e40d-error-gap.md"), `---
 test_case_id: tc-e40d
 title: Error Gap Test
 requirement: REQ-1
@@ -1535,7 +1535,7 @@ requirement: REQ-1
 	})
 
 	// tc-e40e has fail result
-	writeFile(t, root, filepath.Join("gtms/cases", "tc-e40e-fail-gap.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-e40e-fail-gap.md"), `---
 test_case_id: tc-e40e
 title: Fail Gap Test
 requirement: REQ-1
@@ -1565,7 +1565,7 @@ func TestENH040_Gaps_TotalGaps_IncludesErrors(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, root, "gtms.config", "project:\n  name: x\n  repo: x\n")
 
-	writeFile(t, root, filepath.Join("gtms/cases", "tc-e40f-total-gaps.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-e40f-total-gaps.md"), `---
 test_case_id: tc-e40f
 title: Total Gaps Error Test
 requirement: REQ-1
@@ -1588,7 +1588,7 @@ requirement: REQ-1
 func TestENH040_Map_ErrorExecuteStatus(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, root, "gtms.config", "project:\n  name: x\n  repo: x\n")
-	writeFile(t, root, filepath.Join("gtms/cases", "tc-e40g-map-error.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-e40g-map-error.md"), `---
 test_case_id: tc-e40g
 title: Map Error Test
 requirement: REQ-1
@@ -1616,7 +1616,7 @@ requirement: REQ-1
 func TestBUG044_StaleFailedTaskSupersededByPassingRecord(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, root, "gtms.config", "project:\n  name: x\n  repo: x\n")
-	writeFile(t, root, filepath.Join("gtms/cases", "tc-001.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-001.md"), `---
 test_case_id: tc-001
 title: Stale failure with passing record
 requirement: REQ-1
@@ -1654,7 +1654,7 @@ branch: main
 func TestBUG044_StaleFailedTaskSupersededBySkippedRecord(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, root, "gtms.config", "project:\n  name: x\n  repo: x\n")
-	writeFile(t, root, filepath.Join("gtms/cases", "tc-001.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-001.md"), `---
 test_case_id: tc-001
 title: Stale failure with skipped record
 requirement: REQ-1
@@ -1692,7 +1692,7 @@ branch: main
 func TestBUG044_GenuineFailureNewerThanRecord(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, root, "gtms.config", "project:\n  name: x\n  repo: x\n")
-	writeFile(t, root, filepath.Join("gtms/cases", "tc-001.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-001.md"), `---
 test_case_id: tc-001
 title: Genuine failure newer than record
 requirement: REQ-1
@@ -1729,7 +1729,7 @@ branch: main
 func TestBUG044_NoLastRunAtPreservesExistingBehaviour(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, root, "gtms.config", "project:\n  name: x\n  repo: x\n")
-	writeFile(t, root, filepath.Join("gtms/cases", "tc-001.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-001.md"), `---
 test_case_id: tc-001
 title: No last-formal-run-at on record
 requirement: REQ-1
@@ -1772,7 +1772,7 @@ branch: main
 func TestBUG044_DetailViewAlsoReconciles(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, root, "gtms.config", "project:\n  name: x\n  repo: x\n")
-	writeFile(t, root, filepath.Join("gtms/cases", "tc-001.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-001.md"), `---
 test_case_id: tc-001
 title: Detail view reconciliation
 requirement: REQ-1
@@ -1816,7 +1816,7 @@ branch: main
 func TestBUG044_RecordSaysFailDoesNotSuppressFailedOverride(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, root, "gtms.config", "project:\n  name: x\n  repo: x\n")
-	writeFile(t, root, filepath.Join("gtms/cases", "tc-001.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-001.md"), `---
 test_case_id: tc-001
 title: Fail record + stale failed task
 requirement: REQ-1
@@ -1854,7 +1854,7 @@ branch: main
 func TestBUG044_RecordSaysErrorDoesNotSuppressFailedOverride(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, root, "gtms.config", "project:\n  name: x\n  repo: x\n")
-	writeFile(t, root, filepath.Join("gtms/cases", "tc-001.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-001.md"), `---
 test_case_id: tc-001
 title: Error record + stale failed task
 requirement: REQ-1

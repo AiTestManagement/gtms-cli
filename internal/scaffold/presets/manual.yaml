@@ -6,21 +6,44 @@ guidance: true
 
 adapters:
   create:
-    skeleton:
+    manual-create-script:                          # add as default to start using script
       mode: sync
-      script: gtms/adapters/create-skeleton.sh
+      script: gtms/adapters/manual-create-script.sh
+    agent-create-script:                           # add as default to start using script
+      mode: sync
+      script: gtms/adapters/agent-create-script.sh
   prime:
-    manual-prime:
+    manual-prime-script:                           # add as default to start using script
       mode: sync
-      script: gtms/adapters/manual-prime.sh
+      script: gtms/adapters/manual-prime-script.sh
+      framework: manual
+    agent-prime-script:                            # add as default to start using script
+      mode: sync
+      script: gtms/adapters/agent-prime-script.sh
+      framework: manual
+  automate:
+    manual-automate:                               # manual framework has no automation; `gtms automate` returns the prime/execute hint
+      mode: sync
       framework: manual
   execute:
-    manual-execute:
+    manual-execute-script:                         # add as default to start using script
       mode: sync
-      script: gtms/adapters/manual-execute.sh
+      script: gtms/adapters/manual-execute-script.sh
+      framework: manual
+    agent-execute-script:                          # add as default to start using script
+      mode: sync
+      script: gtms/adapters/agent-execute-script.sh
       framework: manual
 
+# Switch role: change each value to its agent-* equivalent.
+# Switch tier: change each value to its *-script equivalent.
+# Examples:
+#   create: agent-create            (switch role only)
+#   create: manual-create-script    (switch tier only)
+#   create: agent-create-script     (switch both)
+#   automate: agent-automate        (switch role; framework stays manual until you add a runner)
 defaults:
-  create: skeleton
-  prime: manual-prime
-  execute: manual-execute
+  create: manual-create              # built-in
+  prime: manual-prime                # built-in
+  automate: manual-automate          # built-in (manual framework -- returns the prime/execute hint)
+  execute: manual-execute            # built-in (see Execute path note below)

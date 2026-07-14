@@ -2,6 +2,7 @@ package adapter
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -15,59 +16,19 @@ import (
 	"github.com/aitestmanagement/gtms-cli/internal/wiring"
 )
 
-// BuiltinCreate implements the Tier 0 built-in create adapter (ENH-150).
-// It stamps an empty TC skeleton with GTMS-allocated frontmatter. The
-// operator never generates IDs — GTMS allocates them (BUG-038 prevention).
-//
-// Mirrors the Tier 2 create-skeleton.sh script behaviour:
-//   - Takes the first ID from ctx.TestCaseIDs
-//   - Writes a markdown file with YAML frontmatter + section headings
-//   - Returns InvocationResult with ExitCode 0
-func BuiltinCreate(ctx *AdapterContext) (*InvocationResult, error) {
-	if ctx.OutputDir == "" {
-		return nil, fmt.Errorf("output directory not set")
-	}
-	if ctx.TestCaseIDs == "" {
-		return nil, fmt.Errorf("no test case IDs available")
-	}
+// testcaseTemplateFallback is the fallback TC skeleton shape used when the
+// role-specific template file is missing. ENH-161: must match the scaffolded
+// TestcaseTemplateMD constant in internal/scaffold/templates.go byte-for-byte.
+// A source-shape test enforces this invariant.
+const testcaseTemplateFallback = `---
+test_case_id: ${TESTCASE_ID}
+title: "${TITLE}"
+requirement: ${REQUIREMENT}
+priority: Medium
+type: Functional
+created: ${CREATED}
+---
 
-	// Take the first ID from the comma-separated batch
-	ids := strings.Split(ctx.TestCaseIDs, ",")
-	tcID := strings.TrimSpace(ids[0])
-	if tcID == "" {
-		return nil, fmt.Errorf("first test case ID is empty")
-	}
-
-	// Build filename — include name slug if provided
-	var outFile string
-	var nameValue string
-	if ctx.TestCaseName != "" {
-		outFile = filepath.Join(ctx.OutputDir, tcID+"-"+ctx.TestCaseName+".md")
-		nameValue = ctx.TestCaseName
-	} else {
-		outFile = filepath.Join(ctx.OutputDir, tcID+".md")
-	}
-
-	// Ensure output directory exists
-	if err := os.MkdirAll(ctx.OutputDir, 0755); err != nil {
-		return nil, fmt.Errorf("creating output directory: %w", err)
-	}
-
-	// Build frontmatter
-	var fm strings.Builder
-	fm.WriteString("---\n")
-	fmt.Fprintf(&fm, "test_case_id: %s\n", tcID)
-	fmt.Fprintf(&fm, "title: \"%s\"\n", nameValue)
-	if ctx.Reference != "" {
-		fmt.Fprintf(&fm, "requirement: %s\n", ctx.Reference)
-	}
-	fm.WriteString("priority: Medium\n")
-	fm.WriteString("type: Functional\n")
-	fmt.Fprintf(&fm, "created: %s\n", time.Now().Format("2006-01-02"))
-	fm.WriteString("---\n")
-
-	// Build body with section headings (matches skeleton create script)
-	body := `
 ## Test Objective
 
 
@@ -96,7 +57,81 @@ func BuiltinCreate(ctx *AdapterContext) (*InvocationResult, error) {
 
 `
 
-	content := fm.String() + body
+// BuiltinCreate implements the Tier 0 built-in create adapter (ENH-150/ENH-161).
+// ENH-161: reads a role-specific template file from ctx.TemplateFile, substitutes
+// placeholders, and writes the TC skeleton. Falls back to testcaseTemplateFallback
+// when the template file is missing (stderr warning, exit 0).
+//
+// Mirrors the Tier 2 create-script.sh behaviour:
+//   - Takes the first ID from ctx.TestCaseIDs
+//   - Reads template, substitutes placeholders, writes the TC
+//   - Returns InvocationResult with ExitCode 0
+func BuiltinCreate(ctx *AdapterContext) (*InvocationResult, error) {
+	if ctx.OutputDir == "" {
+		return nil, fmt.Errorf("output directory not set")
+	}
+	if ctx.TestCaseIDs == "" {
+		return nil, fmt.Errorf("no test case IDs available")
+	}
+
+	// Take the first ID from the comma-separated batch
+	ids := strings.Split(ctx.TestCaseIDs, ",")
+	tcID := strings.TrimSpace(ids[0])
+	if tcID == "" {
+		return nil, fmt.Errorf("first test case ID is empty")
+	}
+
+	// Build filename -- include name slug if provided
+	var outFile string
+	var nameValue string
+	if ctx.TestCaseName != "" {
+		outFile = filepath.Join(ctx.OutputDir, tcID+"-"+ctx.TestCaseName+".md")
+		nameValue = ctx.TestCaseName
+	} else {
+		outFile = filepath.Join(ctx.OutputDir, tcID+".md")
+	}
+
+	// Ensure output directory exists
+	if err := os.MkdirAll(ctx.OutputDir, 0755); err != nil {
+		return nil, fmt.Errorf("creating output directory: %w", err)
+	}
+
+	// ENH-161: Read template from disk; fall back to inline constant only when
+	// the template file is absent. Other read errors (permission denied, is-a-
+	// directory, I/O errors, etc.) are not "missing"-class and must surface so
+	// the operator can fix them. Mirrors the Tier 2 shell `[ -f ... ]` check,
+	// which would also fail at sed time if a non-missing read failure shows up.
+	var tmpl string
+	var stderr string
+	if ctx.TemplateFile != "" {
+		data, readErr := os.ReadFile(ctx.TemplateFile)
+		switch {
+		case readErr == nil:
+			tmpl = string(data)
+		case errors.Is(readErr, os.ErrNotExist):
+			stderr = fmt.Sprintf("warning: create template not found: %s -- using built-in default\n", ctx.TemplateFile)
+			tmpl = testcaseTemplateFallback
+		default:
+			return nil, fmt.Errorf("reading create template %s: %w", ctx.TemplateFile, readErr)
+		}
+	} else {
+		tmpl = testcaseTemplateFallback
+	}
+
+	// Substitute placeholders.
+	// ${REQUIREMENT} is user-controlled free text (--reference). The template
+	// line is unquoted (`requirement: ${REQUIREMENT}`), so the substitution
+	// must produce either a complete YAML double-quoted scalar (carrying its
+	// own quotes) or the empty string. yamlEscape alone is unsafe here --
+	// it produces a string fit for *inside* double quotes, which lands as a
+	// bare unquoted scalar in an unquoted placeholder context and parses
+	// badly for values containing `: `, leading `-`, `#`, etc.
+	content := tmpl
+	content = strings.ReplaceAll(content, "${TESTCASE_ID}", tcID)
+	content = strings.ReplaceAll(content, "${TITLE}", nameValue)
+	content = strings.ReplaceAll(content, "${REQUIREMENT}", yamlQuotedScalarOrEmpty(ctx.Reference))
+	content = strings.ReplaceAll(content, "${CREATED}", time.Now().Format("2006-01-02"))
+
 	if err := os.WriteFile(outFile, []byte(content), 0644); err != nil {
 		return nil, fmt.Errorf("writing test case file: %w", err)
 	}
@@ -105,13 +140,14 @@ func BuiltinCreate(ctx *AdapterContext) (*InvocationResult, error) {
 	return &InvocationResult{
 		ExitCode:   0,
 		Stdout:     summary,
+		Stderr:     stderr,
 		SavedFiles: []string{outFile},
 	}, nil
 }
 
 // DeriveArtefactBasename extracts the extension-stripped basename from a
 // test-case spec path. When the source spec is slugged (e.g.
-// "gtms/cases/my-feature/tc-aaa-login-happy.md"), the result preserves the
+// "gtms/test/cases/my-feature/tc-aaa-login-happy.md"), the result preserves the
 // slug ("tc-aaa-login-happy"). When testCaseFile is empty or the extracted
 // basename would be empty after stripping the extension, fallbackID is
 // returned (typically ctx.TestCase, e.g. "tc-aaa").
@@ -165,6 +201,19 @@ func BuiltinAutomate(ctx *AdapterContext, cfg *config.Config) (*InvocationResult
 		return nil, fmt.Errorf("no --framework specified for built-in automate adapter")
 	}
 
+	// BUG-120: The manual framework is a deliberate degenerate case for the
+	// automate stage (CON-023 Q#12 makes manual TCs wiring-free). There is no
+	// automation artefact to produce, so the stage has no work to do. Return a
+	// targeted diagnostic pointing at the correct manual workflow instead of
+	// falling through to the generic "no automate support found" registry miss.
+	if framework == "manual" {
+		return nil, fmt.Errorf(
+			"The manual framework does not require automate. "+
+				"Run 'gtms prime %s' to stamp a result file, fill it in, "+
+				"then 'gtms execute %s --adapter manual-execute' to record the outcome.",
+			ctx.TestCase, ctx.TestCase)
+	}
+
 	// Look up framework support -- core never interprets framework-specific
 	// values; it delegates to the registered FrameworkSupport implementation.
 	support := LookupFrameworkSupport(framework)
@@ -178,7 +227,18 @@ func BuiltinAutomate(ctx *AdapterContext, cfg *config.Config) (*InvocationResult
 	// BUG-107: derive artefact basename from the source spec filename to
 	// preserve the human-readable slug (e.g. tc-aaa-login-happy.bats).
 	subdir := ctx.OutputSubdir // e.g. "my-feature/" or ""
-	outDir := filepath.Join(ctx.ProjectRoot, filepath.FromSlash(support.OutputDir(subdir)))
+	var outDir string
+	if ctx.OutputDirConfigured {
+		// BUG-125: an explicit output-dir wins over the framework-native default so
+		// brownfield projects can redirect specs into their harness testDir. ctx.OutputDir
+		// is already absolute (joined with ProjectRoot in invoker); group per work-item by
+		// appending the source subdir (trailing slash trimmed; "" leaves the dir unchanged).
+		outDir = filepath.Join(ctx.OutputDir, filepath.FromSlash(strings.TrimRight(subdir, "/")))
+	} else {
+		// Unset: fall back to the framework-native default (ADR-022 / ADR-004 amendment
+		// 2026-06-24). support.OutputDir returns a project-relative path.
+		outDir = filepath.Join(ctx.ProjectRoot, filepath.FromSlash(support.OutputDir(subdir)))
+	}
 	artefactBase := DeriveArtefactBasename(ctx.TestCaseFile, ctx.TestCase)
 	outFile := filepath.Join(outDir, artefactBase+support.Extension())
 
@@ -211,13 +271,41 @@ func BuiltinAutomate(ctx *AdapterContext, cfg *config.Config) (*InvocationResult
 		return nil, fmt.Errorf("cannot compute testcase-hash for %s: test case spec not found or unreadable", ctx.TestCase)
 	}
 
+	// ENH-162: Template-driven skeleton generation. The orchestration layer
+	// reads the framework's template file, falls back to the hardcoded const
+	// when the file is absent, and surfaces non-missing read errors. Framework-
+	// specific placeholder substitution stays in GenerateSkeleton.
+	//
+	// User-facing diagnostics name the template by its project-relative slash
+	// path (gtms/automation/templates/...), not the OS-native absolute path.
+	// filepath.Join produces backslashes on Windows; rendering the absolute
+	// path directly would emit C:\...\gtms\automation\templates\... and break
+	// portable substring assertions in BATS / scripted callers.
+	templatePath := support.TemplatePath(ctx.ProjectRoot)
+	templateDisplay := templatePath
+	if rel, relErr := filepath.Rel(ctx.ProjectRoot, templatePath); relErr == nil {
+		templateDisplay = filepath.ToSlash(rel)
+	}
+	var templateBody string
+	var stderrMsg string
+	tmplData, readErr := os.ReadFile(templatePath)
+	switch {
+	case readErr == nil:
+		templateBody = string(tmplData)
+	case errors.Is(readErr, os.ErrNotExist):
+		stderrMsg = fmt.Sprintf("warning: %s automate template not found: %s -- using built-in default\n", framework, templateDisplay)
+		templateBody = support.FallbackContent()
+	default:
+		return nil, fmt.Errorf("reading %s automate template %s: %w", framework, templateDisplay, readErr)
+	}
+
 	// Ensure output directory exists.
 	if err := os.MkdirAll(outDir, 0755); err != nil {
 		return nil, fmt.Errorf("creating output directory: %w", err)
 	}
 
-	// Delegate skeleton generation to framework support.
-	if err := support.GenerateSkeleton(ctx.TestCase, ctx.ProjectRoot, outFile); err != nil {
+	// Delegate skeleton generation to framework support with template body.
+	if err := support.GenerateSkeleton(ctx.TestCase, ctx.ProjectRoot, outFile, templateBody); err != nil {
 		return nil, fmt.Errorf("generating skeleton: %w", err)
 	}
 
@@ -248,9 +336,15 @@ func BuiltinAutomate(ctx *AdapterContext, cfg *config.Config) (*InvocationResult
 	return &InvocationResult{
 		ExitCode:   0,
 		Stdout:     summary,
+		Stderr:     stderrMsg,
 		SavedFiles: []string{outFile},
 	}, nil
 }
+
+// manualResultTemplateFallback is the fallback result template shape used when
+// the role-specific template file is missing. ENH-161: must match the
+// manualResultTemplate constant in internal/scaffold/templates.go byte-for-byte.
+const manualResultTemplateFallback = "# yaml-language-server: $schema=../../schemas/manual-result.schema.json\n# -- GTMS contract (do not edit) ------------------------------------------\ntest_case_id: ${TESTCASE}\ntest_case_hash: ${TESTCASE_HASH}\nframework: manual\n\n# -- OVERALL RESULT -------------------------------------------------------\nresult:\n\n# -- Optional metadata ----------------------------------------------------\ntitle: \"${TC_TITLE}\"\nrequirement: \"${TC_REQUIREMENT}\"\npriority: \"${TC_PRIORITY}\"\ntype: \"${TC_TYPE}\"\nbranch: ${BRANCH}\n\n# -- Steps (optional) -----------------------------------------------------\nsteps:\n"
 
 // BuiltinPrime implements the Tier 0 built-in prime adapter (ENH-150).
 // It stamps a blank manual result template for the given test case,
@@ -280,14 +374,25 @@ func BuiltinPrime(ctx *AdapterContext) (*InvocationResult, error) {
 		}, nil
 	}
 
-	// Read template
-	tmplData, err := os.ReadFile(ctx.TemplateFile)
-	if err != nil {
-		return nil, fmt.Errorf("reading template file: %w", err)
+	// ENH-161: Read template; fall back to inline constant only when the
+	// template file is absent. Other read errors (permission denied, is-a-
+	// directory, I/O errors, etc.) must surface so the operator can fix them.
+	// See BuiltinCreate above for the same rule and rationale.
+	var tmplStr string
+	var primeStderr string
+	tmplData, readErr := os.ReadFile(ctx.TemplateFile)
+	switch {
+	case readErr == nil:
+		tmplStr = string(tmplData)
+	case errors.Is(readErr, os.ErrNotExist):
+		primeStderr = fmt.Sprintf("warning: prime template not found: %s -- using built-in default\n", ctx.TemplateFile)
+		tmplStr = manualResultTemplateFallback
+	default:
+		return nil, fmt.Errorf("reading prime template %s: %w", ctx.TemplateFile, readErr)
 	}
 
 	// Substitute variables
-	content := string(tmplData)
+	content := tmplStr
 	content = strings.ReplaceAll(content, "${TESTCASE}", ctx.TestCase)
 	content = strings.ReplaceAll(content, "${TESTCASE_HASH}", ctx.TestCaseHash)
 	content = strings.ReplaceAll(content, "${BRANCH}", ctx.Branch)
@@ -310,6 +415,7 @@ func BuiltinPrime(ctx *AdapterContext) (*InvocationResult, error) {
 	return &InvocationResult{
 		ExitCode:   0,
 		Stdout:     summary,
+		Stderr:     primeStderr,
 		SavedFiles: []string{ctx.OutputFile},
 	}, nil
 }
@@ -365,16 +471,20 @@ func BuiltinExecute(ctx *AdapterContext) (*InvocationResult, error) {
 		// Surface drift as stderr warning
 		summary := fmt.Sprintf("Manual execute recorded: %s -> %s", ctx.TestCase, ctx.ResultValue)
 		return &InvocationResult{
-			ExitCode: 0,
-			Stdout:   summary,
-			Stderr:   "WARN: test case has changed since prime -- drift diagnostics recorded",
+			ExitCode:         0,
+			Stdout:           summary,
+			Stderr:           "WARN: test case has changed since prime -- drift diagnostics recorded",
+			ResultOverride:   ctx.ResultValue,
+			ArtefactOverride: ctx.ResultTemplate,
 		}, nil
 	}
 
 	summary := fmt.Sprintf("Manual execute recorded: %s -> %s", ctx.TestCase, ctx.ResultValue)
 	return &InvocationResult{
-		ExitCode: 0,
-		Stdout:   summary,
+		ExitCode:         0,
+		Stdout:           summary,
+		ResultOverride:   ctx.ResultValue,
+		ArtefactOverride: ctx.ResultTemplate,
 	}, nil
 }
 
@@ -389,6 +499,21 @@ func yamlEscape(s string) string {
 	return s
 }
 
+// yamlQuotedScalarOrEmpty returns a complete YAML double-quoted scalar
+// (including surrounding quotes) for non-empty input, or the empty string
+// for empty input. Use this for placeholders whose template line is
+// unquoted (e.g. `requirement: ${REQUIREMENT}`) so the substituted value
+// either lands as a properly-quoted scalar or leaves the value position
+// bare (which YAML reads as null) -- never as an unquoted scalar carrying
+// YAML-special characters. The shell scripts mirror this with the same
+// "quote-only-when-non-empty" rule for byte-identical output.
+func yamlQuotedScalarOrEmpty(s string) string {
+	if s == "" {
+		return ""
+	}
+	return `"` + yamlEscape(s) + `"`
+}
+
 // ValidateTestCasePostFill validates a test case file after the operator has
 // filled it. Called at the entry point of downstream commands (automate, prime,
 // execute) to catch frontmatter corruption introduced during editing (ENH-150).
@@ -400,7 +525,7 @@ func yamlEscape(s string) string {
 //
 // Returns a slice of SpecValidationError for each violation. Empty slice = valid.
 func ValidateTestCasePostFill(projectRoot, target string) []SpecValidationError {
-	casesDir := layout.CasesDir(projectRoot)
+	casesDir := layout.TestCasesDir(projectRoot)
 
 	// Find the TC file
 	var tcPath string
@@ -417,7 +542,7 @@ func ValidateTestCasePostFill(projectRoot, target string) []SpecValidationError 
 	})
 
 	if tcPath == "" {
-		// TC not found — not a validation error (other code handles missing TCs)
+		// TC not found -- not a validation error (other code handles missing TCs)
 		return nil
 	}
 
@@ -520,7 +645,11 @@ func populateBuiltinPrimeFields(ctx *AdapterContext, projectRoot, target string)
 	}
 
 	// Template and output paths
-	ctx.TemplateFile = filepath.Join(layout.ManualTemplatesDir(projectRoot), "manual-result.template.yaml")
+	// ENH-161: Template path is set by buildAdapterContext via ResolveTemplatePath.
+	// Only set here as fallback if not already populated (backward compatibility).
+	if ctx.TemplateFile == "" {
+		ctx.TemplateFile = filepath.Join(layout.ManualTemplatesDir(projectRoot), "manual-result.template.yaml")
+	}
 	ctx.OutputFile = filepath.Join(layout.ManualRecordsDir(projectRoot), target+"--manual.result.yaml")
 	ctx.OutputDir = layout.ManualRecordsDir(projectRoot)
 	ctx.OutputSubdir = ""

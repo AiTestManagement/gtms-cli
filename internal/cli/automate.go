@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/aitestmanagement/gtms-cli/internal/adapter"
+	"github.com/aitestmanagement/gtms-cli/internal/config"
 	"github.com/aitestmanagement/gtms-cli/internal/git"
 	"github.com/aitestmanagement/gtms-cli/internal/layout"
 	"github.com/aitestmanagement/gtms-cli/internal/output"
@@ -30,23 +31,30 @@ func newAutomateCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "automate [test-case-id | folder]",
-		Short: "Automate test cases into executable scripts",
+		Short: "Automate test cases",
 		Long: `Automate a test case by delegating to a configured adapter.
 
 Single test case:
-  gtms automate tc-a1b2c3d4                         — use default adapter
-  gtms automate tc-a1b2c3d4 --adapter local-claude  — use specific adapter
-  gtms automate tc-a1b2c3d4 --framework playwright  — specify test framework
-  gtms automate tc-a1b2c3d4 --context-file docs/standards.md — pass supplementary context
+  gtms automate tc-a1b2c3d4                         -- use default adapter
+  gtms automate tc-a1b2c3d4 --adapter agent-automate -- use specific adapter
+  gtms automate tc-a1b2c3d4 --framework playwright  -- specify test framework
+  gtms automate tc-a1b2c3d4 --context-file docs/standards.md -- pass supplementary context
 
 Folder (bulk mode):
-  gtms automate my-feature                     — automate all test cases in gtms/cases/my-feature/
-  gtms automate my-feature -r                  — include test cases from subdirectories
-  gtms automate my-feature --force             — reprocess all test cases (ignore skip logic)
-  gtms automate my-feature --fail-fast         — stop on first error
+  gtms automate my-feature                     -- automate all test cases in gtms/test/cases/my-feature/
+  gtms automate my-feature -r                  -- include test cases from subdirectories
+  gtms automate my-feature --force             -- reprocess all test cases (ignore skip logic)
+  gtms automate my-feature --fail-fast         -- stop on first error
 
 All test cases:
-  gtms automate -r                             — automate all test cases across all folders`,
+  gtms automate -r                             -- automate all test cases across all folders
+  gtms automate                                -- same; recursion is implied when no folder is given
+
+Adapter execution:
+  Runs the adapter from --adapter or the gtms.config default
+  (built-in options: agent-automate, manual-automate).
+  Adapters run identically on every OS.
+  See "Adapter Execution Model" in USER-GUIDE.md.`,
 		Args: cobra.RangeArgs(0, 1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
@@ -87,6 +95,14 @@ All test cases:
 			// ENH-125: resolve executed_by once at command entry (flag → env → git user.name).
 			executedBy := pipeline.ResolveExecutedBy(ctx, root, executedByFlag)
 
+			// BUG-121: Validate --framework flag if provided (mirrors execute.go:113).
+			// Guard sits before the bulk/single branch so both paths are covered.
+			if frameworkFlag != "" && !config.ValidateFramework(frameworkFlag) {
+				msg := fmt.Sprintf("Invalid framework '%s'. Framework must contain only lowercase letters, digits, and hyphens.", frameworkFlag)
+				output.Errorf(msg, "Example: --framework playwright")
+				return output.AsDisplayed(fmt.Errorf(msg))
+			}
+
 			// No argument = run all test cases from root (recursive implied)
 			if len(args) == 0 {
 				recursiveFlag = true
@@ -119,12 +135,12 @@ All test cases:
 
 			// BUG-059: use shared testcase.Exists helper (replaces private testCaseExists).
 			if !testcase.Exists(root, target) {
-				msg := fmt.Sprintf("Test case '%s' not found in gtms/cases/", target)
+				msg := fmt.Sprintf("Test case '%s' not found in gtms/test/cases/", target)
 				output.Errorf(msg, "Create the test case first with 'gtms create'.")
 				return output.AsDisplayed(fmt.Errorf(msg))
 			}
 
-			// ENH-150: Post-fill validation gate — catches frontmatter corruption
+			// ENH-150: Post-fill validation gate -- catches frontmatter corruption
 			// before the adapter is invoked.
 			if violations := adapter.ValidateTestCasePostFill(root, target); len(violations) > 0 {
 				summary := adapter.FormatValidationErrors(violations)
@@ -193,11 +209,11 @@ All test cases:
 	}
 
 	cmd.Flags().StringVar(&adapterFlag, "adapter", "", "Adapter to use (overrides default)")
-	cmd.Flags().StringVar(&frameworkFlag, "framework", "", "Test framework (e.g., playwright, cypress)")
+	cmd.Flags().StringVar(&frameworkFlag, "framework", "", "Test framework label (e.g., playwright, bats); overrides the adapter's configured framework")
 	cmd.Flags().StringVar(&environmentFlag, "env", "", "Target environment (e.g., staging, production)")
-	cmd.Flags().StringVar(&executedByFlag, "executed-by", "", "Identity to record on the executed_by field (defaults to git user.name)")
+	cmd.Flags().StringVar(&executedByFlag, "executed-by", "", "Identity to record on the executed_by field (defaults to GTMS_EXECUTED_BY, then git user.name)")
 	cmd.Flags().StringVar(&contextFileFlag, "context-file", "", "Path to context file (coding standards, API docs, etc.)")
-	cmd.Flags().BoolVar(&forceFlag, "force", false, "Reprocess all test cases (ignore skip logic)")
+	cmd.Flags().BoolVar(&forceFlag, "force", false, "Reprocess even if already automated (bulk skip checks bypassed; existing output files replaced)")
 	cmd.Flags().BoolVar(&failFastFlag, "fail-fast", false, "Stop on first error in bulk mode")
 	cmd.Flags().BoolVarP(&recursiveFlag, "recursive", "r", false, "Include test cases from subdirectories")
 
@@ -215,7 +231,7 @@ func runBulkAutomate(cmd *cobra.Command, root string, folder string, adapterFlag
 	// Discover test cases in the folder
 	tcIDs, err := DiscoverTestCases(root, folder, recursive)
 	if err != nil {
-		output.Errorf(err.Error(), "Check that gtms/cases/"+folder+"/ contains tc-*.md files.")
+		output.Errorf(err.Error(), "Check that gtms/test/cases/"+folder+"/ contains tc-*.md files.")
 		return output.AsDisplayed(err)
 	}
 
@@ -239,9 +255,9 @@ func runBulkAutomate(cmd *cobra.Command, root string, folder string, adapterFlag
 	if recursive {
 		recursiveLabel = " (recursive)"
 	}
-	scope := "gtms/cases/"
+	scope := "gtms/test/cases/"
 	if folder != "" {
-		scope = fmt.Sprintf("gtms/cases/%s/", folder)
+		scope = fmt.Sprintf("gtms/test/cases/%s/", folder)
 	}
 	fmt.Printf("Processing %d test cases in %s%s...\n", total, scope, recursiveLabel)
 
@@ -273,7 +289,7 @@ func runBulkAutomate(cmd *cobra.Command, root string, folder string, adapterFlag
 			Force:       force,
 		}
 
-		// Progress indicator instead of spinner (TTY only — \r doesn't work in pipes)
+		// Progress indicator instead of spinner (TTY only -- \r doesn't work in pipes)
 		if output.IsTTY(os.Stderr) {
 			fmt.Fprintf(os.Stderr, "  %s %-16s running...  (%d/%d)\r",
 				output.IconInProgress, tcID, idx, total)
@@ -325,7 +341,7 @@ func runBulkAutomate(cmd *cobra.Command, root string, folder string, adapterFlag
 // Returns a skip reason string, or empty if the TC should be processed.
 //
 // CON-023 / ENH-145: presence of a wiring record means this TC × framework
-// is already automated. The legacy automation-record lookup is retired —
+// is already automated. The legacy automation-record lookup is retired --
 // after the cutover, wiring is the only source of automation identity.
 func shouldSkipAutomate(root, tcID, framework string) string {
 	// Check if wiring record already exists for this framework.
@@ -346,12 +362,12 @@ func shouldSkipAutomate(root, tcID, framework string) string {
 // validateAutomateFolderStructure checks that the required directories for automate exist.
 func validateAutomateFolderStructure(root string) error {
 	paths := layout.Current()
-	required := []string{paths.Tasks, paths.Cases, paths.Automation}
+	required := []string{paths.Tasks, paths.TestCases, paths.Automation}
 	for _, dir := range required {
 		path := filepath.Join(root, dir)
 		if _, err := os.Stat(path); os.IsNotExist(err) {
 			msg := fmt.Sprintf("Required directory '%s' not found.", dir)
-			output.Errorf(msg, fmt.Sprintf("Create the GTMS folder structure: %s/, %s/, %s/", paths.Tasks, paths.Cases, paths.Automation))
+			output.Errorf(msg, fmt.Sprintf("Create the GTMS folder structure: %s/, %s/, %s/", paths.Tasks, paths.TestCases, paths.Automation))
 			return output.AsDisplayed(fmt.Errorf(msg))
 		}
 	}
@@ -389,7 +405,7 @@ func formatAutomateOutput(res *adapter.InvokeResult) {
 		return
 	}
 
-	// ENH-120: artefact-focused headline — surface the produced artefact path.
+	// ENH-120: artefact-focused headline -- surface the produced artefact path.
 	if len(res.ArtifactPaths) > 0 {
 		fmt.Printf("  %s Automated %s: %s\n", output.IconComplete, res.Target, res.ArtifactPaths[0])
 	} else if len(res.Warnings) > 0 && res.ArtifactCount == 0 {

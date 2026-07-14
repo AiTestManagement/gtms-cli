@@ -8,9 +8,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/aitestmanagement/gtms-cli/internal/config"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/aitestmanagement/gtms-cli/internal/config"
 )
 
 func skipIfShort(t *testing.T) {
@@ -62,9 +62,9 @@ func TestInitMinimalPreset(t *testing.T) {
 		assert.FileExists(t, filepath.Join(dir, "gtms/tasks", status, ".gitkeep"))
 	}
 
-	// cases dir should exist
-	assert.DirExists(t, filepath.Join(dir, "gtms/cases"))
-	assert.DirExists(t, filepath.Join(dir, "gtms/cases", "guides"))
+	// test cases dir should exist
+	assert.DirExists(t, filepath.Join(dir, "gtms/test/cases"))
+	assert.DirExists(t, filepath.Join(dir, "gtms/test", "guides"))
 
 	// automation dirs should exist
 	// CON-023 / ENH-145: wiring/ replaces the legacy records/ directory.
@@ -76,29 +76,56 @@ func TestInitMinimalPreset(t *testing.T) {
 
 	// Minimal preset should NOT create prompts dir or prompt templates
 	assert.NoDirExists(t, filepath.Join(dir, "gtms/automation", "prompts"))
-	assert.NoDirExists(t, filepath.Join(dir, "gtms/cases", "prompts"))
+	assert.NoDirExists(t, filepath.Join(dir, "gtms/test/cases", "prompts"))
 
 	// ENH-119: the starter test-case template guide ships with every preset
 	// (including minimal) because it documents the skeleton create adapter,
 	// which itself ships under all presets.
-	assert.FileExists(t, filepath.Join(dir, "gtms/cases", "guides", "test-case-template.md"))
-	assert.Contains(t, result.FilesCreated, "gtms/cases/guides/test-case-template.md")
+	assert.FileExists(t, filepath.Join(dir, "gtms/test", "guides", "gtms-test-case-authoring-guide.md"))
+	assert.Contains(t, result.FilesCreated, "gtms/test/guides/gtms-test-case-authoring-guide.md")
 
-	// Skeleton adapter script should be created under gtms/adapters/ (BUG-053)
+	// ENH-160: manual-create-script adapter should be created under gtms/adapters/
 	assert.DirExists(t, filepath.Join(dir, "gtms", "adapters"))
-	assert.FileExists(t, filepath.Join(dir, "gtms", "adapters", "create-skeleton.sh"))
+	assert.FileExists(t, filepath.Join(dir, "gtms", "adapters", "manual-create-script.sh"))
+	assert.FileExists(t, filepath.Join(dir, "gtms", "adapters", "agent-create-script.sh"))
 
-	// Verify skeleton script content
-	skeletonContent, err := os.ReadFile(filepath.Join(dir, "gtms", "adapters", "create-skeleton.sh"))
+	// Verify manual-create-script content
+	createContent, err := os.ReadFile(filepath.Join(dir, "gtms", "adapters", "manual-create-script.sh"))
 	require.NoError(t, err)
-	assert.Contains(t, string(skeletonContent), "#!/bin/sh")
-	assert.Contains(t, string(skeletonContent), "GTMS_OUTPUT_DIR")
-	assert.Contains(t, string(skeletonContent), "GTMS_TC_IDS")
-	assert.Contains(t, string(skeletonContent), "GTMS_REFERENCE")
-	assert.Contains(t, string(skeletonContent), "GTMS_RESULT_FILE")
-	assert.Contains(t, string(skeletonContent), "priority: Medium")
-	assert.Contains(t, string(skeletonContent), "type: Functional")
-	assert.NotContains(t, string(skeletonContent), "status: draft")
+	assert.Contains(t, string(createContent), "#!/bin/sh")
+	assert.Contains(t, string(createContent), "GTMS_OUTPUT_DIR")
+	assert.Contains(t, string(createContent), "GTMS_TC_IDS")
+	assert.Contains(t, string(createContent), "GTMS_REFERENCE")
+	assert.Contains(t, string(createContent), "GTMS_RESULT_FILE")
+	assert.Contains(t, string(createContent), "priority: Medium")
+	assert.Contains(t, string(createContent), "type: Functional")
+	assert.NotContains(t, string(createContent), "status: draft")
+
+	// ENH-160: All 6 scripts should exist
+	assert.FileExists(t, filepath.Join(dir, "gtms", "adapters", "manual-prime-script.sh"))
+	assert.FileExists(t, filepath.Join(dir, "gtms", "adapters", "agent-prime-script.sh"))
+	assert.FileExists(t, filepath.Join(dir, "gtms", "adapters", "manual-execute-script.sh"))
+	assert.FileExists(t, filepath.Join(dir, "gtms", "adapters", "agent-execute-script.sh"))
+
+	// Legacy files should NOT exist
+	assert.NoFileExists(t, filepath.Join(dir, "gtms", "adapters", "create-skeleton.sh"))
+	assert.NoFileExists(t, filepath.Join(dir, "gtms", "adapters", "agent-skeleton.sh"))
+	assert.NoFileExists(t, filepath.Join(dir, "gtms", "adapters", "manual-prime.sh"))
+	assert.NoFileExists(t, filepath.Join(dir, "gtms", "adapters", "manual-execute.sh"))
+
+	// ENH-162: BATS automate template should be created
+	assert.FileExists(t, filepath.Join(dir, "gtms", "automation", "templates", "bats.template.bats"))
+	assert.Contains(t, result.FilesCreated, "gtms/automation/templates/bats.template.bats")
+	batsTempl, batsErr := os.ReadFile(filepath.Join(dir, "gtms", "automation", "templates", "bats.template.bats"))
+	require.NoError(t, batsErr)
+	assert.Contains(t, string(batsTempl), "${TESTCASE_ID}")
+	assert.Contains(t, string(batsTempl), "${PROJECT_ROOT_DEPTH}")
+	assert.Contains(t, string(batsTempl), "#!/usr/bin/env bats")
+	assert.Contains(t, string(batsTempl), "common-setup.bash")
+	assert.Contains(t, string(batsTempl), `skip "skeleton -- not yet implemented"`)
+
+	// ENH-162: Playwright template should NOT be created for bats preset
+	assert.NoFileExists(t, filepath.Join(dir, "gtms", "automation", "templates", "playwright.template.spec.ts"))
 
 	// ENH-127: BATS execute adapter and TAP classifier should be created
 	assert.FileExists(t, filepath.Join(dir, "gtms", "adapters", "bats-runner.sh"))
@@ -108,7 +135,7 @@ func TestInitMinimalPreset(t *testing.T) {
 	// Verify BATS runner content
 	batsRunnerContent, err := os.ReadFile(filepath.Join(dir, "gtms", "adapters", "bats-runner.sh"))
 	require.NoError(t, err)
-	assert.Contains(t, string(batsRunnerContent), "#!/bin/bash")
+	assert.Contains(t, string(batsRunnerContent), "#!/bin/sh")
 	assert.Contains(t, string(batsRunnerContent), "GTMS_ARTEFACT_FILE")
 	assert.Contains(t, string(batsRunnerContent), "GTMS_RESULT_FILE")
 	assert.Contains(t, string(batsRunnerContent), "classify_bats_status")
@@ -125,20 +152,23 @@ func TestInitMinimalPreset(t *testing.T) {
 	// appropriate for the result-file authoring flow.
 	assert.FileExists(t, filepath.Join(dir, ".vscode", "gtms.code-snippets"))
 
-	// Skeleton should use correct frontmatter field names (BUG-027, Findings 6+11)
-	assert.Contains(t, string(skeletonContent), "test_case_id:")
-	assert.NotContains(t, string(skeletonContent), "\nid: ${ID}")
-	assert.Contains(t, string(skeletonContent), "requirement:")
-	assert.NotContains(t, string(skeletonContent), "source: ${GTMS_REFERENCE}")
+	// Create script should use correct frontmatter field names (BUG-027, Findings 6+11)
+	assert.Contains(t, string(createContent), "test_case_id:")
+	assert.NotContains(t, string(createContent), "\nid: ${ID}")
+	assert.Contains(t, string(createContent), "requirement:")
+	assert.NotContains(t, string(createContent), "source: ${GTMS_REFERENCE}")
 
-	// Verify config has skeleton adapter as default
+	// ENH-160: Verify config has built-in defaults, script slots registered
 	cfg, err := config.LoadFromFile(filepath.Join(dir, "gtms.config"))
 	require.NoError(t, err)
 	require.NotNil(t, cfg.Adapters["create"])
-	require.NotNil(t, cfg.Adapters["create"]["skeleton"])
-	assert.Equal(t, "sync", cfg.Adapters["create"]["skeleton"].Mode)
-	assert.Equal(t, "gtms/adapters/create-skeleton.sh", cfg.Adapters["create"]["skeleton"].Script)
-	assert.Equal(t, "skeleton", cfg.Defaults["create"])
+	require.NotNil(t, cfg.Adapters["create"]["manual-create-script"])
+	assert.Equal(t, "sync", cfg.Adapters["create"]["manual-create-script"].Mode)
+	assert.Equal(t, "gtms/adapters/manual-create-script.sh", cfg.Adapters["create"]["manual-create-script"].Script)
+	require.NotNil(t, cfg.Adapters["create"]["agent-create-script"])
+	assert.Equal(t, "manual-create", cfg.Defaults["create"])
+	// Legacy slot names should not exist
+	assert.Nil(t, cfg.Adapters["create"]["skeleton"])
 }
 
 func TestInitManualPreset(t *testing.T) {
@@ -160,7 +190,7 @@ func TestInitManualPreset(t *testing.T) {
 	assert.FileExists(t, filepath.Join(dir, "gtms.config"))
 
 	// Guide file should be created (all presets)
-	assert.FileExists(t, filepath.Join(dir, "gtms/cases", "guides", "test-case-template.md"))
+	assert.FileExists(t, filepath.Join(dir, "gtms/test", "guides", "gtms-test-case-authoring-guide.md"))
 
 	// Manual preset should NOT create BATS assets
 	assert.NoFileExists(t, filepath.Join(dir, "gtms", "adapters", "bats-runner.sh"))
@@ -169,28 +199,47 @@ func TestInitManualPreset(t *testing.T) {
 	// Manual preset should NOT create Playwright assets
 	assert.NoFileExists(t, filepath.Join(dir, "gtms", "adapters", "playwright-runner.sh"))
 
+	// ENH-162: Manual preset should NOT create automation templates directory
+	assert.NoDirExists(t, filepath.Join(dir, "gtms", "automation", "templates"))
+
 	// No prompt dirs (no prompt-based presets anymore)
-	assert.NoDirExists(t, filepath.Join(dir, "gtms/cases", "prompts"))
+	assert.NoDirExists(t, filepath.Join(dir, "gtms/test/cases", "prompts"))
 	assert.NoDirExists(t, filepath.Join(dir, "gtms/automation", "prompts"))
 
-	// Skeleton adapter should exist (all presets)
-	assert.FileExists(t, filepath.Join(dir, "gtms", "adapters", "create-skeleton.sh"))
+	// ENH-160: All 6 scripts should exist
+	assert.FileExists(t, filepath.Join(dir, "gtms", "adapters", "manual-create-script.sh"))
+	assert.FileExists(t, filepath.Join(dir, "gtms", "adapters", "agent-create-script.sh"))
+	assert.FileExists(t, filepath.Join(dir, "gtms", "adapters", "manual-prime-script.sh"))
+	assert.FileExists(t, filepath.Join(dir, "gtms", "adapters", "agent-prime-script.sh"))
+	assert.FileExists(t, filepath.Join(dir, "gtms", "adapters", "manual-execute-script.sh"))
+	assert.FileExists(t, filepath.Join(dir, "gtms", "adapters", "agent-execute-script.sh"))
+
+	// Legacy files should NOT exist
+	assert.NoFileExists(t, filepath.Join(dir, "gtms", "adapters", "create-skeleton.sh"))
+	assert.NoFileExists(t, filepath.Join(dir, "gtms", "adapters", "agent-skeleton.sh"))
 
 	// VSCode snippets still created (manual result authoring)
 	assert.FileExists(t, filepath.Join(dir, ".vscode", "gtms.code-snippets"))
 
-	// Verify config: manual-execute as default execute
+	// ENH-160: Verify config has built-in defaults
 	cfg, err := config.LoadFromFile(filepath.Join(dir, "gtms.config"))
 	require.NoError(t, err)
-	require.NotNil(t, cfg.Adapters["create"]["skeleton"])
-	assert.Equal(t, "skeleton", cfg.Defaults["create"])
+	require.NotNil(t, cfg.Adapters["create"]["manual-create-script"])
+	require.NotNil(t, cfg.Adapters["create"]["agent-create-script"])
+	assert.Equal(t, "manual-create", cfg.Defaults["create"])
+	assert.Equal(t, "manual-prime", cfg.Defaults["prime"])
 	assert.Equal(t, "manual-execute", cfg.Defaults["execute"])
 
-	// Manual-execute adapter registered
-	manualExec := cfg.Adapters["execute"]["manual-execute"]
-	require.NotNil(t, manualExec)
-	assert.Equal(t, "sync", manualExec.Mode)
-	assert.Equal(t, "manual", manualExec.Framework)
+	// ENH-160: manual-execute-script adapter registered (not manual-execute)
+	manualExecScript := cfg.Adapters["execute"]["manual-execute-script"]
+	require.NotNil(t, manualExecScript)
+	assert.Equal(t, "sync", manualExecScript.Mode)
+	assert.Equal(t, "manual", manualExecScript.Framework)
+
+	// Legacy slot names should NOT exist in config
+	assert.Nil(t, cfg.Adapters["create"]["skeleton"])
+	assert.Nil(t, cfg.Adapters["execute"]["manual-execute"])
+	assert.Nil(t, cfg.Adapters["prime"]["manual-prime"])
 
 	// No bats-runner in manual preset config
 	assert.Nil(t, cfg.Adapters["execute"]["bats-runner"])
@@ -215,7 +264,7 @@ func TestInitPlaywrightPreset(t *testing.T) {
 	assert.FileExists(t, filepath.Join(dir, "gtms.config"))
 
 	// Guide file should be created (all presets)
-	assert.FileExists(t, filepath.Join(dir, "gtms/cases", "guides", "test-case-template.md"))
+	assert.FileExists(t, filepath.Join(dir, "gtms/test", "guides", "gtms-test-case-authoring-guide.md"))
 
 	// Playwright preset installs playwright-runner.sh
 	assert.FileExists(t, filepath.Join(dir, "gtms", "adapters", "playwright-runner.sh"))
@@ -227,21 +276,44 @@ func TestInitPlaywrightPreset(t *testing.T) {
 	assert.Contains(t, string(pwContent), "GTMS_RESULT_FILE")
 	assert.Contains(t, string(pwContent), "GTMS_ARTEFACT_FILE")
 
+	// ENH-162: Playwright automate template should be created
+	assert.FileExists(t, filepath.Join(dir, "gtms", "automation", "templates", "playwright.template.spec.ts"))
+	assert.Contains(t, result.FilesCreated, "gtms/automation/templates/playwright.template.spec.ts")
+	pwTempl, pwTmplErr := os.ReadFile(filepath.Join(dir, "gtms", "automation", "templates", "playwright.template.spec.ts"))
+	require.NoError(t, pwTmplErr)
+	assert.Contains(t, string(pwTempl), "${TESTCASE_ID}")
+	assert.Contains(t, string(pwTempl), "import { test, expect }")
+	assert.Contains(t, string(pwTempl), `test.skip(true, 'skeleton -- not yet implemented')`)
+
+	// ENH-162: BATS template should NOT be created for playwright preset
+	assert.NoFileExists(t, filepath.Join(dir, "gtms", "automation", "templates", "bats.template.bats"))
+
 	// Playwright preset should NOT install BATS assets (BUG-111 AC #16)
 	assert.NoFileExists(t, filepath.Join(dir, "gtms", "adapters", "bats-runner.sh"))
 	assert.NoFileExists(t, filepath.Join(dir, "gtms", "adapters", "lib", "bats-tap.sh"))
 
-	// Skeleton adapter should be present (all presets)
-	assert.FileExists(t, filepath.Join(dir, "gtms", "adapters", "create-skeleton.sh"))
+	// ENH-160: All 6 common scripts should be present
+	assert.FileExists(t, filepath.Join(dir, "gtms", "adapters", "manual-create-script.sh"))
+	assert.FileExists(t, filepath.Join(dir, "gtms", "adapters", "agent-create-script.sh"))
+	assert.FileExists(t, filepath.Join(dir, "gtms", "adapters", "manual-prime-script.sh"))
+	assert.FileExists(t, filepath.Join(dir, "gtms", "adapters", "agent-prime-script.sh"))
+	assert.FileExists(t, filepath.Join(dir, "gtms", "adapters", "manual-execute-script.sh"))
+	assert.FileExists(t, filepath.Join(dir, "gtms", "adapters", "agent-execute-script.sh"))
+
+	// Legacy files should NOT exist
+	assert.NoFileExists(t, filepath.Join(dir, "gtms", "adapters", "create-skeleton.sh"))
+	assert.NoFileExists(t, filepath.Join(dir, "gtms", "adapters", "agent-skeleton.sh"))
 
 	// VSCode snippets still created (manual result authoring)
 	assert.FileExists(t, filepath.Join(dir, ".vscode", "gtms.code-snippets"))
 
-	// Verify config: playwright-runner as default execute
+	// ENH-160: Verify config has built-in defaults for create/prime, playwright-runner for execute
 	cfg, err := config.LoadFromFile(filepath.Join(dir, "gtms.config"))
 	require.NoError(t, err)
-	require.NotNil(t, cfg.Adapters["create"]["skeleton"])
-	assert.Equal(t, "skeleton", cfg.Defaults["create"])
+	require.NotNil(t, cfg.Adapters["create"]["manual-create-script"])
+	require.NotNil(t, cfg.Adapters["create"]["agent-create-script"])
+	assert.Equal(t, "manual-create", cfg.Defaults["create"])
+	assert.Equal(t, "manual-prime", cfg.Defaults["prime"])
 	assert.Equal(t, "playwright-runner", cfg.Defaults["execute"])
 
 	// Playwright-runner adapter registered
@@ -327,7 +399,7 @@ func TestInitExistingDirectoriesNoError(t *testing.T) {
 
 	// Create some directories in advance
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "gtms/tasks", "pending"), 0o755))
-	require.NoError(t, os.MkdirAll(filepath.Join(dir, "gtms/cases"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "gtms/test/cases"), 0o755))
 
 	// Put a file in pending to verify it is not overwritten
 	existingFile := filepath.Join(dir, "gtms/tasks", "pending", "existing.md")
@@ -396,7 +468,7 @@ func TestConfigValidationMinimalPreset(t *testing.T) {
 	assert.Equal(t, "org/validation", cfg.Project.Repo)
 
 	// ENH-127: minimal preset must scaffold a working out-of-the-box BATS
-	// execute pipeline — bats-runner registered as a Tier 2 execute adapter
+	// execute pipeline -- bats-runner registered as a Tier 2 execute adapter
 	// and set as the default.
 	bats := cfg.Adapters["execute"]["bats-runner"]
 	require.NotNil(t, bats, "minimal preset should register bats-runner under execute")
@@ -408,18 +480,36 @@ func TestConfigValidationMinimalPreset(t *testing.T) {
 	// out-of-the-box). ENH-133 originally flipped this to manual-execute but
 	// reverted post-CI: the change collided with ENH-127 and broke 31 BATS
 	// fixtures whose intent was to exercise the shipped bats-runner wrapper.
-	// Manual execute is still available on minimal — opt in via
+	// Manual execute is still available on minimal -- opt in via
 	// `--adapter manual-execute` (consistent with claude / github presets).
 	assert.Equal(t, "bats-runner", cfg.Defaults["execute"])
 
-	// ENH-133: manual-execute adapter is registered (opt-in via --adapter
-	// manual-execute). MUST NOT be the default; that's the corrected ENH-133
-	// boundary post-CI.
-	manualExec := cfg.Adapters["execute"]["manual-execute"]
-	require.NotNil(t, manualExec, "minimal preset should register manual-execute under execute")
-	assert.Equal(t, "sync", manualExec.Mode)
-	assert.Equal(t, "gtms/adapters/manual-execute.sh", manualExec.Script)
-	assert.Equal(t, "manual", manualExec.Framework)
+	// ENH-160: manual-execute-script adapter is registered (opt-in via
+	// --adapter manual-execute-script). MUST NOT be the default.
+	manualExecScript := cfg.Adapters["execute"]["manual-execute-script"]
+	require.NotNil(t, manualExecScript, "bats preset should register manual-execute-script under execute")
+	assert.Equal(t, "sync", manualExecScript.Mode)
+	assert.Equal(t, "gtms/adapters/manual-execute-script.sh", manualExecScript.Script)
+	assert.Equal(t, "manual", manualExecScript.Framework)
+
+	// ENH-160: agent-execute-script also registered as dormant
+	agentExecScript := cfg.Adapters["execute"]["agent-execute-script"]
+	require.NotNil(t, agentExecScript, "bats preset should register agent-execute-script under execute")
+	assert.Equal(t, "manual", agentExecScript.Framework)
+
+	// ENH-160: defaults.create flipped to built-in
+	assert.Equal(t, "manual-create", cfg.Defaults["create"])
+	assert.Equal(t, "manual-prime", cfg.Defaults["prime"])
+
+	// BUG-123: bats preset wires automate so `gtms automate <tc>` works out of
+	// the box. Default is agent-automate (Tier 0 built-in) carrying framework: bats.
+	assert.Equal(t, "agent-automate", cfg.Defaults["automate"])
+	batsAutomate := cfg.Adapters["automate"]["agent-automate"]
+	require.NotNil(t, batsAutomate, "bats preset should register agent-automate under automate")
+	assert.Equal(t, "sync", batsAutomate.Mode)
+	assert.Equal(t, "bats", batsAutomate.Framework)
+	assert.Empty(t, batsAutomate.Script, "agent-automate is a Tier 0 built-in (no script)")
+	assert.Empty(t, batsAutomate.Command, "agent-automate is a Tier 0 built-in (no command)")
 }
 
 func TestConfigValidationManualPreset(t *testing.T) {
@@ -440,24 +530,40 @@ func TestConfigValidationManualPreset(t *testing.T) {
 	assert.Equal(t, "Manual Validation", cfg.Project.Name)
 	assert.Equal(t, "org/manual-val", cfg.Project.Repo)
 
-	// Verify adapter structure
-	assert.NotNil(t, cfg.Adapters["create"]["skeleton"])
-	assert.Equal(t, "sync", cfg.Adapters["create"]["skeleton"].Mode)
+	// ENH-160: Verify adapter structure uses new slot names
+	assert.NotNil(t, cfg.Adapters["create"]["manual-create-script"])
+	assert.Equal(t, "sync", cfg.Adapters["create"]["manual-create-script"].Mode)
+	assert.NotNil(t, cfg.Adapters["create"]["agent-create-script"])
 
-	// Manual-execute is the default execute
-	manualExec := cfg.Adapters["execute"]["manual-execute"]
-	require.NotNil(t, manualExec, "manual preset should register manual-execute under execute")
-	assert.Equal(t, "sync", manualExec.Mode)
-	assert.Equal(t, "gtms/adapters/manual-execute.sh", manualExec.Script)
-	assert.Equal(t, "manual", manualExec.Framework)
+	// ENH-160: manual-execute-script registered (not manual-execute)
+	manualExecScript := cfg.Adapters["execute"]["manual-execute-script"]
+	require.NotNil(t, manualExecScript, "manual preset should register manual-execute-script under execute")
+	assert.Equal(t, "sync", manualExecScript.Mode)
+	assert.Equal(t, "gtms/adapters/manual-execute-script.sh", manualExecScript.Script)
+	assert.Equal(t, "manual", manualExecScript.Framework)
 
 	// No bats-runner or playwright-runner in manual preset
 	assert.Nil(t, cfg.Adapters["execute"]["bats-runner"])
 	assert.Nil(t, cfg.Adapters["execute"]["playwright-runner"])
 
-	// Verify defaults
-	assert.Equal(t, "skeleton", cfg.Defaults["create"])
+	// ENH-160: Legacy slot names should NOT exist
+	assert.Nil(t, cfg.Adapters["create"]["skeleton"])
+	assert.Nil(t, cfg.Adapters["execute"]["manual-execute"])
+
+	// ENH-160: Verify defaults point to built-ins
+	assert.Equal(t, "manual-create", cfg.Defaults["create"])
+	assert.Equal(t, "manual-prime", cfg.Defaults["prime"])
 	assert.Equal(t, "manual-execute", cfg.Defaults["execute"])
+
+	// BUG-123: manual preset wires automate to manual-automate (framework: manual)
+	// so `gtms automate <tc>` returns the prime/execute diagnostic instead of the
+	// generic "No default adapter configured" error.
+	assert.Equal(t, "manual-automate", cfg.Defaults["automate"])
+	manualAutomate := cfg.Adapters["automate"]["manual-automate"]
+	require.NotNil(t, manualAutomate, "manual preset should register manual-automate under automate")
+	assert.Equal(t, "sync", manualAutomate.Mode)
+	assert.Equal(t, "manual", manualAutomate.Framework)
+	assert.Empty(t, manualAutomate.Script, "manual-automate is a Tier 0 built-in (no script)")
 }
 
 // TestBUG007_CreateTemplateOutputRulesAtEnd verifies that the create prompt template
@@ -515,18 +621,28 @@ func TestConfigValidationPlaywrightPreset(t *testing.T) {
 	assert.Equal(t, "playwright", pw.Framework)
 	assert.Equal(t, "gtms/adapters/playwright-runner.sh", pw.Script)
 
-	// Manual-execute also registered (all presets)
-	manualExec := cfg.Adapters["execute"]["manual-execute"]
-	require.NotNil(t, manualExec, "playwright preset should register manual-execute under execute")
-	assert.Equal(t, "sync", manualExec.Mode)
-	assert.Equal(t, "manual", manualExec.Framework)
+	// ENH-160: manual-execute-script also registered (all presets)
+	manualExecScript := cfg.Adapters["execute"]["manual-execute-script"]
+	require.NotNil(t, manualExecScript, "playwright preset should register manual-execute-script under execute")
+	assert.Equal(t, "sync", manualExecScript.Mode)
+	assert.Equal(t, "manual", manualExecScript.Framework)
 
 	// No bats-runner in playwright preset
 	assert.Nil(t, cfg.Adapters["execute"]["bats-runner"])
 
-	// Verify defaults
-	assert.Equal(t, "skeleton", cfg.Defaults["create"])
+	// ENH-160: Verify defaults point to built-ins
+	assert.Equal(t, "manual-create", cfg.Defaults["create"])
+	assert.Equal(t, "manual-prime", cfg.Defaults["prime"])
 	assert.Equal(t, "playwright-runner", cfg.Defaults["execute"])
+
+	// BUG-123: playwright preset wires automate so `gtms automate <tc>` works out
+	// of the box. Default is agent-automate (Tier 0 built-in) carrying framework: playwright.
+	assert.Equal(t, "agent-automate", cfg.Defaults["automate"])
+	pwAutomate := cfg.Adapters["automate"]["agent-automate"]
+	require.NotNil(t, pwAutomate, "playwright preset should register agent-automate under automate")
+	assert.Equal(t, "sync", pwAutomate.Mode)
+	assert.Equal(t, "playwright", pwAutomate.Framework)
+	assert.Empty(t, pwAutomate.Script, "agent-automate is a Tier 0 built-in (no script)")
 }
 
 func TestCreateDirectoriesReturnsCorrectList(t *testing.T) {
@@ -542,8 +658,10 @@ func TestCreateDirectoriesReturnsCorrectList(t *testing.T) {
 		"gtms/tasks/in-review",
 		"gtms/tasks/complete",
 		"gtms/tasks/error",
-		"gtms/cases",
-		"gtms/cases/guides",
+		"gtms/test/cases",
+		"gtms/test/templates",
+		"gtms/test/guides",
+		"gtms/test/prompts",
 		"gtms/automation/wiring",
 		"gtms/automation/specs",
 		"gtms/scripts",
@@ -566,8 +684,11 @@ func TestCreateDirectoriesAllPresetsIncludeAdapters(t *testing.T) {
 			dirs, err := CreateDirectories(dir, preset)
 			require.NoError(t, err)
 			assert.Contains(t, dirs, "gtms/adapters")
-			// No prompt dirs for any preset
+			// ENH-165: scaffold creates gtms/test/prompts/ as a tracked slot.
+			assert.Contains(t, dirs, "gtms/test/prompts")
+			// Legacy and non-scaffold prompt dirs absent.
 			assert.NotContains(t, dirs, "gtms/cases/prompts")
+			assert.NotContains(t, dirs, "gtms/test/cases/prompts")
 			assert.NotContains(t, dirs, "gtms/automation/prompts")
 		})
 	}
@@ -596,7 +717,7 @@ func TestWritePromptTemplatesContent(t *testing.T) {
 	assert.Len(t, files, 2)
 
 	// Verify create template uses {reference} not {requirement}
-	createContent, err := os.ReadFile(filepath.Join(dir, "gtms/cases", "prompts", "create-standard.md"))
+	createContent, err := os.ReadFile(filepath.Join(dir, "gtms/test", "prompts", "create-standard.md"))
 	require.NoError(t, err)
 	assert.Contains(t, string(createContent), "{reference}")
 	assert.NotContains(t, string(createContent), "{requirement}")
@@ -609,10 +730,10 @@ func TestWriteStarterGuides(t *testing.T) {
 	files, err := WriteStarterGuides(dir)
 	require.NoError(t, err)
 	assert.Len(t, files, 1)
-	assert.Equal(t, "gtms/cases/guides/test-case-template.md", files[0])
+	assert.Equal(t, "gtms/test/guides/gtms-test-case-authoring-guide.md", files[0])
 
 	// Verify content
-	content, err := os.ReadFile(filepath.Join(dir, "gtms/cases", "guides", "test-case-template.md"))
+	content, err := os.ReadFile(filepath.Join(dir, "gtms/test", "guides", "gtms-test-case-authoring-guide.md"))
 	require.NoError(t, err)
 	assert.Contains(t, string(content), "Test Case Template")
 	assert.Contains(t, string(content), "## Test Objective")
@@ -692,8 +813,8 @@ func TestIntegrationFullInit(t *testing.T) {
 		"gtms/tasks/in-review",
 		"gtms/tasks/complete",
 		"gtms/tasks/error",
-		"gtms/cases",
-		"gtms/cases/guides",
+		"gtms/test/cases",
+		"gtms/test/guides",
 		"gtms/automation/wiring",
 		"gtms/automation/specs",
 		"gtms/execution",
@@ -705,7 +826,7 @@ func TestIntegrationFullInit(t *testing.T) {
 	// Verify expected files
 	expectedFiles := []string{
 		"gtms.config",
-		"gtms/cases/guides/test-case-template.md",
+		"gtms/test/guides/gtms-test-case-authoring-guide.md",
 		"gtms/adapters/bats-runner.sh",
 		"gtms/adapters/lib/bats-tap.sh",
 	}
@@ -718,7 +839,7 @@ func TestIntegrationFullInit(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "Integration Test", cfg.Project.Name)
 	assert.Equal(t, "org/integration", cfg.Project.Repo)
-	assert.Equal(t, "skeleton", cfg.Defaults["create"])
+	assert.Equal(t, "manual-create", cfg.Defaults["create"])
 	assert.Equal(t, "bats-runner", cfg.Defaults["execute"])
 
 	// Verify result has accurate tracking
@@ -841,21 +962,26 @@ func TestIntegrationPlaywrightFullInit(t *testing.T) {
 	cfg, err := config.LoadFromFile(filepath.Join(dir, "gtms.config"))
 	require.NoError(t, err)
 	assert.Equal(t, "PW Integration", cfg.Project.Name)
-	assert.Equal(t, "skeleton", cfg.Defaults["create"])
+	assert.Equal(t, "manual-create", cfg.Defaults["create"])
 	assert.Equal(t, "playwright-runner", cfg.Defaults["execute"])
 
 	// Verify playwright runner exists
 	assert.FileExists(t, filepath.Join(dir, "gtms", "adapters", "playwright-runner.sh"))
 
 	// Verify guide file exists
-	assert.FileExists(t, filepath.Join(dir, "gtms/cases", "guides", "test-case-template.md"))
+	assert.FileExists(t, filepath.Join(dir, "gtms/test", "guides", "gtms-test-case-authoring-guide.md"))
 
-	// Total files: 1 sentinel + 1 config + 1 guide + 1 skeleton + 1 agent-skeleton
-	// + 1 playwright-runner + 1 manual-template + 1 schema + 1 manual-prime
-	// + 1 manual-execute + 1 tasks-readme + 1 guidance + 1 vscode-settings
-	// + 1 vscode-extensions + 1 vscode-snippets = 15
-	assert.Equal(t, 15, len(result.FilesCreated),
-		"playwright preset should create 15 files; got: %v", result.FilesCreated)
+	// ENH-161/ENH-162: Total files: 1 sentinel + 1 config + 1 guide
+	// + 1 manual-create-script + 1 agent-create-script + 1 playwright-runner
+	// + 1 playwright-automate-template (ENH-162)
+	// + 1 manual-result-template + 1 manual-tc-template + 1 agent-tc-template
+	// + 1 agent-result-template + 1 AGENTS-SNIPPET.md (ENH-183) + 1 schema
+	// + 1 manual-prime-script + 1 agent-prime-script
+	// + 1 manual-execute-script + 1 agent-execute-script + 1 tasks-readme
+	// + 1 vscode-settings + 1 vscode-extensions + 1 vscode-snippets + 1 guidance
+	// + 6 starter skills (5 SKILL.md + 1 README.md) = 28
+	assert.Equal(t, 28, len(result.FilesCreated),
+		"playwright preset should create 28 files; got: %v", result.FilesCreated)
 }
 
 func TestInitCreatesGuidanceYAML(t *testing.T) {
@@ -936,14 +1062,14 @@ func TestDemoSeedFreshProject(t *testing.T) {
 	assert.FileExists(t, filepath.Join(dir, "_demo", "adapters", "create-demo.sh"))
 	assert.FileExists(t, filepath.Join(dir, "_demo", "adapters", "automate-demo-sh.sh"))
 	assert.FileExists(t, filepath.Join(dir, "_demo", "adapters", "automate-demo-cmd.sh"))
-	assert.FileExists(t, filepath.Join(dir, "gtms/cases", "guides", "getting-started-with-ai.md"))
+	assert.FileExists(t, filepath.Join(dir, "gtms/test", "guides", "getting-started-with-ai.md"))
 
 	// Verify files tracked in result
 	assert.Contains(t, result.FilesCreated, "_demo/login-feature.md")
 	assert.Contains(t, result.FilesCreated, "_demo/adapters/create-demo.sh")
 	assert.Contains(t, result.FilesCreated, "_demo/adapters/automate-demo-sh.sh")
 	assert.Contains(t, result.FilesCreated, "_demo/adapters/automate-demo-cmd.sh")
-	assert.Contains(t, result.FilesCreated, "gtms/cases/guides/getting-started-with-ai.md")
+	assert.Contains(t, result.FilesCreated, "gtms/test/guides/getting-started-with-ai.md")
 	assert.True(t, result.ConfigModified)
 	assert.True(t, result.GuidanceModified)
 }
@@ -990,8 +1116,8 @@ func TestDemoSeedConfigValidation(t *testing.T) {
 	// Verify DemoSeeded flag is set
 	assert.True(t, cfg.DemoSeeded)
 
-	// Verify defaults were NOT modified by demo seed (skeleton default from minimal preset preserved)
-	assert.Equal(t, "skeleton", cfg.Defaults["create"], "demo should preserve existing skeleton default")
+	// Verify defaults were NOT modified by demo seed (built-in default from bats preset preserved)
+	assert.Equal(t, "manual-create", cfg.Defaults["create"], "demo should preserve existing create default")
 }
 
 func TestDemoSeedExistingProjectPreservesAdapters(t *testing.T) {
@@ -1015,7 +1141,7 @@ func TestDemoSeedExistingProjectPreservesAdapters(t *testing.T) {
 	require.NoError(t, err)
 
 	// Original adapters should still exist
-	assert.NotNil(t, cfg.Adapters["create"]["skeleton"], "existing create adapter should be preserved")
+	assert.NotNil(t, cfg.Adapters["create"]["manual-create-script"], "existing create adapter should be preserved")
 	assert.NotNil(t, cfg.Adapters["execute"]["bats-runner"], "existing execute adapter should be preserved")
 
 	// Demo adapters should also exist
@@ -1024,7 +1150,7 @@ func TestDemoSeedExistingProjectPreservesAdapters(t *testing.T) {
 	assert.NotNil(t, cfg.Adapters["execute"]["demo-sh"])
 
 	// Defaults should still point to original adapters
-	assert.Equal(t, "skeleton", cfg.Defaults["create"])
+	assert.Equal(t, "manual-create", cfg.Defaults["create"])
 	assert.Equal(t, "bats-runner", cfg.Defaults["execute"])
 }
 
@@ -1147,7 +1273,7 @@ func TestDemoSeedSkipsExistingFiles(t *testing.T) {
 }
 
 func TestDemoRequirementContent(t *testing.T) {
-	// Pure unit test — no git needed
+	// Pure unit test -- no git needed
 	assert.Contains(t, demoLoginRequirement, "Login Feature")
 	assert.Contains(t, demoLoginRequirement, "REQ-LOGIN-001")
 	assert.Contains(t, demoLoginRequirement, "REQ-LOGIN-002")
@@ -1168,10 +1294,10 @@ func TestDemoCreateScriptContent(t *testing.T) {
 
 func TestSkeletonCreateScript_UsesGTMS_TC_NAME(t *testing.T) {
 	// Verify the skeleton template correctly references GTMS_TC_NAME
-	assert.Contains(t, skeletonCreateScript, "${GTMS_TC_NAME}")
-	assert.Contains(t, skeletonCreateScript, "GTMS_TC_NAME")
+	assert.Contains(t, manualCreateScript, "${GTMS_TC_NAME}")
+	assert.Contains(t, manualCreateScript, "GTMS_TC_NAME")
 	// Should use the name in the filename
-	assert.Contains(t, skeletonCreateScript, "${ID}-${GTMS_TC_NAME}.md")
+	assert.Contains(t, manualCreateScript, "${ID}-${GTMS_TC_NAME}.md")
 }
 
 // --- ENH-135: BUG-027 Finding 1 reversed (CON-020) ---
@@ -1249,7 +1375,7 @@ func TestEnsureGitignore_HandlesCRLF(t *testing.T) {
 
 	content, err := os.ReadFile(filepath.Join(dir, ".gitignore"))
 	require.NoError(t, err)
-	// Should be idempotent — no duplicate entries
+	// Should be idempotent -- no duplicate entries
 	assert.Equal(t, crlf, string(content), "file should be unchanged when entries already present (CRLF)")
 }
 
@@ -1333,8 +1459,8 @@ func TestInit_S3_ExistingGtmsPreservesSubdirs(t *testing.T) {
 	skipIfShort(t)
 	dir := initGitRepo(t)
 
-	// Pre-create gtms/cases/ with a file (simulates S3: existing gtms/ without config)
-	casesDir := filepath.Join(dir, "gtms", "cases")
+	// Pre-create gtms/test/cases/ with a file (simulates S3: existing gtms/ without config)
+	casesDir := filepath.Join(dir, "gtms", "test", "cases")
 	require.NoError(t, os.MkdirAll(casesDir, 0o755))
 	existingFile := filepath.Join(casesDir, "foo.md")
 	require.NoError(t, os.WriteFile(existingFile, []byte("keep me"), 0o644))
@@ -1428,9 +1554,9 @@ func TestMinimalPresetSkeletonHasNoOutputDir(t *testing.T) {
 	// globally on the file.
 	cfg, err := config.LoadFromFile(filepath.Join(dir, "gtms.config"))
 	require.NoError(t, err)
-	skeleton := cfg.Adapters["create"]["skeleton"]
-	require.NotNil(t, skeleton)
-	assert.Empty(t, skeleton.OutputDir, "create.skeleton should not declare output-dir")
+	createScript := cfg.Adapters["create"]["manual-create-script"]
+	require.NotNil(t, createScript)
+	assert.Empty(t, createScript.OutputDir, "create.manual-create-script should not declare output-dir")
 }
 
 // ENH-132: Manual prime scaffold tests
@@ -1484,8 +1610,8 @@ func TestInitMinimalPreset_ManualScaffold(t *testing.T) {
 	assert.Contains(t, string(schemaContent), `"^[a-f0-9]{16}$"`)
 	assert.Contains(t, string(schemaContent), `"additionalProperties": true`)
 
-	// Manual-prime adapter script should be created
-	primePath := filepath.Join(dir, "gtms", "adapters", "manual-prime.sh")
+	// ENH-160: Manual-prime-script adapter should be created
+	primePath := filepath.Join(dir, "gtms", "adapters", "manual-prime-script.sh")
 	assert.FileExists(t, primePath)
 	primeContent, err := os.ReadFile(primePath)
 	require.NoError(t, err)
@@ -1508,14 +1634,14 @@ func TestInitMinimalPreset_ManualScaffold(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, string(extContent), "redhat.vscode-yaml")
 
-	// Config should include manual-prime adapter under adapters.prime (ENH-150)
+	// ENH-160: Config should include manual-prime-script under adapters.prime
 	cfg, err := config.LoadFromFile(filepath.Join(dir, "gtms.config"))
 	require.NoError(t, err)
-	manualPrime := cfg.Adapters["prime"]["manual-prime"]
-	require.NotNil(t, manualPrime, "manual-prime adapter should be in config under adapters.prime")
+	manualPrime := cfg.Adapters["prime"]["manual-prime-script"]
+	require.NotNil(t, manualPrime, "manual-prime-script adapter should be in config under adapters.prime")
 	assert.Equal(t, "sync", manualPrime.Mode)
 	assert.Equal(t, "manual", manualPrime.Framework)
-	assert.Contains(t, manualPrime.Script, "manual-prime.sh")
+	assert.Contains(t, manualPrime.Script, "manual-prime-script.sh")
 
 	// Template must NOT contain attempts: (per ENH-118)
 	assert.NotContains(t, string(templateContent), "attempts:")
@@ -1523,7 +1649,7 @@ func TestInitMinimalPreset_ManualScaffold(t *testing.T) {
 	// Files should be tracked in result
 	assert.Contains(t, result.FilesCreated, "gtms/manual/templates/manual-result.template.yaml")
 	assert.Contains(t, result.FilesCreated, "gtms/schemas/manual-result.schema.json")
-	assert.Contains(t, result.FilesCreated, "gtms/adapters/manual-prime.sh")
+	assert.Contains(t, result.FilesCreated, "gtms/adapters/manual-prime-script.sh")
 	assert.Contains(t, result.FilesCreated, ".vscode/settings.json")
 	assert.Contains(t, result.FilesCreated, ".vscode/extensions.json")
 }
@@ -1598,7 +1724,7 @@ func TestManualResultTemplate_NoInlineValueHints(t *testing.T) {
 }
 
 func TestManualResultTemplate_FourSectionModel(t *testing.T) {
-	// BUG-077: four sections — GTMS contract → OVERALL RESULT → Optional metadata → Steps
+	// BUG-077: four sections -- GTMS contract -> OVERALL RESULT -> Optional metadata -> Steps
 	assert.Contains(t, manualResultTemplate, "GTMS contract")
 	assert.Contains(t, manualResultTemplate, "OVERALL RESULT")
 	assert.Contains(t, manualResultTemplate, "Optional metadata")
@@ -1624,11 +1750,11 @@ func TestBUG077_TemplateHasStepsKey(t *testing.T) {
 func TestBUG077_SnippetsValueFirst(t *testing.T) {
 	// Result snippets must not re-emit the result: key (Issue 3)
 	assert.NotContains(t, vscodeGtmsSnippets, `"result: pass"`,
-		"gtms-pass snippet must not contain 'result: pass' — template owns the key")
+		"gtms-pass snippet must not contain 'result: pass' -- template owns the key")
 	assert.NotContains(t, vscodeGtmsSnippets, `"result: fail"`,
-		"gtms-fail snippet must not contain 'result: fail' — template owns the key")
+		"gtms-fail snippet must not contain 'result: fail' -- template owns the key")
 	assert.NotContains(t, vscodeGtmsSnippets, `"result: skip"`,
-		"gtms-skip snippet must not contain 'result: skip' — template owns the key")
+		"gtms-skip snippet must not contain 'result: skip' -- template owns the key")
 }
 
 func TestBUG077_StepSnippetIndentation(t *testing.T) {
@@ -1934,15 +2060,15 @@ func TestSkeletonCreateScript_RicherBodySections(t *testing.T) {
 		"## Notes",
 	}
 	for _, h := range expectedHeadings {
-		assert.Contains(t, skeletonCreateScript, h,
+		assert.Contains(t, manualCreateScript, h,
 			"skeleton should contain heading: %s", h)
 	}
 
 	// Verify expected-observation vocabulary
-	assert.Contains(t, skeletonCreateScript, "Expected observation:")
+	assert.Contains(t, manualCreateScript, "Expected observation:")
 
 	// Verify old vocabulary is gone
-	assert.NotContains(t, skeletonCreateScript, "**Expected:**")
+	assert.NotContains(t, manualCreateScript, "**Expected:**")
 
 	// Verify no execution-outcome enum values in YAML context
 	// (The word "pass" appears in "result: pass" for the handoff contract,
@@ -1951,9 +2077,9 @@ func TestSkeletonCreateScript_RicherBodySections(t *testing.T) {
 	// We check that the TC body section (between --- and TCEOF) does not
 	// have ": pass", ": fail", or ": skip" as YAML values.
 	// The handoff contract section is separate and allowed to use result: pass.
-	assert.NotContains(t, skeletonCreateScript, "status: pass")
-	assert.NotContains(t, skeletonCreateScript, "status: fail")
-	assert.NotContains(t, skeletonCreateScript, "status: skip")
+	assert.NotContains(t, manualCreateScript, "status: pass")
+	assert.NotContains(t, manualCreateScript, "status: fail")
+	assert.NotContains(t, manualCreateScript, "status: skip")
 }
 
 func TestStarterGuideContent_ENH119_RicherSections(t *testing.T) {
@@ -1984,4 +2110,544 @@ func TestStarterGuideContent_ENH119_RicherSections(t *testing.T) {
 
 	// Guide should include the Expected observation format example
 	assert.Contains(t, starterGuideContent, "Expected observation")
+}
+
+// --- ENH-161: role-specific template scaffold assertions ---
+
+// TestInit_ScaffoldsAllFourRoleTemplates covers AC #1-#5: `gtms init` writes
+// the four role-specific template files at their expected paths and lists
+// them in the FilesCreated result. This closes the gap the user finding
+// surfaced: scaffold_test.go was only checking counts, not asserting the
+// new template files were actually written with the expected content.
+func TestInit_ScaffoldsAllFourRoleTemplates(t *testing.T) {
+	skipIfShort(t)
+	dir := initGitRepo(t)
+
+	result, err := Init(Options{
+		ProjectRoot: dir,
+		Name:        "Role Templates",
+		Repo:        "org/role-templates",
+		Preset:      PresetBats,
+		Force:       false,
+	})
+	require.NoError(t, err)
+
+	cases := []struct {
+		path        string
+		requiredStr []string
+	}{
+		{
+			path: "gtms/test/templates/manual-testcase.template.md",
+			requiredStr: []string{
+				"test_case_id: ${TESTCASE_ID}",
+				`title: "${TITLE}"`,
+				"requirement: ${REQUIREMENT}",
+				"created: ${CREATED}",
+				"## Test Objective",
+				"## Test Steps",
+			},
+		},
+		{
+			path: "gtms/test/templates/agent-testcase.template.md",
+			requiredStr: []string{
+				"test_case_id: ${TESTCASE_ID}",
+				`title: "${TITLE}"`,
+				"requirement: ${REQUIREMENT}",
+				"created: ${CREATED}",
+			},
+		},
+		{
+			path: "gtms/manual/templates/manual-result.template.yaml",
+			requiredStr: []string{
+				"test_case_id: ${TESTCASE}",
+				"framework: manual",
+				`title: "${TC_TITLE}"`,
+				`requirement: "${TC_REQUIREMENT}"`,
+			},
+		},
+		{
+			path: "gtms/manual/templates/agent-result.template.yaml",
+			requiredStr: []string{
+				"test_case_id: ${TESTCASE}",
+				"framework: manual",
+				`title: "${TC_TITLE}"`,
+				`requirement: "${TC_REQUIREMENT}"`,
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.path, func(t *testing.T) {
+			assert.FileExists(t, filepath.Join(dir, tc.path), "AC #1-#3: template file must be scaffolded")
+			assert.Contains(t, result.FilesCreated, tc.path, "AC #5: template listed in init success output")
+
+			data, err := os.ReadFile(filepath.Join(dir, tc.path))
+			require.NoError(t, err)
+			for _, want := range tc.requiredStr {
+				assert.Contains(t, string(data), want, "template at %s must contain %q", tc.path, want)
+			}
+		})
+	}
+}
+
+// TestInit_TestcaseTemplatesByteIdenticalDayOne covers AC #2: the manual
+// and agent testcase templates have byte-identical day-one content. The
+// file split is the future-divergence affordance, not a content change.
+func TestInit_TestcaseTemplatesByteIdenticalDayOne(t *testing.T) {
+	skipIfShort(t)
+	dir := initGitRepo(t)
+
+	_, err := Init(Options{
+		ProjectRoot: dir,
+		Name:        "Byte Identity",
+		Repo:        "org/byte-identity",
+		Preset:      PresetBats,
+		Force:       false,
+	})
+	require.NoError(t, err)
+
+	manual, err := os.ReadFile(filepath.Join(dir, "gtms/test/templates/manual-testcase.template.md"))
+	require.NoError(t, err)
+	agent, err := os.ReadFile(filepath.Join(dir, "gtms/test/templates/agent-testcase.template.md"))
+	require.NoError(t, err)
+	assert.Equal(t, manual, agent, "AC #2: manual and agent testcase templates byte-identical day one")
+}
+
+// TestInit_ResultTemplatesByteIdenticalDayOne covers AC #3 + #4: the agent
+// result template is byte-identical to the existing manual result template,
+// and the existing manual template content is unchanged from pre-ENH-161.
+func TestInit_ResultTemplatesByteIdenticalDayOne(t *testing.T) {
+	skipIfShort(t)
+	dir := initGitRepo(t)
+
+	_, err := Init(Options{
+		ProjectRoot: dir,
+		Name:        "Result Identity",
+		Repo:        "org/result-identity",
+		Preset:      PresetBats,
+		Force:       false,
+	})
+	require.NoError(t, err)
+
+	manual, err := os.ReadFile(filepath.Join(dir, "gtms/manual/templates/manual-result.template.yaml"))
+	require.NoError(t, err)
+	agent, err := os.ReadFile(filepath.Join(dir, "gtms/manual/templates/agent-result.template.yaml"))
+	require.NoError(t, err)
+	assert.Equal(t, manual, agent, "AC #3: manual and agent result templates byte-identical day one")
+}
+
+// --- ENH-164: new gtms/test/{cases,templates,guides} slot scaffold ---
+
+// TestInit_ScaffoldsNewTestSlots covers ENH-164 "Layout and scaffold" AC:
+// `gtms init` creates the three sibling slots under gtms/test/.
+func TestInit_ScaffoldsNewTestSlots(t *testing.T) {
+	skipIfShort(t)
+	dir := initGitRepo(t)
+
+	_, err := Init(Options{
+		ProjectRoot: dir,
+		Name:        "ENH-164 Slot Scaffold",
+		Repo:        "org/enh-164-slot-scaffold",
+		Preset:      PresetBats,
+		Force:       false,
+	})
+	require.NoError(t, err)
+
+	assert.DirExists(t, filepath.Join(dir, "gtms", "test", "cases"),
+		"ENH-164: gtms init must scaffold gtms/test/cases/")
+	assert.DirExists(t, filepath.Join(dir, "gtms", "test", "templates"),
+		"ENH-164: gtms init must scaffold gtms/test/templates/")
+	assert.DirExists(t, filepath.Join(dir, "gtms", "test", "guides"),
+		"ENH-164: gtms init must scaffold gtms/test/guides/")
+}
+
+// TestInit_DoesNotCreateLegacyCasesDir covers ENH-164 "Layout and scaffold"
+// AC: no files land under gtms/test/cases/. The check runs against every valid
+// preset so a future preset cannot regress silently.
+func TestInit_DoesNotCreateLegacyCasesDir(t *testing.T) {
+	skipIfShort(t)
+	for _, preset := range ValidPresets() {
+		t.Run(preset, func(t *testing.T) {
+			dir := initGitRepo(t)
+			_, err := Init(Options{
+				ProjectRoot: dir,
+				Name:        "ENH-164 No Legacy",
+				Repo:        "org/enh-164-no-legacy",
+				Preset:      preset,
+				Force:       false,
+			})
+			require.NoError(t, err)
+
+			assert.NoDirExists(t, filepath.Join(dir, "gtms", "cases"),
+				"ENH-164: gtms init (preset=%s) must not create the legacy gtms/test/cases/ directory", preset)
+			assert.NoDirExists(t, filepath.Join(dir, "gtms", "cases", "templates"),
+				"ENH-164: gtms init (preset=%s) must not create the legacy gtms/test/templates/ directory", preset)
+			assert.NoDirExists(t, filepath.Join(dir, "gtms", "cases", "guides"),
+				"ENH-164: gtms init (preset=%s) must not create the legacy gtms/test/guides/ directory", preset)
+		})
+	}
+}
+
+// TestInit_StampingTemplatesAtNewPaths covers ENH-164 "Test surface" AC:
+// role-specific stamping templates land at gtms/test/templates/. Asserts both
+// file existence and that the templates carry the ENH-161 frontmatter
+// placeholder shape (test_case_id: ${TESTCASE_ID}) so a wrong move that
+// silently writes the wrong body cannot pass.
+func TestInit_StampingTemplatesAtNewPaths(t *testing.T) {
+	skipIfShort(t)
+	dir := initGitRepo(t)
+
+	result, err := Init(Options{
+		ProjectRoot: dir,
+		Name:        "ENH-164 Template Paths",
+		Repo:        "org/enh-164-template-paths",
+		Preset:      PresetBats,
+		Force:       false,
+	})
+	require.NoError(t, err)
+
+	manualRel := "gtms/test/templates/manual-testcase.template.md"
+	agentRel := "gtms/test/templates/agent-testcase.template.md"
+
+	assert.FileExists(t, filepath.Join(dir, manualRel),
+		"ENH-164: manual stamping template must land at %s", manualRel)
+	assert.FileExists(t, filepath.Join(dir, agentRel),
+		"ENH-164: agent stamping template must land at %s", agentRel)
+	assert.Contains(t, result.FilesCreated, manualRel,
+		"ENH-164: manual stamping template must be listed in init success output")
+	assert.Contains(t, result.FilesCreated, agentRel,
+		"ENH-164: agent stamping template must be listed in init success output")
+
+	manualBody, err := os.ReadFile(filepath.Join(dir, manualRel))
+	require.NoError(t, err)
+	agentBody, err := os.ReadFile(filepath.Join(dir, agentRel))
+	require.NoError(t, err)
+	assert.Contains(t, string(manualBody), "test_case_id: ${TESTCASE_ID}",
+		"ENH-164: manual stamping template at new path must carry ENH-161 frontmatter placeholder")
+	assert.Contains(t, string(agentBody), "test_case_id: ${TESTCASE_ID}",
+		"ENH-164: agent stamping template at new path must carry ENH-161 frontmatter placeholder")
+}
+
+// --- ENH-180: Starter Agent Skills ---
+
+func TestWriteExampleSkills(t *testing.T) {
+	skipIfShort(t)
+	dir := initGitRepo(t)
+	result := &Result{}
+
+	err := WriteExampleSkills(dir, result)
+	require.NoError(t, err)
+
+	// Verify all six files were created.
+	expectedFiles := []string{
+		"gtms/skills/README.md",
+		"gtms/skills/gtms-tests-create/SKILL.md",
+		"gtms/skills/gtms-tests-automate/SKILL.md",
+		"gtms/skills/gtms-tests-execute/SKILL.md",
+		"gtms/skills/gtms-tests-prime/SKILL.md",
+		"gtms/skills/gtms-tests-verify-intent/SKILL.md",
+	}
+	for _, f := range expectedFiles {
+		assert.FileExists(t, filepath.Join(dir, filepath.FromSlash(f)), "missing: %s", f)
+		assert.Contains(t, result.FilesCreated, f, "should be listed in FilesCreated: %s", f)
+	}
+
+	// Verify name: frontmatter matches directory name for each SKILL.md.
+	skillDirs := []string{
+		"gtms-tests-create",
+		"gtms-tests-automate",
+		"gtms-tests-execute",
+		"gtms-tests-prime",
+		"gtms-tests-verify-intent",
+	}
+	for _, name := range skillDirs {
+		content, readErr := os.ReadFile(filepath.Join(dir, "gtms", "skills", name, "SKILL.md"))
+		require.NoError(t, readErr)
+		body := string(content)
+
+		assert.Contains(t, body, "name: "+name,
+			"SKILL.md name: frontmatter must match directory name %s", name)
+		assert.Contains(t, body, "description:",
+			"SKILL.md must have a description: field in %s", name)
+		assert.Contains(t, body, "This is a GTMS starter skill",
+			"SKILL.md must contain provenance anchor in %s", name)
+	}
+
+	// Verify idempotency: modify one file, re-call, verify it was not overwritten.
+	modPath := filepath.Join(dir, "gtms", "skills", "gtms-tests-create", "SKILL.md")
+	require.NoError(t, os.WriteFile(modPath, []byte("custom content"), 0o644))
+	result2 := &Result{}
+	err = WriteExampleSkills(dir, result2)
+	require.NoError(t, err)
+	assert.Contains(t, result2.FilesSkipped, "gtms/skills/gtms-tests-create/SKILL.md",
+		"modified file should be skipped on re-call")
+
+	modContent, _ := os.ReadFile(modPath)
+	assert.Equal(t, "custom content", string(modContent),
+		"idempotency: modified file must not be overwritten")
+}
+
+func TestWriteExampleSkills_InitIntegration(t *testing.T) {
+	skipIfShort(t)
+	dir := initGitRepo(t)
+
+	result, err := Init(Options{
+		ProjectRoot: dir,
+		Name:        "Skills Test",
+		Repo:        "org/skills-test",
+		Preset:      PresetManual,
+		Force:       false,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	// Verify skills files were created by Init.
+	assert.FileExists(t, filepath.Join(dir, "gtms", "skills", "README.md"))
+	assert.FileExists(t, filepath.Join(dir, "gtms", "skills", "gtms-tests-create", "SKILL.md"))
+	assert.FileExists(t, filepath.Join(dir, "gtms", "skills", "gtms-tests-execute", "SKILL.md"))
+
+	assert.Contains(t, result.FilesCreated, "gtms/skills/README.md",
+		"catalog README should appear in Init FilesCreated")
+	assert.Contains(t, result.FilesCreated, "gtms/skills/gtms-tests-create/SKILL.md",
+		"skill files should appear in Init FilesCreated")
+}
+
+// --- ENH-187: BATS run result-variable lifetime guidance in the automate skill ---
+
+// scaffoldedAutomateSkill scaffolds the starter skills into a temp dir and
+// returns the body of the automate SKILL.md as the CLI actually writes it.
+// Reading the scaffolded artefact (not the repo source) is deliberate: it is
+// what a user's agent ends up reading.
+func scaffoldedAutomateSkill(t *testing.T) string {
+	t.Helper()
+	dir := initGitRepo(t)
+	require.NoError(t, WriteExampleSkills(dir, &Result{}))
+
+	body, err := os.ReadFile(filepath.Join(dir, "gtms", "skills", "gtms-tests-automate", "SKILL.md"))
+	require.NoError(t, err)
+	return string(body)
+}
+
+// TestENH187_AutomateSkillTeachesRunVariableLifetime pins the semantic anchors
+// of the run-lifetime guidance into place.
+//
+// Existing scaffold coverage asserts the skill file exists with valid
+// frontmatter, and the fenced-block drift test only checks that CLI command
+// names resolve. Neither would notice this entire section being deleted, so
+// without this test the guidance can silently rot out of the skill and nothing
+// goes red.
+func TestENH187_AutomateSkillTeachesRunVariableLifetime(t *testing.T) {
+	skipIfShort(t)
+	body := scaffoldedAutomateSkill(t)
+
+	// All four run result variables must be named. An incomplete rule that omits
+	// $status or $lines has a live failure mode: an agent preserves $output
+	// correctly and then asserts the WRONG command's exit code.
+	for _, v := range []string{"$output", "$stderr", "$lines", "$status"} {
+		assert.Contains(t, body, v,
+			"automate skill must name the run result variable %s", v)
+	}
+
+	// The rule must be STATED, not merely demonstrated by a sample that happens
+	// to use the variables. Match the shape of the claim (every ... run ...
+	// replaces/resets/overwrites) rather than one sentence, so a reworded but
+	// still-correct skill does not go red.
+	assert.Regexp(t, "(?i)every[^\n]*run[^\n]*(replace|reset|overwrite)", body,
+		"automate skill must state that every run replaces the result variables, not just use them in a sample")
+
+	// The safe shape: run --separate-stderr -> assert the status -> capture.
+	assert.Contains(t, body, "run --separate-stderr",
+		"automate skill must show the --separate-stderr invocation form")
+	assert.Contains(t, body, "assert_success",
+		"automate skill must show the status being asserted while it is still the current run's")
+
+	// Re-run recovery is the mode that stays green. It must be forbidden.
+	assert.Regexp(t, `(?i)never re-run the command under test`, body,
+		"automate skill must forbid re-running the command under test to recover a lost value")
+
+	// The vacuous-negative case: the half an agent will not work out for itself.
+	assert.Contains(t, body, "refute_output",
+		"automate skill must name refute_output as a negative assertion that goes quiet")
+	assert.Contains(t, body, `[ -z "$output" ]`,
+		"automate skill must name the empty-output check as a negative assertion that goes quiet")
+	assert.Regexp(t, `(?i)vacuous`, body,
+		"automate skill must say that a stale read under a negative assertion passes vacuously")
+}
+
+// TestENH187_AutomateSkillDoesNotClaimRedirectionBreaksAssertions guards against
+// a specific falsehood.
+//
+// Claiming that redirecting inside a `run` invocation (run cmd > f 2> g) throws
+// away $status, $output or the bats-assert helpers is FALSE. `run` is a bash
+// function; a redirection written after it binds to the function call, not to
+// the command inside it, and BATS captures the command's streams internally
+// regardless -- assert_success still works.
+//
+// This is a regression guard, not a hypothetical: the claim shipped once in an
+// earlier draft of the equivalent guidance and was caught only at review. It
+// matters most here, because a section whose whole purpose is to correct false
+// beliefs about `run` must not contain one -- and this file scaffolds into
+// projects we will never see again.
+//
+// A stated PREFERENCE for printf snapshotting, with a true rationale, is fine
+// and is not what this test rejects.
+func TestENH187_AutomateSkillDoesNotClaimRedirectionBreaksAssertions(t *testing.T) {
+	skipIfShort(t)
+	body := scaffoldedAutomateSkill(t)
+
+	// The exact phrase the falsehood shipped with.
+	assert.NotContains(t, strings.ToLower(body), "throws away",
+		"automate skill must not claim redirection throws away the run result variables")
+
+	damageVerbs := []string{"throws away", "breaks", "loses", "discards", "disables"}
+	for i, line := range strings.Split(body, "\n") {
+		lower := strings.ToLower(line)
+		mentionsRedirection := strings.Contains(lower, "redirect") ||
+			(strings.Contains(lower, "run ") && strings.Contains(line, "> "))
+		if !mentionsRedirection {
+			continue
+		}
+		for _, verb := range damageVerbs {
+			assert.NotContains(t, lower, verb,
+				"line %d claims redirection %q -- that is false; redirection binds to the run function call, not the command inside it, and BATS still captures the streams: %s",
+				i+1, verb, line)
+		}
+	}
+}
+
+// TestENH187_AutomateSkillStaysGenericAndASCII checks the whole scaffolded
+// skill, not only the new section. The guidance is lifted from an internal
+// prompt full of record numbers and repo paths, so the copy-paste leak is a real
+// and immediate hazard.
+//
+// Generic references to CI stay legal -- a BATS-authoring skill may reasonably
+// say "this will fail in CI". What must not appear is THIS repo: record IDs,
+// repo paths, workflow paths, runner names, org names. The forbidden set is
+// enumerated as concrete tokens rather than described, so the check is
+// mechanical rather than a judgement call.
+func TestENH187_AutomateSkillStaysGenericAndASCII(t *testing.T) {
+	skipIfShort(t)
+	body := scaffoldedAutomateSkill(t)
+
+	assert.NotRegexp(t, `(?:BUG|ENH|CON|ADR)-\d`, body,
+		"scaffolded skill must not carry record identifiers")
+
+	forbidden := []string{
+		"test/acceptance/",
+		"gtms/automation/prompts/",
+		"internal/scaffold/",
+		"win-runner",
+		"remote-dir-run-unix.sh",
+		".github/workflows/",
+		"bechlin/",
+		"aitestmanagement/",
+	}
+	for _, tok := range forbidden {
+		assert.NotContains(t, body, tok,
+			"scaffolded skill must not leak the repo-specific token %q", tok)
+	}
+
+	for i, r := range body {
+		require.Less(t, r, rune(128),
+			"scaffolded skill must be ASCII-only: non-ASCII rune %q at byte offset %d", r, i)
+	}
+}
+
+// TestENH187_RunLifetimeGuidanceReachesEveryPreset asserts the new content is
+// scaffolded by all three presets.
+//
+// The skills catalog is written unconditionally by Init, so preset-independence
+// is expected rather than in doubt -- but that expectation is load-bearing: it is
+// what lets the acceptance suite exercise a single preset and still claim
+// coverage. An assumption carrying that much weight should be asserted.
+func TestENH187_RunLifetimeGuidanceReachesEveryPreset(t *testing.T) {
+	skipIfShort(t)
+
+	for _, preset := range []string{PresetManual, PresetBats, PresetPlaywright} {
+		t.Run(preset, func(t *testing.T) {
+			dir := initGitRepo(t)
+			_, err := Init(Options{
+				ProjectRoot: dir,
+				Name:        "Preset Test",
+				Repo:        "org/preset-test",
+				Preset:      preset,
+			})
+			require.NoError(t, err)
+
+			body, err := os.ReadFile(filepath.Join(dir, "gtms", "skills", "gtms-tests-automate", "SKILL.md"))
+			require.NoError(t, err)
+
+			// Marker for "the new guidance is present": all four variable names.
+			// The pre-change skill contained zero of them, so this cleanly
+			// separates old content from new.
+			for _, v := range []string{"$output", "$stderr", "$lines", "$status"} {
+				assert.Contains(t, string(body), v,
+					"preset %s must scaffold the automate skill carrying %s", preset, v)
+			}
+		})
+	}
+}
+
+// --- ENH-183: Agent-instructions snippet tests ---
+
+// TestENH183_AgentsSnippetGoldenDraftA verifies the embedded AgentsSnippetMD
+// contains the locked Draft A block byte-identical. Anchor greps alone would
+// still pass if the wrapper prose were dropped or the wording changed; this
+// golden test pins the exact wording.
+func TestENH183_AgentsSnippetGoldenDraftA(t *testing.T) {
+	// Locked Draft A -- byte-identical match required.
+	// Uses string concatenation for backtick-containing lines so the Go
+	// raw string literal does not need escaping.
+	const draftA = "## Testing: this project uses GTMS\n" +
+		"\n" +
+		"This project uses GTMS (Git-based Test Management System) to manage its test\n" +
+		"cases -- the create -> automate -> execute pipeline. It does not use GTMS for\n" +
+		"unit tests; write and run those the usual way.\n" +
+		"\n" +
+		"Before creating, automating, or executing any test cases, run `gtms agent` to\n" +
+		"load the operating reference for the pipeline.\n" +
+		"\n" +
+		"- `gtms agent`          -- how GTMS orchestrates the create -> automate -> execute pipeline\n" +
+		"- `gtms skills`         -- starter agent skills under `gtms/skills/` you can install\n" +
+		"- If `gtms` reports no project here, read `gtms getting-started` first.\n"
+
+	assert.Contains(t, AgentsSnippetMD, draftA,
+		"AgentsSnippetMD must contain the locked Draft A block byte-identical")
+}
+
+// TestENH183_SnippetWriteFiresForEveryPreset verifies the agent-instructions
+// snippet is scaffolded for every valid preset. Guards against a regression
+// that wires the write into only one preset branch.
+func TestENH183_SnippetWriteFiresForEveryPreset(t *testing.T) {
+	skipIfShort(t)
+	for _, preset := range ValidPresets() {
+		t.Run(preset, func(t *testing.T) {
+			dir := initGitRepo(t)
+			result, err := Init(Options{
+				ProjectRoot: dir,
+				Name:        "test",
+				Repo:        "org/repo",
+				Preset:      preset,
+			})
+			require.NoError(t, err)
+
+			snippetPath := filepath.Join(dir, "gtms", "AGENTS-SNIPPET.md")
+			assert.FileExists(t, snippetPath,
+				"gtms/AGENTS-SNIPPET.md must be created for preset %s", preset)
+
+			content, err := os.ReadFile(snippetPath)
+			require.NoError(t, err)
+			assert.Contains(t, string(content), "gtms agent",
+				"snippet must contain 'gtms agent' anchor for preset %s", preset)
+			assert.Contains(t, string(content), "gtms skills",
+				"snippet must contain 'gtms skills' anchor for preset %s", preset)
+			assert.Contains(t, string(content), "gtms getting-started",
+				"snippet must contain 'gtms getting-started' anchor for preset %s", preset)
+			assert.Contains(t, string(content), "unit test",
+				"snippet must contain the unit-test carve-out for preset %s", preset)
+
+			assert.Contains(t, result.FilesCreated, "gtms/AGENTS-SNIPPET.md",
+				"gtms/AGENTS-SNIPPET.md must appear in FilesCreated for preset %s", preset)
+		})
+	}
 }

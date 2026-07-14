@@ -31,7 +31,7 @@ func TestAdapterAbstractionAcidTest(t *testing.T) {
 		for _, dir := range []string{
 			"gtms/tasks/pending", "gtms/tasks/complete", "gtms/tasks/error",
 			"gtms/tasks/in-progress", "gtms/tasks/in-review",
-			"gtms/cases", "gtms/automation",
+			"gtms/test/cases", "gtms/automation",
 			".gtms/results", ".gtms/worktrees", ".gtms/logs",
 			"testdata",
 		} {

@@ -26,7 +26,7 @@ func writeResetFixture(t *testing.T, root, tcID, folder string) {
 	t.Helper()
 
 	// Create test case
-	tcDir := filepath.Join(root, "gtms/cases")
+	tcDir := filepath.Join(root, "gtms/test/cases")
 	if folder != "" {
 		tcDir = filepath.Join(tcDir, folder)
 	}
@@ -147,8 +147,8 @@ func TestResetByScope_Shallow(t *testing.T) {
 	writeExecuteTaskFile(t, root, "tc-bbb2222", "complete")
 
 	scope := &ScopeInfo{
-		ScanDir:   filepath.Join(root, "gtms/cases"),
-		RelPath:   "gtms/cases/",
+		ScanDir:   filepath.Join(root, "gtms/test/cases"),
+		RelPath:   "gtms/test/cases/",
 		Recursive: false,
 	}
 
@@ -173,8 +173,8 @@ func TestResetByScope_Recursive(t *testing.T) {
 	writeExecuteTaskFile(t, root, "tc-bbb2222", "error")
 
 	scope := &ScopeInfo{
-		ScanDir:   filepath.Join(root, "gtms/cases"),
-		RelPath:   "gtms/cases/",
+		ScanDir:   filepath.Join(root, "gtms/test/cases"),
+		RelPath:   "gtms/test/cases/",
 		Recursive: true,
 	}
 
@@ -195,7 +195,7 @@ func TestResetByScope_Recursive(t *testing.T) {
 func TestReset_NoAutomationRecord(t *testing.T) {
 	root := t.TempDir()
 	// Create test case but no automation record
-	tcDir := filepath.Join(root, "gtms/cases")
+	tcDir := filepath.Join(root, "gtms/test/cases")
 	require.NoError(t, os.MkdirAll(tcDir, 0755))
 	tcContent := "---\ntest_case_id: tc-ccc3333\ntitle: No Automation\nrequirement: REQ-001\n---\n"
 	require.NoError(t, os.WriteFile(filepath.Join(tcDir, "tc-ccc3333-test.md"), []byte(tcContent), 0644))
@@ -280,7 +280,7 @@ func TestReset_AlreadyClear(t *testing.T) {
 	root := t.TempDir()
 	// CON-023 / ENH-145: "already clear" now means wiring exists (record
 	// of identity) but no terminal handoff (no execute outcome yet).
-	tcDir := filepath.Join(root, "gtms/cases")
+	tcDir := filepath.Join(root, "gtms/test/cases")
 	require.NoError(t, os.MkdirAll(tcDir, 0755))
 	tcContent := "---\ntest_case_id: tc-hhh8888\ntitle: Already Clear\nrequirement: REQ-001\n---\n"
 	require.NoError(t, os.WriteFile(filepath.Join(tcDir, "tc-hhh8888-test.md"), []byte(tcContent), 0644))
@@ -306,7 +306,7 @@ func TestReset_AlreadyClear(t *testing.T) {
 func TestReset_ClearsLogAndLogSpill(t *testing.T) {
 	root := t.TempDir()
 
-	tcDir := filepath.Join(root, "gtms/cases")
+	tcDir := filepath.Join(root, "gtms/test/cases")
 	require.NoError(t, os.MkdirAll(tcDir, 0755))
 	tcContent := "---\ntest_case_id: tc-log999\ntitle: Log reset\nrequirement: ENH-077\n---\n"
 	require.NoError(t, os.WriteFile(filepath.Join(tcDir, "tc-log999-test.md"), []byte(tcContent), 0644))
@@ -357,7 +357,7 @@ log: |
 func TestReset_AlreadyClear_WithOnlyLog(t *testing.T) {
 	root := t.TempDir()
 
-	tcDir := filepath.Join(root, "gtms/cases")
+	tcDir := filepath.Join(root, "gtms/test/cases")
 	require.NoError(t, os.MkdirAll(tcDir, 0755))
 	tcContent := "---\ntest_case_id: tc-logonly\ntitle: Log only\nrequirement: ENH-077\n---\n"
 	require.NoError(t, os.WriteFile(filepath.Join(tcDir, "tc-logonly-test.md"), []byte(tcContent), 0644))
@@ -405,7 +405,7 @@ func TestReset_ClearsSummaryWhenExecuteFieldsPresent(t *testing.T) {
 	// with it. The wiring record (no summary field by design) stays.
 	root := t.TempDir()
 
-	tcDir := filepath.Join(root, "gtms/cases")
+	tcDir := filepath.Join(root, "gtms/test/cases")
 	require.NoError(t, os.MkdirAll(tcDir, 0755))
 	tcContent := "---\ntest_case_id: tc-sum001\ntitle: Summary reset\nrequirement: BUG-075\n---\n"
 	require.NoError(t, os.WriteFile(filepath.Join(tcDir, "tc-sum001-test.md"), []byte(tcContent), 0644))
@@ -453,7 +453,7 @@ func TestReset_PreservesSummaryOnAutomateOnlyRecord(t *testing.T) {
 	// handoff exists to remove. The wiring file itself must survive.
 	root := t.TempDir()
 
-	tcDir := filepath.Join(root, "gtms/cases")
+	tcDir := filepath.Join(root, "gtms/test/cases")
 	require.NoError(t, os.MkdirAll(tcDir, 0755))
 	tcContent := "---\ntest_case_id: tc-sum002\ntitle: Automate only\nrequirement: BUG-075\n---\n"
 	require.NoError(t, os.WriteFile(filepath.Join(tcDir, "tc-sum002-test.md"), []byte(tcContent), 0644))
@@ -482,7 +482,7 @@ func TestReset_DryRun_CountsSummaryClearing(t *testing.T) {
 	// terminal handoff(s) carrying summary/result/log payload.
 	root := t.TempDir()
 
-	tcDir := filepath.Join(root, "gtms/cases")
+	tcDir := filepath.Join(root, "gtms/test/cases")
 	require.NoError(t, os.MkdirAll(tcDir, 0755))
 	tcContent := "---\ntest_case_id: tc-sum003\ntitle: Dry run summary\nrequirement: BUG-075\n---\n"
 	require.NoError(t, os.WriteFile(filepath.Join(tcDir, "tc-sum003-test.md"), []byte(tcContent), 0644))
@@ -529,8 +529,8 @@ func TestResetByScope_FolderScoped(t *testing.T) {
 	writeExecuteTaskFile(t, root, "tc-jjj0000", "complete")
 
 	scope := &ScopeInfo{
-		ScanDir:   filepath.Join(root, "gtms/cases", "folder-a"),
-		RelPath:   "gtms/cases/folder-a/",
+		ScanDir:   filepath.Join(root, "gtms/test/cases", "folder-a"),
+		RelPath:   "gtms/test/cases/folder-a/",
 		Recursive: false,
 	}
 

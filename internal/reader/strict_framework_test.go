@@ -95,7 +95,7 @@ func TestPipelineStatus_StrictFrameworkOmitsNonMatching(t *testing.T) {
 	root := t.TempDir()
 
 	// tc-aaa1111: both bats and pester records (pester passes)
-	writeFile(t, root, filepath.Join("gtms/cases", "dual", "tc-aaa1111-both.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "dual", "tc-aaa1111-both.md"), `---
 test_case_id: tc-aaa1111
 title: Both Frameworks
 ---
@@ -112,7 +112,7 @@ title: Both Frameworks
 	})
 
 	// tc-bbb2222: only bats record
-	writeFile(t, root, filepath.Join("gtms/cases", "dual", "tc-bbb2222-bats-only.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "dual", "tc-bbb2222-bats-only.md"), `---
 test_case_id: tc-bbb2222
 title: Bats Only
 ---
@@ -150,7 +150,7 @@ func TestPipelineStatus_NonStrictFrameworkFallsBack(t *testing.T) {
 	// (i.e. config-default path) — tc-bbb2222 should fall back to its bats
 	// record, preserving today's behaviour.
 	root := t.TempDir()
-	writeFile(t, root, filepath.Join("gtms/cases", "dual", "tc-bbb2222-bats-only.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "dual", "tc-bbb2222-bats-only.md"), `---
 test_case_id: tc-bbb2222
 title: Bats Only
 ---
@@ -174,7 +174,7 @@ title: Bats Only
 
 func TestPipelineDetail_StrictFrameworkEmpty(t *testing.T) {
 	root := t.TempDir()
-	writeFile(t, root, filepath.Join("gtms/cases", "tc-bbb2222-bats-only.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-bbb2222-bats-only.md"), `---
 test_case_id: tc-bbb2222
 title: Bats Only
 ---
@@ -202,7 +202,7 @@ title: Bats Only
 func TestPipelineDetail_NonStrictFrameworkFallsBack(t *testing.T) {
 	// REGRESSION: detail view in non-strict mode keeps falling back.
 	root := t.TempDir()
-	writeFile(t, root, filepath.Join("gtms/cases", "tc-bbb2222-bats-only.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-bbb2222-bats-only.md"), `---
 test_case_id: tc-bbb2222
 title: Bats Only
 ---
@@ -227,7 +227,7 @@ func TestGaps_StrictFrameworkExcludesNonMatching(t *testing.T) {
 	root := t.TempDir()
 
 	// tc-bbb2222: only bats record, currently failing
-	writeFile(t, root, filepath.Join("gtms/cases", "tc-bbb2222-bats-only.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-bbb2222-bats-only.md"), `---
 test_case_id: tc-bbb2222
 title: Bats Only Failing
 ---
@@ -254,7 +254,7 @@ func TestGaps_NonStrictFrameworkIncludesFallback(t *testing.T) {
 	// REGRESSION: same fixture, non-strict mode → tc-bbb2222 falls back to
 	// its bats record and DOES appear in CurrentlyFailing.
 	root := t.TempDir()
-	writeFile(t, root, filepath.Join("gtms/cases", "tc-bbb2222-bats-only.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-bbb2222-bats-only.md"), `---
 test_case_id: tc-bbb2222
 title: Bats Only Failing
 ---
@@ -277,7 +277,7 @@ func TestMap_StrictFrameworkOmitsNonMatching(t *testing.T) {
 	root := t.TempDir()
 
 	// tc-aaa1111 has both bats and pester records
-	writeFile(t, root, filepath.Join("gtms/cases", "tc-aaa1111-both.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-aaa1111-both.md"), `---
 test_case_id: tc-aaa1111
 title: Both Frameworks
 requirement: REQ-A
@@ -292,7 +292,7 @@ requirement: REQ-A
 	})
 
 	// tc-bbb2222 has only bats
-	writeFile(t, root, filepath.Join("gtms/cases", "tc-bbb2222-bats-only.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-bbb2222-bats-only.md"), `---
 test_case_id: tc-bbb2222
 title: Bats Only
 requirement: REQ-A
@@ -339,7 +339,7 @@ requirement: REQ-A
 func TestMap_NonStrictFrameworkFallsBack(t *testing.T) {
 	// REGRESSION: non-strict map keeps falling back to the bats record.
 	root := t.TempDir()
-	writeFile(t, root, filepath.Join("gtms/cases", "tc-bbb2222-bats-only.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-bbb2222-bats-only.md"), `---
 test_case_id: tc-bbb2222
 title: Bats Only
 requirement: REQ-A
@@ -412,7 +412,7 @@ func TestPipelineStatus_AvailableFrameworks(t *testing.T) {
 	root := t.TempDir()
 
 	// tc-aaa1111: bats + pester records
-	writeFile(t, root, filepath.Join("gtms/cases", "tc-aaa1111-both.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-aaa1111-both.md"), `---
 test_case_id: tc-aaa1111
 title: Both Frameworks
 ---
@@ -421,7 +421,7 @@ title: Both Frameworks
 	seedLegacyRecord(t, root, legacyRecord{TC: "tc-aaa1111", Framework: "pester", Result: "pass"})
 
 	// tc-bbb2222: pester only
-	writeFile(t, root, filepath.Join("gtms/cases", "tc-bbb2222-pester-only.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-bbb2222-pester-only.md"), `---
 test_case_id: tc-bbb2222
 title: Pester Only
 ---
@@ -429,7 +429,7 @@ title: Pester Only
 	seedLegacyRecord(t, root, legacyRecord{TC: "tc-bbb2222", Framework: "pester", Result: "pass"})
 
 	// tc-ccc3333: no records at all
-	writeFile(t, root, filepath.Join("gtms/cases", "tc-ccc3333-no-records.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-ccc3333-no-records.md"), `---
 test_case_id: tc-ccc3333
 title: No Records
 ---
@@ -463,7 +463,7 @@ func TestPipelineDetail_AvailableFrameworks(t *testing.T) {
 	root := t.TempDir()
 
 	// TC with pester-only record
-	writeFile(t, root, filepath.Join("gtms/cases", "tc-bbb2222-pester-only.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-bbb2222-pester-only.md"), `---
 test_case_id: tc-bbb2222
 title: Pester Only
 ---
@@ -485,7 +485,7 @@ title: Pester Only
 func TestPipelineDetail_AvailableFrameworks_NoRecords(t *testing.T) {
 	root := t.TempDir()
 
-	writeFile(t, root, filepath.Join("gtms/cases", "tc-ccc3333-no-records.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-ccc3333-no-records.md"), `---
 test_case_id: tc-ccc3333
 title: No Records
 ---
@@ -503,7 +503,7 @@ func TestMap_AvailableFrameworks(t *testing.T) {
 	root := t.TempDir()
 
 	// TC with pester-only record
-	writeFile(t, root, filepath.Join("gtms/cases", "tc-bbb2222-pester-only.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-bbb2222-pester-only.md"), `---
 test_case_id: tc-bbb2222
 title: Pester Only
 requirement: REQ-A
@@ -512,7 +512,7 @@ requirement: REQ-A
 	seedLegacyRecord(t, root, legacyRecord{TC: "tc-bbb2222", Framework: "pester", Result: "pass"})
 
 	// TC with no records
-	writeFile(t, root, filepath.Join("gtms/cases", "tc-ccc3333-no-records.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-ccc3333-no-records.md"), `---
 test_case_id: tc-ccc3333
 title: No Records
 requirement: REQ-A
@@ -547,7 +547,7 @@ func TestPipelineFolderSummary_FrameworkMismatch(t *testing.T) {
 	root := t.TempDir()
 
 	// tc-aaa1111: bats record (matches --framework bats)
-	writeFile(t, root, filepath.Join("gtms/cases", "folder-a", "tc-aaa1111-bats.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "folder-a", "tc-aaa1111-bats.md"), `---
 test_case_id: tc-aaa1111
 title: Has Bats
 ---
@@ -555,7 +555,7 @@ title: Has Bats
 	seedLegacyRecord(t, root, legacyRecord{TC: "tc-aaa1111", Framework: "bats", Result: "pass"})
 
 	// tc-bbb2222: pester only (mismatch when --framework bats)
-	writeFile(t, root, filepath.Join("gtms/cases", "folder-a", "tc-bbb2222-pester-only.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "folder-a", "tc-bbb2222-pester-only.md"), `---
 test_case_id: tc-bbb2222
 title: Pester Only
 ---
@@ -563,7 +563,7 @@ title: Pester Only
 	seedLegacyRecord(t, root, legacyRecord{TC: "tc-bbb2222", Framework: "pester", Result: "pass"})
 
 	// tc-ccc3333: no records at all (not a mismatch, just not automated)
-	writeFile(t, root, filepath.Join("gtms/cases", "folder-a", "tc-ccc3333-no-records.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "folder-a", "tc-ccc3333-no-records.md"), `---
 test_case_id: tc-ccc3333
 title: No Records
 ---
@@ -584,7 +584,7 @@ title: No Records
 func TestPipelineFolderSummary_FrameworkMismatch_NoFilter(t *testing.T) {
 	root := t.TempDir()
 
-	writeFile(t, root, filepath.Join("gtms/cases", "folder-a", "tc-aaa1111-bats.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "folder-a", "tc-aaa1111-bats.md"), `---
 test_case_id: tc-aaa1111
 title: Has Bats
 ---
@@ -603,7 +603,7 @@ func TestGapsFolderSummary_FrameworkMismatch(t *testing.T) {
 	root := t.TempDir()
 
 	// tc-aaa1111: bats record (matches --framework bats)
-	writeFile(t, root, filepath.Join("gtms/cases", "folder-a", "tc-aaa1111-bats.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "folder-a", "tc-aaa1111-bats.md"), `---
 test_case_id: tc-aaa1111
 title: Has Bats
 ---
@@ -611,7 +611,7 @@ title: Has Bats
 	seedLegacyRecord(t, root, legacyRecord{TC: "tc-aaa1111", Framework: "bats", Result: "pass"})
 
 	// tc-bbb2222: pester only (mismatch when --framework bats)
-	writeFile(t, root, filepath.Join("gtms/cases", "folder-a", "tc-bbb2222-pester-only.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "folder-a", "tc-bbb2222-pester-only.md"), `---
 test_case_id: tc-bbb2222
 title: Pester Only
 ---
@@ -619,7 +619,7 @@ title: Pester Only
 	seedLegacyRecord(t, root, legacyRecord{TC: "tc-bbb2222", Framework: "pester", Result: "pass"})
 
 	// tc-ccc3333: no records (not a mismatch)
-	writeFile(t, root, filepath.Join("gtms/cases", "folder-a", "tc-ccc3333-no-records.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "folder-a", "tc-ccc3333-no-records.md"), `---
 test_case_id: tc-ccc3333
 title: No Records
 ---
@@ -640,7 +640,7 @@ title: No Records
 func TestGapsFolderSummary_FrameworkMismatch_NoFilter(t *testing.T) {
 	root := t.TempDir()
 
-	writeFile(t, root, filepath.Join("gtms/cases", "folder-a", "tc-aaa1111-bats.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "folder-a", "tc-aaa1111-bats.md"), `---
 test_case_id: tc-aaa1111
 title: Has Bats
 ---

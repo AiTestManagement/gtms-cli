@@ -54,10 +54,10 @@ func whatHappenedCreate(res *adapter.InvokeResult) string {
 		if len(res.ArtifactPaths) == 1 {
 			noun = "test case"
 		}
-		return fmt.Sprintf("%d %s created in gtms/cases/%s/", len(res.ArtifactPaths), noun, res.Target)
+		return fmt.Sprintf("%d %s created in gtms/test/cases/%s/", len(res.ArtifactPaths), noun, res.Target)
 	}
 	if res.ArtifactCount > 0 {
-		return fmt.Sprintf("%d test cases created in gtms/cases/%s/", res.ArtifactCount, res.Target)
+		return fmt.Sprintf("%d test cases created in gtms/test/cases/%s/", res.ArtifactCount, res.Target)
 	}
 	return fmt.Sprintf("Create task completed for %s", res.Target)
 }
@@ -96,24 +96,28 @@ func whatHappenedExecute(res *adapter.InvokeResult) string {
 }
 
 // whatHappenedInit builds the "What happened" text for the init command.
+// ENH-186: returns a count-based summary instead of a per-file enumeration,
+// with a deliberate carve-out for the .gitignore action line. The gitignore
+// action stays here (not in the stdout Created: block) because the ENH-108
+// gitignore-action-reporting spec suite pins it to stderr with exact literals.
 func whatHappenedInit(result *scaffold.Result) string {
-	var lines []string
-	for _, f := range result.FilesCreated {
-		lines = append(lines, fmt.Sprintf("Created %s", f))
+	files := len(result.FilesCreated)
+	dirs := len(result.DirsCreated)
+
+	summary := fmt.Sprintf("Created %d files and %d directories.", files, dirs)
+	if len(result.FilesSkipped) > 0 {
+		summary += fmt.Sprintf(" Skipped %d files (already exist).", len(result.FilesSkipped))
 	}
-	for _, d := range result.DirsCreated {
-		lines = append(lines, fmt.Sprintf("Created %s/", d))
-	}
-	for _, f := range result.FilesSkipped {
-		lines = append(lines, fmt.Sprintf("Skipped %s (already exists)", f))
-	}
+
+	// Gitignore carve-out: exact literals pinned by ENH-108 spec suite.
 	switch result.GitignoreAction {
 	case scaffold.GitignoreCreated:
-		lines = append(lines, "Created .gitignore")
+		summary += "\nCreated .gitignore"
 	case scaffold.GitignoreAppended:
-		lines = append(lines, "Updated .gitignore (added .gtms/)")
+		summary += "\nUpdated .gitignore (added .gtms/)"
 	}
-	return strings.Join(lines, "\n")
+
+	return summary
 }
 
 // guidanceEnabled returns true if guidance is enabled.
@@ -135,17 +139,17 @@ func printCommandGuidance(command string, whatHappened string) {
 // whatHappenedBulkAutomate builds the "What happened" text for bulk automate.
 func whatHappenedBulkAutomate(folder string, succeeded, skipped, failed int) string {
 	if failed == 0 && skipped == 0 {
-		return fmt.Sprintf("%d automations created in gtms/cases/%s/", succeeded, folder)
+		return fmt.Sprintf("%d automations created in gtms/test/cases/%s/", succeeded, folder)
 	}
-	return fmt.Sprintf("%d automated, %d skipped, %d failed in gtms/cases/%s/",
+	return fmt.Sprintf("%d automated, %d skipped, %d failed in gtms/test/cases/%s/",
 		succeeded, skipped, failed, folder)
 }
 
 // whatHappenedBulkExecute builds the "What happened" text for bulk execute.
 func whatHappenedBulkExecute(folder string, passed, skipped, failed, errored int) string {
 	if failed == 0 && skipped == 0 && errored == 0 {
-		return fmt.Sprintf("All %d tests passed in gtms/cases/%s/", passed, folder)
+		return fmt.Sprintf("All %d tests passed in gtms/test/cases/%s/", passed, folder)
 	}
-	return fmt.Sprintf("%d passed, %d failed, %d errored, %d skipped in gtms/cases/%s/",
+	return fmt.Sprintf("%d passed, %d failed, %d errored, %d skipped in gtms/test/cases/%s/",
 		passed, failed, errored, skipped, folder)
 }

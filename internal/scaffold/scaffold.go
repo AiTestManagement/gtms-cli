@@ -2,6 +2,7 @@ package scaffold
 
 import (
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -118,7 +119,7 @@ func Init(opts Options) (*Result, error) {
 	result.FilesCreated = append(result.FilesCreated, "gtms.config")
 
 	// Write starter guides (all presets -- ENH-119).
-	// The enriched test-case-template.md is the authoring reference for the
+	// The enriched gtms-test-case-authoring-guide.md is the authoring reference for the
 	// skeleton create adapter, which itself ships under every preset, so the
 	// guide must travel with it.
 	{
@@ -129,27 +130,34 @@ func Init(opts Options) (*Result, error) {
 		result.FilesCreated = append(result.FilesCreated, files...)
 	}
 
-	// Write skeleton create adapter script (all presets)
-	// BUG-053: adapters nest under gtms/ for ENH-098 three-item root footprint
-	skeletonPath := filepath.Join(opts.ProjectRoot, "gtms", "adapters", "create-skeleton.sh")
-	if _, err := os.Stat(skeletonPath); os.IsNotExist(err) {
-		if err := os.WriteFile(skeletonPath, []byte(skeletonCreateScript), 0o755); err != nil {
-			return nil, fmt.Errorf("writing gtms/adapters/create-skeleton.sh: %w", err)
-		}
-		result.FilesCreated = append(result.FilesCreated, "gtms/adapters/create-skeleton.sh")
-	} else {
-		result.FilesSkipped = append(result.FilesSkipped, "gtms/adapters/create-skeleton.sh")
+	// ENH-180: Write starter Agent Skills catalog (all presets).
+	// Five spec-compliant skills covering the GTMS pipeline workflow,
+	// plus a catalog README under gtms/skills/.
+	if err := WriteExampleSkills(opts.ProjectRoot, result); err != nil {
+		return nil, fmt.Errorf("writing example skills: %w", err)
 	}
 
-	// ENH-150: Write agent-skeleton create adapter script (all presets, dormant)
-	agentSkeletonPath := filepath.Join(opts.ProjectRoot, "gtms", "adapters", "agent-skeleton.sh")
-	if _, err := os.Stat(agentSkeletonPath); os.IsNotExist(err) {
-		if err := os.WriteFile(agentSkeletonPath, []byte(agentSkeletonScript), 0o755); err != nil {
-			return nil, fmt.Errorf("writing gtms/adapters/agent-skeleton.sh: %w", err)
+	// ENH-160: Write manual-create-script adapter (all presets)
+	// BUG-053: adapters nest under gtms/ for ENH-098 three-item root footprint
+	manualCreatePath := filepath.Join(opts.ProjectRoot, "gtms", "adapters", "manual-create-script.sh")
+	if _, err := os.Stat(manualCreatePath); os.IsNotExist(err) {
+		if err := os.WriteFile(manualCreatePath, []byte(manualCreateScript), 0o755); err != nil {
+			return nil, fmt.Errorf("writing gtms/adapters/manual-create-script.sh: %w", err)
 		}
-		result.FilesCreated = append(result.FilesCreated, "gtms/adapters/agent-skeleton.sh")
+		result.FilesCreated = append(result.FilesCreated, "gtms/adapters/manual-create-script.sh")
 	} else {
-		result.FilesSkipped = append(result.FilesSkipped, "gtms/adapters/agent-skeleton.sh")
+		result.FilesSkipped = append(result.FilesSkipped, "gtms/adapters/manual-create-script.sh")
+	}
+
+	// ENH-160: Write agent-create-script adapter (all presets, dormant)
+	agentCreatePath := filepath.Join(opts.ProjectRoot, "gtms", "adapters", "agent-create-script.sh")
+	if _, err := os.Stat(agentCreatePath); os.IsNotExist(err) {
+		if err := os.WriteFile(agentCreatePath, []byte(agentCreateScript), 0o755); err != nil {
+			return nil, fmt.Errorf("writing gtms/adapters/agent-create-script.sh: %w", err)
+		}
+		result.FilesCreated = append(result.FilesCreated, "gtms/adapters/agent-create-script.sh")
+	} else {
+		result.FilesSkipped = append(result.FilesSkipped, "gtms/adapters/agent-create-script.sh")
 	}
 
 	// BUG-111 / ADR-022: Install preset-owned assets (framework-specific files).
@@ -162,22 +170,54 @@ func Init(opts Options) (*Result, error) {
 	manualTemplatePath := filepath.Join(opts.ProjectRoot, "gtms", "manual", "templates", "manual-result.template.yaml")
 	writeFileIfNotExists(manualTemplatePath, []byte(manualResultTemplate), "gtms/manual/templates/manual-result.template.yaml", result)
 
+	// ENH-161/164: Write role-specific testcase templates (all presets)
+	manualTCTemplatePath := filepath.Join(opts.ProjectRoot, "gtms", "test", "templates", "manual-testcase.template.md")
+	writeFileIfNotExists(manualTCTemplatePath, []byte(TestcaseTemplateMD), "gtms/test/templates/manual-testcase.template.md", result)
+
+	agentTCTemplatePath := filepath.Join(opts.ProjectRoot, "gtms", "test", "templates", "agent-testcase.template.md")
+	writeFileIfNotExists(agentTCTemplatePath, []byte(TestcaseTemplateMD), "gtms/test/templates/agent-testcase.template.md", result)
+
+	// ENH-161: Write agent result template (byte-identical to manual on day one)
+	agentResultTemplatePath := filepath.Join(opts.ProjectRoot, "gtms", "manual", "templates", "agent-result.template.yaml")
+	writeFileIfNotExists(agentResultTemplatePath, []byte(AgentResultTemplateYAML), "gtms/manual/templates/agent-result.template.yaml", result)
+
+	// ENH-183: Write agent-instructions snippet (all presets).
+	// The durable file is the real deliverable; stdout CTA is a courtesy pointer.
+	agentsSnippetPath := filepath.Join(opts.ProjectRoot, "gtms", "AGENTS-SNIPPET.md")
+	writeFileIfNotExists(agentsSnippetPath, []byte(AgentsSnippetMD), "gtms/AGENTS-SNIPPET.md", result)
+
 	schemaPath := filepath.Join(opts.ProjectRoot, "gtms", "schemas", "manual-result.schema.json")
 	writeFileIfNotExists(schemaPath, []byte(manualResultSchema), "gtms/schemas/manual-result.schema.json", result)
 
-	manualPrimePath := filepath.Join(opts.ProjectRoot, "gtms", "adapters", "manual-prime.sh")
+	// ENH-160: Write manual-prime-script adapter (all presets)
+	manualPrimePath := filepath.Join(opts.ProjectRoot, "gtms", "adapters", "manual-prime-script.sh")
 	if _, err := os.Stat(manualPrimePath); os.IsNotExist(err) {
 		if err := os.WriteFile(manualPrimePath, []byte(manualPrimeScript), 0o755); err != nil {
-			return nil, fmt.Errorf("writing gtms/adapters/manual-prime.sh: %w", err)
+			return nil, fmt.Errorf("writing gtms/adapters/manual-prime-script.sh: %w", err)
 		}
-		result.FilesCreated = append(result.FilesCreated, "gtms/adapters/manual-prime.sh")
+		result.FilesCreated = append(result.FilesCreated, "gtms/adapters/manual-prime-script.sh")
 	} else {
-		result.FilesSkipped = append(result.FilesSkipped, "gtms/adapters/manual-prime.sh")
+		result.FilesSkipped = append(result.FilesSkipped, "gtms/adapters/manual-prime-script.sh")
 	}
 
-	// ENH-133: Write manual-execute adapter script (all presets)
-	manualExecutePath := filepath.Join(opts.ProjectRoot, "gtms", "adapters", "manual-execute.sh")
-	writeFileIfNotExists(manualExecutePath, []byte(manualExecuteScript), "gtms/adapters/manual-execute.sh", result)
+	// ENH-160: Write agent-prime-script adapter (all presets, dormant)
+	agentPrimePath := filepath.Join(opts.ProjectRoot, "gtms", "adapters", "agent-prime-script.sh")
+	if _, err := os.Stat(agentPrimePath); os.IsNotExist(err) {
+		if err := os.WriteFile(agentPrimePath, []byte(agentPrimeScript), 0o755); err != nil {
+			return nil, fmt.Errorf("writing gtms/adapters/agent-prime-script.sh: %w", err)
+		}
+		result.FilesCreated = append(result.FilesCreated, "gtms/adapters/agent-prime-script.sh")
+	} else {
+		result.FilesSkipped = append(result.FilesSkipped, "gtms/adapters/agent-prime-script.sh")
+	}
+
+	// ENH-160: Write manual-execute-script adapter (all presets)
+	manualExecutePath := filepath.Join(opts.ProjectRoot, "gtms", "adapters", "manual-execute-script.sh")
+	writeFileIfNotExists(manualExecutePath, []byte(manualExecuteScript), "gtms/adapters/manual-execute-script.sh", result)
+
+	// ENH-160: Write agent-execute-script adapter (all presets, dormant)
+	agentExecutePath := filepath.Join(opts.ProjectRoot, "gtms", "adapters", "agent-execute-script.sh")
+	writeFileIfNotExists(agentExecutePath, []byte(agentExecuteScript), "gtms/adapters/agent-execute-script.sh", result)
 
 	// ENH-135: Ship gtms/tasks/.README.md warning file.
 	tasksReadmePath := filepath.Join(opts.ProjectRoot, "gtms", "tasks", ".README.md")
@@ -316,8 +356,14 @@ func CreateDirectories(root string, preset string) ([]string, error) {
 		"gtms/tasks/in-review",
 		"gtms/tasks/complete",
 		"gtms/tasks/error",
-		"gtms/cases",
-		"gtms/cases/guides",
+		"gtms/test/cases",
+		"gtms/test/templates",
+		"gtms/test/guides",
+		// ENH-165: gtms/test/prompts/ holds Tier 1 adapter prompt templates
+		// (e.g. create-standard.md). Previously the prompt template lived at
+		// gtms/cases/prompts/ as the sole vestigial slot left after ENH-164's
+		// gtms/cases/ -> gtms/test/ refactor.
+		"gtms/test/prompts",
 		// CON-023 / ENH-145: wiring/ replaces the legacy records/ directory.
 		// Wiring files are tracked (.gitignore must NOT exclude this dir).
 		"gtms/automation/wiring",
@@ -333,7 +379,7 @@ func CreateDirectories(root string, preset string) ([]string, error) {
 		"gtms/schemas",
 	)
 
-	// All presets ship at least one adapter script (create-skeleton.sh)
+	// All presets ship at least one adapter script (manual-create-script.sh)
 	// BUG-053: adapters nest under gtms/ for ENH-098 three-item root footprint
 	// BUG-111: adapters/lib/ is now created by preset asset installation, not here
 	dirs = append(dirs, "gtms/adapters")
@@ -371,14 +417,23 @@ func WriteConfig(root, name, repo, preset string) (string, error) {
 	return configPath, nil
 }
 
-// WritePromptTemplates writes starter prompt templates to gtms/cases/prompts/
+// RESERVED FOR ENH-176 -- intentionally NOT called by `gtms init`. Under DOC-018
+// Direction 2 (Retire), starter prompt templates are user-authored, so no init
+// path invokes this. The only caller today is scaffold_test.go (keep-alive).
+// Do not delete: ENH-176 will wire this into init when the ship direction lands.
+//
+// WritePromptTemplates writes starter prompt templates to gtms/test/prompts/
 // and gtms/automation/prompts/. Returns the list of files created (relative paths).
+//
+// ENH-165: create prompt template lives at gtms/test/prompts/create-standard.md
+// (under the test/ tree alongside cases/, templates/, guides/). Previously it
+// lived at gtms/cases/prompts/ as the sole vestigial slot left after ENH-164.
 func WritePromptTemplates(root string) ([]string, error) {
 	templates := []struct {
 		path    string
 		content string
 	}{
-		{"gtms/cases/prompts/create-standard.md", promptCreateStandard},
+		{"gtms/test/prompts/create-standard.md", promptCreateStandard},
 		{"gtms/automation/prompts/automate-standard.md", promptAutomateStandard},
 	}
 
@@ -397,14 +452,14 @@ func WritePromptTemplates(root string) ([]string, error) {
 	return created, nil
 }
 
-// WriteStarterGuides writes a starter test case guide to gtms/cases/guides/.
+// WriteStarterGuides writes a starter test case guide to gtms/test/guides/.
 // Returns the list of files created (relative paths).
 func WriteStarterGuides(root string) ([]string, error) {
 	guides := []struct {
 		path    string
 		content string
 	}{
-		{"gtms/cases/guides/test-case-template.md", starterGuideContent},
+		{"gtms/test/guides/gtms-test-case-authoring-guide.md", starterGuideContent},
 	}
 
 	var created []string
@@ -422,6 +477,42 @@ func WriteStarterGuides(root string) ([]string, error) {
 	return created, nil
 }
 
+// WriteExampleSkills writes the starter Agent Skills catalog to gtms/skills/.
+// Each skill is a directory containing SKILL.md in the Agent Skills open-standard
+// format (agentskills.io). A catalog README is written at gtms/skills/README.md.
+// Files that already exist are not overwritten (idempotent via writeFileIfNotExists).
+func WriteExampleSkills(root string, result *Result) error {
+	return fs.WalkDir(skillsFS, "skills", func(path string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if d.IsDir() {
+			return nil
+		}
+
+		// Read the embedded file content.
+		content, err := fs.ReadFile(skillsFS, path)
+		if err != nil {
+			return fmt.Errorf("reading embedded %s: %w", path, err)
+		}
+
+		// Map from embed path (skills/gtms-tests-create/SKILL.md) to output
+		// path (gtms/skills/gtms-tests-create/SKILL.md). Use forward slashes
+		// in relPath to match the convention used by all other writeFileIfNotExists
+		// callers (fs.WalkDir already returns forward slashes).
+		relPath := "gtms/" + path
+		absPath := filepath.Join(root, filepath.FromSlash(relPath))
+
+		// Ensure parent directory exists.
+		if err := os.MkdirAll(filepath.Dir(absPath), 0o755); err != nil {
+			return fmt.Errorf("creating directory for %s: %w", relPath, err)
+		}
+
+		writeFileIfNotExists(absPath, content, relPath, result)
+		return nil
+	})
+}
+
 // WriteAdapterStubs writes placeholder adapter scripts to the gtms/adapters/ directory.
 // Returns the list of files created (relative paths).
 // BUG-053: moved from adapters/ to gtms/adapters/ for ENH-098 three-item root footprint.
@@ -432,12 +523,12 @@ func WriteAdapterStubs(root string) ([]string, error) {
 	}
 
 	stubs := map[string]string{
-		"gtms/adapters/github-create.sh":         adapterStubScript("github-create", "create"),
-		"gtms/adapters/github-create-status.sh":  adapterStatusStubScript("github-create"),
-		"gtms/adapters/github-automate.sh":       adapterStubScript("github-automate", "automate"),
+		"gtms/adapters/github-create.sh":          adapterStubScript("github-create", "create"),
+		"gtms/adapters/github-create-status.sh":   adapterStatusStubScript("github-create"),
+		"gtms/adapters/github-automate.sh":        adapterStubScript("github-automate", "automate"),
 		"gtms/adapters/github-automate-status.sh": adapterStatusStubScript("github-automate"),
-		"gtms/adapters/github-execute.sh":        adapterStubScript("github-execute", "execute"),
-		"gtms/adapters/github-execute-status.sh": adapterStatusStubScript("github-execute"),
+		"gtms/adapters/github-execute.sh":         adapterStubScript("github-execute", "execute"),
+		"gtms/adapters/github-execute-status.sh":  adapterStatusStubScript("github-execute"),
 	}
 
 	var created []string
@@ -454,10 +545,10 @@ func WriteAdapterStubs(root string) ([]string, error) {
 
 // DemoSeedResult describes what DemoSeed created or modified.
 type DemoSeedResult struct {
-	FilesCreated    []string // files created (relative to project root)
-	FilesSkipped    []string // files not written because they already existed
-	ConfigModified  bool     // whether gtms.config was updated with demo adapters
-	GuidanceModified bool   // whether guidance.yaml was updated
+	FilesCreated     []string // files created (relative to project root)
+	FilesSkipped     []string // files not written because they already existed
+	ConfigModified   bool     // whether gtms.config was updated with demo adapters
+	GuidanceModified bool     // whether guidance.yaml was updated
 }
 
 // DemoSeed seeds demo data into an existing GTMS project.
@@ -484,7 +575,7 @@ func DemoSeed(projectRoot string) (*DemoSeedResult, error) {
 		{"_demo/adapters/create-demo.sh", demoCreateScript, 0o755},
 		{"_demo/adapters/automate-demo-sh.sh", demoAutomateShScript, 0o755},
 		{"_demo/adapters/automate-demo-cmd.sh", demoAutomateCmdScript, 0o755},
-		{"gtms/cases/guides/getting-started-with-ai.md", demoBridgeGuide, 0o644},
+		{"gtms/test/guides/getting-started-with-ai.md", demoBridgeGuide, 0o644},
 	}
 
 	for _, f := range demoFiles {
@@ -564,7 +655,7 @@ func DemoSeed(projectRoot string) (*DemoSeedResult, error) {
 }
 
 // UpdateDemoGuidance writes demo-specific guidance to .gtms/guidance.yaml.
-// Safe to call multiple times — always overwrites with current demo guidance.
+// Safe to call multiple times -- always overwrites with current demo guidance.
 func UpdateDemoGuidance(projectRoot string) error {
 	guidancePath := filepath.Join(projectRoot, ".gtms", "guidance.yaml")
 	if err := os.MkdirAll(filepath.Dir(guidancePath), 0o755); err != nil {
@@ -591,7 +682,7 @@ func UpdateDemoGuidance(projectRoot string) error {
 
 // gitignoreSentinel is the line ensureGitignore treats as the "GTMS already
 // manages this project's .gitignore" marker. If it's present, ensureGitignore
-// leaves the file byte-for-byte unchanged — even if newer entries below were
+// leaves the file byte-for-byte unchanged -- even if newer entries below were
 // added in later GTMS versions. This preserves backward compatibility with
 // projects initialised before ENH-109 expanded the entry set, and honours the
 // ENH-108 contract that `gtms init` must not modify a `.gitignore` that already
@@ -611,7 +702,7 @@ var gitignoreEntries = []string{
 
 // ensureGitignore ensures the GTMS-managed entries are listed in .gitignore.
 // Creates the file with all entries if absent. If the file exists and the
-// sentinel (.gtms/) is already present, leaves the file untouched — the
+// sentinel (.gtms/) is already present, leaves the file untouched -- the
 // project is already GTMS-managed, and silently rewriting it would violate the
 // ENH-108 byte-for-byte idempotency contract. If the file exists but the
 // sentinel is absent, appends every entry (treating the project as newly

@@ -82,12 +82,12 @@ func resetByScope(projectRoot string, scope *ScopeInfo, dryRun bool, result *Res
 	return result, nil
 }
 
-// clearAutomationRecords removes the terminal result handoffs under
-// .gtms/results/ that belong to a given TC. CON-023 / ENH-146: wiring
-// is read-only — reset must not mutate wiring. The execute outcome
-// lives on the result contract, so clearing it is the right semantics
-// for "reset this TC's last run." Counts handoffs removed (or that
-// would be removed in dry-run mode).
+// clearAutomationRecords clears all GTMS handoff history (create,
+// automate, execute, prime) for the given TC under .gtms/results/.
+// CON-023 / ENH-146: wiring is read-only -- reset must not mutate
+// wiring. The full clear is intentional: reset purges all stage
+// results so the TC can be re-run from scratch. Counts handoffs
+// removed (or that would be removed in dry-run mode).
 func clearAutomationRecords(projectRoot, tcID string, dryRun bool) (int, error) {
 	dir := filepath.Join(projectRoot, ".gtms", "results")
 	entries, err := os.ReadDir(dir)

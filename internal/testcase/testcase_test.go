@@ -10,7 +10,7 @@ import (
 
 func TestExists_UnqualifiedID_FileExists(t *testing.T) {
 	root := t.TempDir()
-	casesDir := filepath.Join(root, "gtms", "cases", "login")
+	casesDir := filepath.Join(root, "gtms", "test", "cases", "login")
 	require(t, os.MkdirAll(casesDir, 0755))
 	require(t, os.WriteFile(filepath.Join(casesDir, "tc-abc12345-login-test.md"), []byte("spec"), 0644))
 
@@ -19,7 +19,7 @@ func TestExists_UnqualifiedID_FileExists(t *testing.T) {
 
 func TestExists_UnqualifiedID_NoFile(t *testing.T) {
 	root := t.TempDir()
-	casesDir := filepath.Join(root, "gtms", "cases")
+	casesDir := filepath.Join(root, "gtms", "test", "cases")
 	require(t, os.MkdirAll(casesDir, 0755))
 
 	assert.False(t, Exists(root, "tc-deadbeef"))
@@ -27,7 +27,7 @@ func TestExists_UnqualifiedID_NoFile(t *testing.T) {
 
 func TestExists_FolderQualified_CorrectFolder(t *testing.T) {
 	root := t.TempDir()
-	casesDir := filepath.Join(root, "gtms", "cases", "login")
+	casesDir := filepath.Join(root, "gtms", "test", "cases", "login")
 	require(t, os.MkdirAll(casesDir, 0755))
 	require(t, os.WriteFile(filepath.Join(casesDir, "tc-abc12345-login-test.md"), []byte("spec"), 0644))
 
@@ -36,7 +36,7 @@ func TestExists_FolderQualified_CorrectFolder(t *testing.T) {
 
 func TestExists_FolderQualified_WrongFolder(t *testing.T) {
 	root := t.TempDir()
-	casesDir := filepath.Join(root, "gtms", "cases", "login")
+	casesDir := filepath.Join(root, "gtms", "test", "cases", "login")
 	require(t, os.MkdirAll(casesDir, 0755))
 	require(t, os.WriteFile(filepath.Join(casesDir, "tc-abc12345-login-test.md"), []byte("spec"), 0644))
 
@@ -46,23 +46,23 @@ func TestExists_FolderQualified_WrongFolder(t *testing.T) {
 
 func TestExists_UnqualifiedFindsInSubfolder(t *testing.T) {
 	root := t.TempDir()
-	casesDir := filepath.Join(root, "gtms", "cases", "deep", "nested")
+	casesDir := filepath.Join(root, "gtms", "test", "cases", "deep", "nested")
 	require(t, os.MkdirAll(casesDir, 0755))
 	require(t, os.WriteFile(filepath.Join(casesDir, "tc-abc12345-nested-test.md"), []byte("spec"), 0644))
 
-	// Unqualified should find it anywhere under gtms/cases/
+	// Unqualified should find it anywhere under gtms/test/cases/
 	assert.True(t, Exists(root, "tc-abc12345"))
 }
 
 func TestExists_CasesDirDoesNotExist(t *testing.T) {
 	root := t.TempDir()
-	// No gtms/cases/ directory at all
+	// No gtms/test/cases/ directory at all
 	assert.False(t, Exists(root, "tc-abc12345"))
 }
 
 func TestExists_MultipleFiles_OneMatches(t *testing.T) {
 	root := t.TempDir()
-	casesDir := filepath.Join(root, "gtms", "cases")
+	casesDir := filepath.Join(root, "gtms", "test", "cases")
 	require(t, os.MkdirAll(casesDir, 0755))
 	require(t, os.WriteFile(filepath.Join(casesDir, "tc-11111111-first.md"), []byte("spec"), 0644))
 	require(t, os.WriteFile(filepath.Join(casesDir, "tc-22222222-second.md"), []byte("spec"), 0644))
@@ -73,7 +73,7 @@ func TestExists_MultipleFiles_OneMatches(t *testing.T) {
 
 func TestExists_FileMatchesDotExtension(t *testing.T) {
 	root := t.TempDir()
-	casesDir := filepath.Join(root, "gtms", "cases")
+	casesDir := filepath.Join(root, "gtms", "test", "cases")
 	require(t, os.MkdirAll(casesDir, 0755))
 	require(t, os.WriteFile(filepath.Join(casesDir, "tc-abc12345.md"), []byte("spec"), 0644))
 
@@ -82,7 +82,7 @@ func TestExists_FileMatchesDotExtension(t *testing.T) {
 
 func TestExists_PartialIDDoesNotMatch(t *testing.T) {
 	root := t.TempDir()
-	casesDir := filepath.Join(root, "gtms", "cases")
+	casesDir := filepath.Join(root, "gtms", "test", "cases")
 	require(t, os.MkdirAll(casesDir, 0755))
 	require(t, os.WriteFile(filepath.Join(casesDir, "tc-abc12345-test.md"), []byte("spec"), 0644))
 
@@ -99,7 +99,7 @@ func TestExists_PartialIDDoesNotMatch(t *testing.T) {
 
 func TestExists_FolderQualifiedSubfolderDoesNotExist(t *testing.T) {
 	root := t.TempDir()
-	casesDir := filepath.Join(root, "gtms", "cases")
+	casesDir := filepath.Join(root, "gtms", "test", "cases")
 	require(t, os.MkdirAll(casesDir, 0755))
 	// The "nonexistent" subfolder doesn't exist
 	assert.False(t, Exists(root, "nonexistent/tc-abc12345"))

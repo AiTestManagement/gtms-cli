@@ -30,26 +30,35 @@ func newExecuteCmd() *cobra.Command {
 	var allowStaleFlag bool
 	cmd := &cobra.Command{
 		Use:   "execute [test-case-id | folder]",
-		Short: "Execute automated test cases",
-		Long: `Execute an automated test case by delegating to a configured adapter.
-Runs the automation artefact produced by 'gtms automate' and records the result.
+		Short: "Execute test cases and record results",
+		Long: `Execute a test case by delegating to a configured adapter. For automated
+test cases, GTMS runs the automation artefact produced by 'gtms automate'
+and records the result. For manual test cases, GTMS records the result from
+the primed result file.
 
 Single test case:
-  gtms execute tc-a1b2c3d4                          — use default adapter
-  gtms execute tc-a1b2c3d4 --adapter mock-runner    — use specific adapter
-  gtms execute tc-a1b2c3d4 --env staging            — run against staging environment
+  gtms execute tc-a1b2c3d4                          -- adapter comes from the wiring record
+  gtms execute tc-a1b2c3d4 --adapter bats-runner    -- confirm the wiring record's adapter explicitly
+  gtms execute tc-a1b2c3d4 --env staging            -- run against staging environment
 
 Folder (bulk mode):
-  gtms execute my-feature                      — execute all test cases in gtms/cases/my-feature/
-  gtms execute my-feature -r                   — include test cases from subdirectories
-  gtms execute my-feature --force              — reprocess all test cases (ignore skip logic)
-  gtms execute my-feature --fail-fast          — stop on first error
+  gtms execute my-feature                      -- execute all test cases in gtms/test/cases/my-feature/
+  gtms execute my-feature -r                   -- include test cases from subdirectories
+  gtms execute my-feature --force              -- re-run test cases skipped as already passing
+  gtms execute my-feature --fail-fast          -- stop on first failure or error
 
 All test cases:
-  gtms execute -r                              — execute all test cases across all folders
+  gtms execute -r                              -- execute all test cases across all folders
 
 Manual execute via the prime pipeline:
-  gtms execute tc-a1b2c3d4 --adapter manual-execute    — record from primed result file`,
+  gtms execute tc-a1b2c3d4                             -- record from primed result file (manual-preset default)
+  gtms execute tc-a1b2c3d4 --adapter manual-execute    -- explicit adapter selection
+
+Adapter execution:
+  Runs the adapter from --adapter or the gtms.config default
+  (built-in options: agent-execute, manual-execute).
+  Adapters run identically on every OS.
+  See "Adapter Execution Model" in USER-GUIDE.md.`,
 		Args: cobra.RangeArgs(0, 1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
@@ -100,7 +109,7 @@ Manual execute via the prime pipeline:
 				return output.AsDisplayed(fmt.Errorf(msg))
 			}
 
-			// ENH-150: Post-fill validation gate — catches frontmatter corruption
+			// ENH-150: Post-fill validation gate -- catches frontmatter corruption
 			// before the adapter is invoked.
 			if violations := adapter.ValidateTestCasePostFill(root, target); len(violations) > 0 {
 				summary := adapter.FormatValidationErrors(violations)
@@ -115,26 +124,38 @@ Manual execute via the prime pipeline:
 				return output.AsDisplayed(fmt.Errorf(msg))
 			}
 
-			// CON-023 / ENH-145 / ENH-146:
+			// CON-023 / ENH-145 / ENH-146 / ENH-163:
 			//
-			//   - The manual-execute path is opt-in via --adapter manual-execute
-			//     and bypasses the wiring lookup (manual-only TCs do not get
-			//     wiring records — CON-023 Q#12). For that path we resolve the
-			//     adapter directly and let the manual-execute pipeline parse
-			//     framework from the filled result template (ENH-133).
+			//   - Mode 3 execute adapters (manual-execute, agent-execute,
+			//     manual-execute-script, agent-execute-script) bypass
+			//     wiring lookup because manual-only TCs have no wiring
+			//     records (CON-023 Q#12).
+			//   - The bypass fires when either:
+			//     (a) --adapter names a Mode 3 adapter, OR
+			//     (b) no --adapter flag is set and cfg.Defaults["execute"]
+			//         names a Mode 3 adapter (ENH-163).
 			//   - Every other path reads the wiring record first to pick the
 			//     framework + execute adapter + artefact. The wiring file is
-			//     immutable on the execute path — no auto-heal, no glob
+			//     immutable on the execute path -- no auto-heal, no glob
 			//     fallback, no ENH-136 auto-create.
 			var resolved *adapter.ResolvedAdapter
 			var framework string
 			var resolvedArtefact string
 			var artefactHash string
 
-			isManualPath := isMode3ExecuteAdapterName(adapterFlag)
+			// ENH-163: derive the effective adapter name for Mode 3 bypass.
+			// Flag takes precedence; when absent, check defaults.execute.
+			effectiveAdapter := adapterFlag
+			if effectiveAdapter == "" {
+				if defaultName, ok := cfg.Defaults["execute"]; ok && isMode3ExecuteAdapterName(defaultName) {
+					effectiveAdapter = defaultName
+				}
+			}
+
+			isManualPath := isMode3ExecuteAdapterName(effectiveAdapter)
 			if isManualPath {
 				var rErr error
-				resolved, rErr = adapter.Resolve(cfg, "execute", adapterFlag)
+				resolved, rErr = adapter.Resolve(cfg, "execute", effectiveAdapter)
 				if rErr != nil {
 					output.Errorf(rErr.Error(), "Check your gtms.config file.")
 					return output.AsDisplayed(rErr)
@@ -212,7 +233,7 @@ Manual execute via the prime pipeline:
 				// hand-edited wiring file pointing outside projectRoot must
 				// fail here, not silently run. Use the canonical absolute
 				// path for hashing and the normalised relative form for
-				// adapter inputs. Wiring is NOT rewritten on execute — with
+				// adapter inputs. Wiring is NOT rewritten on execute -- with
 				// one exception: the pending → real hash bootstrap (ENH-151).
 				absArtefact, safeArtefact, safeErr := pathsafe.ResolveUnderRoot(root, wiringRec.Artefact)
 				if safeErr != nil {
@@ -223,7 +244,7 @@ Manual execute via the prime pipeline:
 				resolvedArtefact = safeArtefact
 
 				// ENH-151: bootstrap pending → real hash before drift check.
-				// This runs unconditionally — --allow-stale does not bypass it.
+				// This runs unconditionally -- --allow-stale does not bypass it.
 				if err := bootstrapPendingWiring(root, wiringRec, absArtefact); err != nil {
 					msg := fmt.Sprintf("Cannot bootstrap wiring for %s--%s: %v", target, framework, err)
 					output.Errorf(msg, "Ensure the artefact file exists and is readable, then re-run.")
@@ -235,8 +256,13 @@ Manual execute via the prime pipeline:
 				// unchanged.
 				if !allowStaleFlag {
 					if diag := checkWiringDrift(root, wiringRec, resolvedArtefact); diag != "" {
-						output.Errorf(diag,
-							fmt.Sprintf("Run 'gtms automate %s --framework %s --force' to refresh, or pass --allow-stale.", target, framework))
+						// ENH-156: remediation hint leads with safest-first order.
+						hint := fmt.Sprintf(
+							"To refresh wiring (preserves artefact): gtms link --refresh %s\n"+
+								"    To bypass for this run only: --allow-stale\n"+
+								"    To regenerate the artefact (overwrites): gtms automate %s --framework %s --force",
+							target, target, framework)
+						output.Errorf(diag, hint)
 						return output.AsDisplayed(fmt.Errorf(diag))
 					}
 				}
@@ -245,7 +271,7 @@ Manual execute via the prime pipeline:
 			}
 
 			if IsVerbose() {
-				fmt.Fprintf(os.Stderr, "Resolved adapter: %s (tier %d, mode %s) — wiring framework: %s\n",
+				fmt.Fprintf(os.Stderr, "Resolved adapter: %s (tier %d, mode %s) -- wiring framework: %s\n",
 					resolved.Name, resolved.Tier, resolved.Mode, framework)
 			}
 
@@ -304,10 +330,10 @@ Manual execute via the prime pipeline:
 
 	cmd.Flags().StringVar(&adapterFlag, "adapter", "", "Adapter to use (must agree with the wiring record's adapter)")
 	cmd.Flags().StringVar(&environmentFlag, "env", "", "Target environment (e.g., staging, production)")
-	cmd.Flags().StringVar(&executedByFlag, "executed-by", "", "Identity to record on the executed_by field (defaults to git user.name)")
+	cmd.Flags().StringVar(&executedByFlag, "executed-by", "", "Identity to record on the executed_by field (defaults to GTMS_EXECUTED_BY, then git user.name)")
 	cmd.Flags().StringVar(&frameworkFlag, "framework", "", "Framework to select among a TC's wiring records")
-	cmd.Flags().BoolVar(&forceFlag, "force", false, "Reprocess all test cases (ignore skip logic)")
-	cmd.Flags().BoolVar(&failFastFlag, "fail-fast", false, "Stop on first error in bulk mode")
+	cmd.Flags().BoolVar(&forceFlag, "force", false, "Re-run already-passing test cases in bulk mode (wiring and drift skips still apply)")
+	cmd.Flags().BoolVar(&failFastFlag, "fail-fast", false, "Stop on first failure or error in bulk mode")
 	cmd.Flags().BoolVarP(&recursiveFlag, "recursive", "r", false, "Include test cases from subdirectories")
 	cmd.Flags().BoolVar(&allowStaleFlag, "allow-stale", false, "Skip the wiring drift check for this run (does NOT update wiring)")
 
@@ -355,7 +381,7 @@ func bootstrapPendingWiring(root string, wiringRec *wiring.WiringRecord, absArte
 // current file content and returns a diagnostic naming the stale fields
 // + a repair command. Empty string when no drift is detected.
 //
-// CON-023 / ENH-145: drift is a CLI preflight error — no task is created,
+// CON-023 / ENH-145: drift is a CLI preflight error -- no task is created,
 // no result file is written, and the wiring file is not touched. Pass
 // --allow-stale at the CLI to bypass this check for a single run.
 func checkWiringDrift(root string, w *wiring.WiringRecord, resolvedArtefact string) string {
@@ -432,9 +458,11 @@ func printIndentedDetail(w *os.File, text string) {
 
 // runBulkExecute handles the bulk (folder) path for the execute command.
 //
-// CON-023 / ENH-145 / ENH-146:
-//   - The manual-execute adapter (--adapter manual-execute) bypasses wiring
-//     and runs every TC unconditionally — manual TCs have no wiring records.
+// CON-023 / ENH-145 / ENH-146 / ENH-163:
+//   - Mode 3 execute adapters bypass wiring and run every TC
+//     unconditionally -- manual TCs have no wiring records.
+//   - The bypass fires when --adapter names a Mode 3 adapter OR when
+//     no flag is set and cfg.Defaults["execute"] names one (ENH-163).
 //   - Every other path resolves per-TC through wiring: pick the wiring
 //     record (filtered by --framework or by single-match shortcut), check
 //     hash currency (skip on drift unless --allow-stale), then invoke
@@ -445,15 +473,24 @@ func runBulkExecute(cmd *cobra.Command, root string, folder string, adapterFlag,
 
 	tcIDs, err := DiscoverTestCases(root, folder, recursive)
 	if err != nil {
-		output.Errorf(err.Error(), "Check that gtms/cases/"+folder+"/ contains tc-*.md files.")
+		output.Errorf(err.Error(), "Check that gtms/test/cases/"+folder+"/ contains tc-*.md files.")
 		return output.AsDisplayed(err)
 	}
 
+	// ENH-163: derive effective adapter for Mode 3 bypass (same logic as
+	// single-TC path). Flag takes precedence; when absent, check defaults.
+	effectiveAdapter := adapterFlag
+	if effectiveAdapter == "" {
+		if defaultName, ok := cfg.Defaults["execute"]; ok && isMode3ExecuteAdapterName(defaultName) {
+			effectiveAdapter = defaultName
+		}
+	}
+
 	// Manual-execute path is single-adapter, single-framework. Resolve once.
-	isManualPath := isMode3ExecuteAdapterName(adapterFlag)
+	isManualPath := isMode3ExecuteAdapterName(effectiveAdapter)
 	var manualResolved *adapter.ResolvedAdapter
 	if isManualPath {
-		manualResolved, err = adapter.Resolve(cfg, "execute", adapterFlag)
+		manualResolved, err = adapter.Resolve(cfg, "execute", effectiveAdapter)
 		if err != nil {
 			output.Errorf(err.Error(), "Check your gtms.config file.")
 			return output.AsDisplayed(err)
@@ -469,16 +506,17 @@ func runBulkExecute(cmd *cobra.Command, root string, folder string, adapterFlag,
 	if recursive {
 		recursiveLabel = " (recursive)"
 	}
-	scope := "gtms/cases/"
+	scope := "gtms/test/cases/"
 	if folder != "" {
-		scope = fmt.Sprintf("gtms/cases/%s/", folder)
+		scope = fmt.Sprintf("gtms/test/cases/%s/", folder)
 	}
 	fmt.Printf("Processing %d test cases in %s%s...\n", total, scope, recursiveLabel)
 
 	passed := 0
 	skipped := 0
-	failed := 0  // assertion failures (ENH-130: result.Result == "fail")
-	errored := 0 // infrastructure errors (result.Status == "error" or result.Result == "error")
+	staleSkipped := 0 // ENH-156: stale-wiring skips tracked for summary hint
+	failed := 0       // assertion failures (ENH-130: result.Result == "fail")
+	errored := 0      // infrastructure errors (result.Status == "error" or result.Result == "error")
 
 	for i, tcID := range tcIDs {
 		idx := i + 1
@@ -559,6 +597,9 @@ func runBulkExecute(cmd *cobra.Command, root string, folder string, adapterFlag,
 						reason = "missing artefact"
 					}
 					skipped++
+					if reason == "stale wiring" {
+						staleSkipped++ // ENH-156: track for summary hint
+					}
 					fmt.Fprintf(os.Stderr, "  %s %-16s skipped (%s)  (%d/%d)\n",
 						skipIcon(reason), tcID, reason, idx, total)
 					continue
@@ -566,7 +607,7 @@ func runBulkExecute(cmd *cobra.Command, root string, folder string, adapterFlag,
 			}
 
 			// Skip already-passing TCs unless --force. CON-023 reads "is
-			// it stale?" off wiring; we already passed that gate above —
+			// it stale?" off wiring; we already passed that gate above --
 			// so any prior pass is by definition against the current
 			// content and a re-run would be wasted work.
 			if !force {
@@ -590,7 +631,7 @@ func runBulkExecute(cmd *cobra.Command, root string, folder string, adapterFlag,
 			Framework:    framework,
 		}
 
-		// Progress indicator instead of spinner (TTY only — \r doesn't work in pipes)
+		// Progress indicator instead of spinner (TTY only -- \r doesn't work in pipes)
 		if output.IsTTY(os.Stderr) {
 			fmt.Fprintf(os.Stderr, "  %s %-16s running...  (%d/%d)\r",
 				output.IconInProgress, tcID, idx, total)
@@ -659,6 +700,19 @@ func runBulkExecute(cmd *cobra.Command, root string, folder string, adapterFlag,
 	fmt.Printf("\n  Key: %s = passed  %s = failed/error  %s = skipped  %s = warning\n",
 		output.IconComplete, output.IconError, output.IconSkipped, output.IconWarning)
 
+	// ENH-156: emit one summary hint when TCs were skipped for stale wiring.
+	// Folder scope points directly at `gtms link --refresh <folder>`. Root
+	// scope redirects to `gtms status -r` to identify the affected folders
+	// first, because `gtms link --refresh` requires a positional folder
+	// target and there is no single folder to point at.
+	if staleSkipped > 0 {
+		if folder != "" {
+			fmt.Fprintf(os.Stderr, "\n  Hint: to refresh stale wiring, run: gtms link --refresh %s\n", folder)
+		} else {
+			fmt.Fprintf(os.Stderr, "\n  Hint: stale wiring found in root-scope bulk execute. Run 'gtms status -r' to identify folders, then 'gtms link --refresh <folder>'.\n")
+		}
+	}
+
 	// Print guidance once after summary
 	printCommandGuidance("execute", whatHappenedBulkExecute(folder, passed, skipped, failed, errored))
 
@@ -670,22 +724,34 @@ func runBulkExecute(cmd *cobra.Command, root string, folder string, adapterFlag,
 	return nil
 }
 
-// isMode3ExecuteAdapterName reports whether the given execute --adapter
-// flag value names one of the Tier 0 Mode 3 execute adapters that read
-// a filled result template instead of an automation artefact. CON-023
-// wiring-authoritative execute requires every other adapter to go
-// through wiring lookup; Mode 3 execute adapters legitimately have no
-// wiring record and must bypass that gate before any wiring resolution.
+// isMode3ExecuteAdapterName reports whether the given execute adapter
+// name is one of the Mode 3 execute adapters that read a filled result
+// template instead of an automation artefact. CON-023 wiring-
+// authoritative execute requires every other adapter to go through
+// wiring lookup; Mode 3 execute adapters legitimately have no wiring
+// record and must bypass that gate before any wiring resolution.
+//
+// The closed set covers both Tier 0 built-ins (manual-execute,
+// agent-execute) and their Tier 2 script variants introduced by
+// ENH-160 (manual-execute-script, agent-execute-script).
+//
+// This predicate is also used to check cfg.Defaults["execute"] so
+// that a no-flag `gtms execute tc-X` on a manual-preset project
+// bypasses wiring when the configured default is a Mode 3 name
+// (ENH-163).
 //
 // This is intentionally a name-based predicate, distinct from
 // adapter.IsManualFramework. The wiring-bypass decision happens before
 // the adapter is resolved, so the CLI cannot ask the resolved adapter
 // what it is. If a future enhancement adds another Mode 3 execute
-// adapter, update this list alongside the adapter registration —
+// adapter, update this list alongside the adapter registration --
 // otherwise the new adapter will fall through to wiring lookup and
 // fail with "No wiring records found".
 func isMode3ExecuteAdapterName(name string) bool {
-	return name == "manual-execute" || name == "agent-execute"
+	return name == "manual-execute" ||
+		name == "agent-execute" ||
+		name == "manual-execute-script" ||
+		name == "agent-execute-script"
 }
 
 // selectWiringForBulk picks a wiring record for one TC in the bulk path.
@@ -714,7 +780,7 @@ func selectWiringForBulk(root, tcID, frameworkFlag string) (*wiring.WiringRecord
 	case 1:
 		return recs[0], ""
 	default:
-		return nil, "multiple frameworks — specify --framework"
+		return nil, "multiple frameworks -- specify --framework"
 	}
 }
 
@@ -722,9 +788,9 @@ func selectWiringForBulk(root, tcID, frameworkFlag string) (*wiring.WiringRecord
 // should not re-invoke the adapter for tcID under the given framework.
 //
 // CON-023 / ENH-145 / ENH-146: the wiring + drift check upstream already
-// decided "this TC is current" — so the only remaining reasons to skip
+// decided "this TC is current" -- so the only remaining reasons to skip
 // are:
-//   - the manual-execute adapter (never — manual bulk re-evaluates every
+//   - the manual-execute adapter (never -- manual bulk re-evaluates every
 //     TC because the user's template edit is the re-evaluation signal),
 //   - the latest terminal result *for this framework* is already a clean
 //     pass,
@@ -762,7 +828,7 @@ func shouldSkipExecute(root, tcID string, resolved *adapter.ResolvedAdapter, fra
 // isAlreadyPassing peeks at the latest terminal handoff under
 // .gtms/results/ for (tcID, framework) and reports whether it was a
 // clean pass. When framework is non-empty, results stamped with a
-// different framework are ignored — a Playwright pass cannot mark a
+// different framework are ignored -- a Playwright pass cannot mark a
 // BATS run as "already passing". When framework is empty (legacy
 // callers), the filter is permissive (any framework).
 //
@@ -785,10 +851,14 @@ func isAlreadyPassing(root, tcID, framework string) bool {
 		if rc.Target != tcID {
 			continue
 		}
-		if framework != "" && rc.Framework != framework {
+		// BUG-130 structural guard: only terminal execute contracts
+		// count as prior execute passes. Non-execute commands
+		// (automate/create/prime) also write terminal handoffs but
+		// must never satisfy this check (BUG-124, BUG-129).
+		if !result.IsTerminalExecuteContract(rc) {
 			continue
 		}
-		if rc.Status != "complete" && rc.Status != "error" {
+		if framework != "" && rc.Framework != framework {
 			continue
 		}
 		stamp := rc.Completed
@@ -808,7 +878,7 @@ func isAlreadyPassing(root, tcID, framework string) bool {
 // ENH-120: headline surfaces outcome + TC ID, not internal task filename.
 // ENH-130: reads both Status and Result for result-aware rendering.
 func formatExecuteOutput(res *adapter.InvokeResult) {
-	// ENH-130: adapter-execution errors — the adapter itself broke.
+	// ENH-130: adapter-execution errors -- the adapter itself broke.
 	if res.Status == "error" {
 		output.Errorf(
 			fmt.Sprintf("Task failed: %s", res.Filename),

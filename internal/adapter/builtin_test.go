@@ -24,7 +24,7 @@ func setupMinimalProject(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
 	writeFile(t, root, "gtms.config", "project:\n  name: test\n  repo: test\n")
-	writeFile(t, root, filepath.Join("gtms/cases", "tc-001.md"), `---
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-001.md"), `---
 test_case_id: tc-001
 title: Test One
 requirement: REQ-1

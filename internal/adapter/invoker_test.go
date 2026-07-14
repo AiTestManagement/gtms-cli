@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/aitestmanagement/gtms-cli/internal/config"
+	"github.com/aitestmanagement/gtms-cli/internal/prompt"
 	"github.com/aitestmanagement/gtms-cli/internal/result"
 	"github.com/aitestmanagement/gtms-cli/internal/task"
 	"github.com/aitestmanagement/gtms-cli/internal/wiring"
@@ -27,7 +28,7 @@ func setupTestProject(t *testing.T) string {
 	for _, dir := range []string{
 		"gtms/tasks/pending", "gtms/tasks/complete", "gtms/tasks/error",
 		"gtms/tasks/in-progress", "gtms/tasks/in-review",
-		"gtms/cases", "gtms/automation",
+		"gtms/test/cases", "gtms/automation",
 		".gtms/results", ".gtms/worktrees", ".gtms/logs",
 	} {
 		require.NoError(t, os.MkdirAll(filepath.Join(root, dir), 0755))
@@ -281,7 +282,7 @@ func TestBUG063_Tier2ContractUpdate_ScansOutputDirWhenStreamingEmpty(t *testing.
 	skipIfShort(t)
 	root := setupTestProject(t)
 
-	// Mock skeleton-style Tier 2: write file directly under gtms/cases/<folder>/,
+	// Mock skeleton-style Tier 2: write file directly under gtms/test/cases/<folder>/,
 	// no <gtms-file> markers in stdout, contract updated to status: complete.
 	scriptPath := filepath.Join(root, "testdata", "mock-skeleton.sh")
 	require.NoError(t, os.MkdirAll(filepath.Join(root, "testdata"), 0755))
@@ -346,8 +347,8 @@ EOF
 	require.Len(t, res.ArtifactPaths, 1)
 	assert.Contains(t, res.ArtifactPaths[0], "-direct-write.md",
 		"discovered path should include the slug from the script")
-	// Forward-slash relative path under gtms/cases/.
-	assert.True(t, strings.HasPrefix(res.ArtifactPaths[0], "gtms/cases/"),
+	// Forward-slash relative path under gtms/test/cases/.
+	assert.True(t, strings.HasPrefix(res.ArtifactPaths[0], "gtms/test/cases/"),
 		"path should be relative and forward-slashed: got %q", res.ArtifactPaths[0])
 }
 
@@ -452,7 +453,7 @@ func TestInvokeWithRoot_GuidesFlow(t *testing.T) {
 	root := setupTestProject(t)
 
 	// Create guide-dir with a guide file
-	guideDir := filepath.Join(root, "gtms/cases", "guides")
+	guideDir := filepath.Join(root, "gtms/test", "guides")
 	require.NoError(t, os.MkdirAll(guideDir, 0755))
 	require.NoError(t, os.WriteFile(
 		filepath.Join(guideDir, "template.md"),
@@ -466,7 +467,7 @@ func TestInvokeWithRoot_GuidesFlow(t *testing.T) {
 	resolved := &ResolvedAdapter{
 		Command: "create",
 		Name:    "mock-tier1",
-		Config:  &config.AdapterConfig{Mode: "sync", Command: `echo "ok"`, GuideDir: "gtms/cases/guides/"},
+		Config:  &config.AdapterConfig{Mode: "sync", Command: `echo "ok"`, GuideDir: "gtms/test/guides/"},
 		Tier:    1,
 		Mode:    "sync",
 	}
@@ -1073,7 +1074,7 @@ func TestInvokeWithRoot_CreateWithoutOutputDir(t *testing.T) {
 	res, err := InvokeWithRoot(context.Background(), root, cfg, resolved, "REQ-OUT2", CommandFlags{})
 	require.NoError(t, err)
 	assert.Equal(t, "complete", res.Status)
-	assert.Contains(t, res.Summary, filepath.Join(root, "gtms/cases"))
+	assert.Contains(t, res.Summary, filepath.Join(root, "gtms/test/cases"))
 }
 
 func TestInvokeWithRoot_AutomateWithOutputDir(t *testing.T) {
@@ -1381,17 +1382,17 @@ echo "SOURCE=${GTMS_REFERENCE} TESTCASE=${GTMS_TESTCASE}"
 
 func TestFindTestCaseSource_ExactMatch(t *testing.T) {
 	root := t.TempDir()
-	tcDir := filepath.Join(root, "gtms/cases")
+	tcDir := filepath.Join(root, "gtms/test/cases")
 	require.NoError(t, os.MkdirAll(tcDir, 0755))
 	require.NoError(t, os.WriteFile(filepath.Join(tcDir, "tc-a1b2c3d-description.md"), []byte("test"), 0644))
 
 	result := findTestCaseSource(root, "tc-a1b2c3d")
-	assert.Equal(t, "gtms/cases/tc-a1b2c3d-description.md", result)
+	assert.Equal(t, "gtms/test/cases/tc-a1b2c3d-description.md", result)
 }
 
 func TestFindTestCaseSource_NoPartialMatch(t *testing.T) {
 	root := t.TempDir()
-	tcDir := filepath.Join(root, "gtms/cases")
+	tcDir := filepath.Join(root, "gtms/test/cases")
 	require.NoError(t, os.MkdirAll(tcDir, 0755))
 	require.NoError(t, os.WriteFile(filepath.Join(tcDir, "tc-a1b2c3d-description.md"), []byte("test"), 0644))
 
@@ -1402,12 +1403,12 @@ func TestFindTestCaseSource_NoPartialMatch(t *testing.T) {
 
 func TestFindTestCaseSource_DotExtension(t *testing.T) {
 	root := t.TempDir()
-	tcDir := filepath.Join(root, "gtms/cases")
+	tcDir := filepath.Join(root, "gtms/test/cases")
 	require.NoError(t, os.MkdirAll(tcDir, 0755))
 	require.NoError(t, os.WriteFile(filepath.Join(tcDir, "tc-a1b2c3d.md"), []byte("test"), 0644))
 
 	result := findTestCaseSource(root, "tc-a1b2c3d")
-	assert.Equal(t, "gtms/cases/tc-a1b2c3d.md", result)
+	assert.Equal(t, "gtms/test/cases/tc-a1b2c3d.md", result)
 }
 
 func TestBUG006_S1_SyncZeroArtifactsWarns(t *testing.T) {
@@ -1509,7 +1510,7 @@ func TestBUG006_S3_PipelineRecordFailureWarns(t *testing.T) {
 	// Seed a TC spec so the wiring writer gets past the spec-resolution
 	// step and reaches the MkdirAll on the (blocked) wiring directory.
 	require.NoError(t, os.WriteFile(
-		filepath.Join(root, "gtms/cases/tc-s3test-spec.md"),
+		filepath.Join(root, "gtms/test/cases/tc-s3test-spec.md"),
 		[]byte("---\nid: tc-s3test\n---\nbody\n"),
 		0644,
 	))
@@ -1781,9 +1782,9 @@ func TestInvokeWithRoot_CreateFolderOutputDir(t *testing.T) {
 	res, err := InvokeWithRoot(context.Background(), root, cfg, resolved, "login", flags)
 	require.NoError(t, err)
 
-	// Folder-based output dir should be gtms/cases/<folder>
-	expectedDir := filepath.Join(root, "gtms/cases", "login")
-	assert.Contains(t, res.Summary, expectedDir, "Folder-based output dir should be gtms/cases/<folder>")
+	// Folder-based output dir should be gtms/test/cases/<folder>
+	expectedDir := filepath.Join(root, "gtms/test/cases", "login")
+	assert.Contains(t, res.Summary, expectedDir, "Folder-based output dir should be gtms/test/cases/<folder>")
 }
 
 func TestInvokeWithRoot_CreateConfigOutputDirOverridesFolder(t *testing.T) {
@@ -1831,9 +1832,9 @@ func TestInvokeWithRoot_CreateEmptyFolder(t *testing.T) {
 	res, err := InvokeWithRoot(context.Background(), root, cfg, resolved, "test-target", flags)
 	require.NoError(t, err)
 
-	// Empty folder falls back to gtms/cases/
-	expectedDir := filepath.Join(root, "gtms/cases")
-	assert.Contains(t, res.Summary, expectedDir, "Default should be gtms/cases/ when folder is empty")
+	// Empty folder falls back to gtms/test/cases/
+	expectedDir := filepath.Join(root, "gtms/test/cases")
+	assert.Contains(t, res.Summary, expectedDir, "Default should be gtms/test/cases/ when folder is empty")
 }
 
 func TestInvokeWithRoot_CreateReferenceFlag(t *testing.T) {
@@ -1991,22 +1992,22 @@ func TestDeriveOutputSubdir_EmptyString(t *testing.T) {
 }
 
 func TestDeriveOutputSubdir_RootLevel(t *testing.T) {
-	result := deriveOutputSubdir("gtms/cases/tc-abc123.md")
+	result := deriveOutputSubdir("gtms/test/cases/tc-abc123.md")
 	assert.Equal(t, "", result)
 }
 
 func TestDeriveOutputSubdir_SingleSubdir(t *testing.T) {
-	result := deriveOutputSubdir("gtms/cases/cwd-scoping/tc-abc123.md")
+	result := deriveOutputSubdir("gtms/test/cases/cwd-scoping/tc-abc123.md")
 	assert.Equal(t, "cwd-scoping/", result)
 }
 
 func TestDeriveOutputSubdir_NestedSubdir(t *testing.T) {
-	result := deriveOutputSubdir("gtms/cases/auth/login/tc-abc123.md")
+	result := deriveOutputSubdir("gtms/test/cases/auth/login/tc-abc123.md")
 	assert.Equal(t, "auth/login/", result)
 }
 
 func TestDeriveOutputSubdir_DeeplyNested(t *testing.T) {
-	result := deriveOutputSubdir("gtms/cases/a/b/c/tc-xyz.md")
+	result := deriveOutputSubdir("gtms/test/cases/a/b/c/tc-xyz.md")
 	assert.Equal(t, "a/b/c/", result)
 }
 
@@ -2273,7 +2274,7 @@ func TestENH080_AutomateSingleFileStillWorks(t *testing.T) {
 
 	// Seed a TC spec so testcase-hash can be computed.
 	require.NoError(t, os.WriteFile(
-		filepath.Join(root, "gtms/cases/tc-enh080c-spec.md"),
+		filepath.Join(root, "gtms/test/cases/tc-enh080c-spec.md"),
 		[]byte("---\nid: tc-enh080c\n---\nbody\n"),
 		0644,
 	))
@@ -2722,4 +2723,445 @@ func TestBUG055_EmptyStderrNoWarning(t *testing.T) {
 	for _, w := range res.Warnings {
 		assert.NotContains(t, w, "WARN:", "no stderr warning expected for silent adapter")
 	}
+}
+
+// --- BUG-131: Default sync adapter timeout ---
+
+func TestDefaultSyncTimeout_AppliedWhenUnset(t *testing.T) {
+	skipIfShort(t)
+
+	// Override default to a short duration for testing
+	orig := defaultSyncTimeout
+	defaultSyncTimeout = 500 * time.Millisecond
+	defer func() { defaultSyncTimeout = orig }()
+
+	root := setupTestProject(t)
+	cfg := &config.Config{
+		Project: config.ProjectConfig{Name: "Test", Repo: "org/test"},
+	}
+
+	resolved := &ResolvedAdapter{
+		Command: "create",
+		Name:    "hanging-adapter",
+		Config: &config.AdapterConfig{
+			Mode:    "sync",
+			Command: "exec sleep 30",
+			// No Timeout configured -- default should apply
+		},
+		Tier: 1,
+		Mode: "sync",
+	}
+
+	start := time.Now()
+	res, err := InvokeWithRoot(context.Background(), root, cfg, resolved, "BUG131-DEFAULT", CommandFlags{})
+	elapsed := time.Since(start)
+
+	// Should have been killed by the default timeout, not run for 30 seconds
+	assert.Less(t, elapsed, 15*time.Second, "should have been killed by default timeout")
+
+	// Invoker returns nil result and error on timeout
+	assert.Nil(t, res)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "timed out")
+
+	// Verify task file moved to error
+	errorTasks, listErr := task.List(root, "error")
+	require.NoError(t, listErr)
+	assert.Len(t, errorTasks, 1)
+
+	// Verify result contract status is error
+	taskID := errorTasks[0].ID
+	rcPath := result.ResultPath(root, taskID)
+	rc, rcErr := result.Read(rcPath)
+	require.NoError(t, rcErr)
+	assert.Equal(t, "error", rc.Status)
+	assert.Contains(t, rc.Summary, "timed out")
+}
+
+func TestDefaultSyncTimeout_NotAppliedToAsync(t *testing.T) {
+	// Verify that async mode does NOT get a default timeout applied.
+	// Async adapters run then return "in-progress" status. We use a fast
+	// command to keep the test quick.
+	skipIfShort(t)
+
+	root := setupTestProject(t)
+	cfg := &config.Config{
+		Project: config.ProjectConfig{Name: "Test", Repo: "org/test"},
+	}
+
+	resolved := &ResolvedAdapter{
+		Command: "create",
+		Name:    "async-adapter",
+		Config: &config.AdapterConfig{
+			Mode:    "async",
+			Command: `echo "async done"`,
+			// No Timeout configured
+		},
+		Tier: 1,
+		Mode: "async",
+	}
+
+	start := time.Now()
+	res, err := InvokeWithRoot(context.Background(), root, cfg, resolved, "BUG131-ASYNC", CommandFlags{})
+	elapsed := time.Since(start)
+
+	// Async should return quickly (well under 5s)
+	assert.Less(t, elapsed, 5*time.Second, "async adapter should return quickly")
+	require.NoError(t, err)
+	assert.Equal(t, "in-progress", res.Status)
+}
+
+func TestEffectiveTimeoutStr_ReturnsConfigured(t *testing.T) {
+	resolved := &ResolvedAdapter{
+		Config: &config.AdapterConfig{Timeout: "5m"},
+	}
+	assert.Equal(t, "5m", effectiveTimeoutStr(resolved))
+}
+
+func TestEffectiveTimeoutStr_ReturnsDefault(t *testing.T) {
+	resolved := &ResolvedAdapter{
+		Config: &config.AdapterConfig{},
+	}
+	assert.Equal(t, defaultSyncTimeout.String(), effectiveTimeoutStr(resolved))
+}
+
+func TestEffectiveDefaultSyncTimeout_EnvOverride(t *testing.T) {
+	// BUG-131 testability hook: GTMS_DEFAULT_EXECUTE_TIMEOUT overrides the
+	// package default so acceptance tests don't have to wait 30 minutes.
+	t.Setenv(defaultSyncTimeoutEnvVar, "5s")
+	assert.Equal(t, 5*time.Second, effectiveDefaultSyncTimeout())
+}
+
+func TestEffectiveDefaultSyncTimeout_EnvUnsetUsesDefault(t *testing.T) {
+	t.Setenv(defaultSyncTimeoutEnvVar, "")
+	assert.Equal(t, defaultSyncTimeout, effectiveDefaultSyncTimeout())
+}
+
+func TestEffectiveDefaultSyncTimeout_InvalidEnvFallsBack(t *testing.T) {
+	// Garbage in the env var must not crash; fall back to the package default.
+	t.Setenv(defaultSyncTimeoutEnvVar, "not-a-duration")
+	assert.Equal(t, defaultSyncTimeout, effectiveDefaultSyncTimeout())
+}
+
+func TestEffectiveDefaultSyncTimeout_ZeroEnvFallsBack(t *testing.T) {
+	// A non-positive override would disable the timeout entirely, which is
+	// the very behaviour BUG-131 was filed to prevent. Reject and fall back.
+	t.Setenv(defaultSyncTimeoutEnvVar, "0s")
+	assert.Equal(t, defaultSyncTimeout, effectiveDefaultSyncTimeout())
+}
+
+func TestEffectiveTimeoutStr_HonoursEnvOverride(t *testing.T) {
+	// Error messages should report the operative timeout, including the
+	// env-override path used by acceptance tests.
+	t.Setenv(defaultSyncTimeoutEnvVar, "7s")
+	resolved := &ResolvedAdapter{
+		Config: &config.AdapterConfig{},
+	}
+	assert.Equal(t, (7 * time.Second).String(), effectiveTimeoutStr(resolved))
+}
+
+func TestProcessTreeKill_GrandchildReaped(t *testing.T) {
+	skipIfShort(t)
+
+	// Override default to a short duration
+	orig := defaultSyncTimeout
+	defaultSyncTimeout = 1 * time.Second
+	defer func() { defaultSyncTimeout = orig }()
+
+	root := setupTestProject(t)
+	cfg := &config.Config{
+		Project: config.ProjectConfig{Name: "Test", Repo: "org/test"},
+	}
+
+	// This adapter spawns a grandchild (sh -c "sleep 60") and then waits.
+	// The grandchild should be killed when the process group is terminated.
+	resolved := &ResolvedAdapter{
+		Command: "create",
+		Name:    "grandchild-adapter",
+		Config: &config.AdapterConfig{
+			Mode:    "sync",
+			Command: `sh -c 'sh -c "sleep 60" & wait'`,
+		},
+		Tier: 1,
+		Mode: "sync",
+	}
+
+	start := time.Now()
+	res, err := InvokeWithRoot(context.Background(), root, cfg, resolved, "BUG131-TREE", CommandFlags{})
+	elapsed := time.Since(start)
+
+	// Should have been killed by the timeout + WaitDelay, not run for 60 seconds
+	assert.Less(t, elapsed, 15*time.Second, "should have been killed by timeout, not waited for grandchild")
+
+	assert.Nil(t, res)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "timed out")
+}
+
+func TestConfiguredTimeout_OverridesDefault(t *testing.T) {
+	skipIfShort(t)
+
+	// Set a very long default that would definitely cause the test to hang
+	// if the configured timeout doesn't override it.
+	orig := defaultSyncTimeout
+	defaultSyncTimeout = 30 * time.Minute
+	defer func() { defaultSyncTimeout = orig }()
+
+	root := setupTestProject(t)
+	cfg := &config.Config{
+		Project: config.ProjectConfig{Name: "Test", Repo: "org/test"},
+	}
+
+	resolved := &ResolvedAdapter{
+		Command: "create",
+		Name:    "override-adapter",
+		Config: &config.AdapterConfig{
+			Mode:    "sync",
+			Command: "exec sleep 30",
+			Timeout: "200ms", // This should override the 30m default
+		},
+		Tier: 1,
+		Mode: "sync",
+	}
+
+	start := time.Now()
+	res, err := InvokeWithRoot(context.Background(), root, cfg, resolved, "BUG131-OVERRIDE", CommandFlags{})
+	elapsed := time.Since(start)
+
+	assert.Less(t, elapsed, 15*time.Second, "configured timeout should override default")
+	assert.Nil(t, res)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "timed out")
+	assert.Contains(t, err.Error(), "200ms", "error should reference the configured timeout, not the default")
+}
+
+// TestStreamingParser_UnblocksWhenShellExits covers BUG-131 round-2 gap 3:
+// the existing TestProcessTreeKill_GrandchildReaped keeps the adapter parent
+// alive with `wait`, which doesn't pin the actual Playwright failure mode --
+// the immediate shell exits while a descendant retains inherited stdout. If
+// the streaming parser blocks on Read against a pipe the dead parent never
+// closes (because a live descendant still holds the write end), gtms hangs.
+// On Windows the only containment that survives the immediate-parent exit is
+// Job Object membership; on Unix the descendant inherits the parent's
+// process group (Setpgid: true on the parent), so the group kill reaches it.
+//
+// This test asserts: even when the adapter parent exits IMMEDIATELY, the
+// configured timeout cancels the context, the captured pgid / Job Object
+// reaps the descendant, the pipe gets closed, and gtms returns within a
+// bounded wall-clock window.
+func TestStreamingParser_UnblocksWhenShellExits(t *testing.T) {
+	skipIfShort(t)
+
+	// Short override so we don't wait for the production 30m default.
+	orig := defaultSyncTimeout
+	defaultSyncTimeout = 1 * time.Second
+	defer func() { defaultSyncTimeout = orig }()
+
+	root := setupTestProject(t)
+	cfg := &config.Config{
+		Project: config.ProjectConfig{Name: "Test", Repo: "org/test"},
+	}
+
+	// Adapter command: spawn a backgrounded grandchild that inherits stdout
+	// via sleep (no redirection of the inherited descriptors), then EXIT
+	// immediately. The grandchild keeps the write end of the pipe open even
+	// though the immediate shell is gone -- this is the precise scenario
+	// taskkill /T fails on (no live parent to traverse from) and that the
+	// process_unix.Getpgid lookup races (immediate child already exited).
+	//
+	// On Unix: setpgid + cached pgid + kill(-pgid) hits the grandchild.
+	// On Windows: Job Object membership + TerminateJobObject hits it.
+	resolved := &ResolvedAdapter{
+		Command: "create",
+		Name:    "shell-exits-adapter",
+		Config: &config.AdapterConfig{
+			Mode: "sync",
+			// `sleep 60 &` -- grandchild inherits stdout, runs in
+			// background. Parent shell exits immediately after the
+			// backgrounded launch (no `wait`).
+			Command: `sh -c 'sleep 60 &'`,
+		},
+		Tier: 1,
+		Mode: "sync",
+	}
+
+	start := time.Now()
+	res, err := InvokeWithRoot(context.Background(), root, cfg, resolved, "BUG131-SHELL-EXIT", CommandFlags{})
+	elapsed := time.Since(start)
+
+	// The streaming parser must return on cancel even though the immediate
+	// shell has long since exited. Generous ceiling accounts for the
+	// 1s default + 5s WaitDelay + slack. A regression hangs forever (and
+	// the test framework times out at its own boundary).
+	assert.Less(t, elapsed, 15*time.Second,
+		"streaming parser must unblock when shell exits and descendant retains pipe")
+
+	// BUG-131 round-3 tightening: the stated purpose of this test is to
+	// PROVE the timeout-cancellation kill path fires (context deadline ->
+	// cmd.Cancel -> captured-pgid killFn / Job Object TerminateJobObject).
+	// A nil-error completion means the WaitDelay pipe-close path masked
+	// the containment behaviour and we get no signal on whether the
+	// descendant was actually reaped by the intended mechanism. Reject it
+	// so the coverage is unambiguous.
+	require.Error(t, err,
+		"streaming parser must surface the timeout error -- nil err means the "+
+			"WaitDelay path masked the Job Object / pgid kill path we are proving")
+	assert.Contains(t, err.Error(), "timed out",
+		"error must indicate timeout / deadline (proves context cancellation drove the kill)")
+	assert.Nil(t, res, "timeout must return nil result")
+}
+
+// --- BUG-136: prompt assembly substitutes tc_name ---
+
+// TestBUG136_PromptAssemblySubstitutesTcName verifies that the promptVars map
+// in invoker.go includes tc_name and that the assembled prompt file contains
+// the substituted name value, not the literal {tc_name} token.
+func TestBUG136_PromptAssemblySubstitutesTcName(t *testing.T) {
+	skipIfShort(t)
+
+	t.Run("name_supplied", func(t *testing.T) {
+		root := setupTestProject(t)
+
+		// Write a prompt template that contains {tc_name}
+		tmplDir := filepath.Join(root, "gtms", "test", "prompts")
+		require.NoError(t, os.MkdirAll(tmplDir, 0755))
+		tmplPath := filepath.Join(tmplDir, "probe.md")
+		require.NoError(t, os.WriteFile(tmplPath, []byte("Name: {tc_name}\nIDs: {tc_ids}\n"), 0644))
+
+		cfg := &config.Config{
+			Project: config.ProjectConfig{Name: "Test", Repo: "org/test"},
+		}
+
+		resolved := &ResolvedAdapter{
+			Command: "create",
+			Name:    "mock-prompt",
+			Config: &config.AdapterConfig{
+				Mode:           "sync",
+				Command:        `echo "ok"`,
+				PromptTemplate: filepath.Join("gtms", "test", "prompts", "probe.md"),
+			},
+			Tier: 1,
+			Mode: "sync",
+		}
+
+		flags := CommandFlags{
+			Name:   "user-can-login",
+			Folder: "login",
+		}
+
+		res, err := InvokeWithRoot(context.Background(), root, cfg, resolved, "REQ-001", flags)
+		require.NoError(t, err)
+		assert.Equal(t, "complete", res.Status)
+
+		// Read the assembled prompt from .gtms/tmp/
+		promptFile := filepath.Join(root, ".gtms", "tmp", res.TaskID+"-prompt.md")
+		data, err := os.ReadFile(promptFile)
+		require.NoError(t, err)
+		content := string(data)
+
+		assert.Contains(t, content, "Name: user-can-login",
+			"assembled prompt must contain the substituted name")
+		assert.NotContains(t, content, "{tc_name}",
+			"assembled prompt must not contain the literal {tc_name} token")
+	})
+
+	t.Run("name_omitted", func(t *testing.T) {
+		root := setupTestProject(t)
+
+		tmplDir := filepath.Join(root, "gtms", "test", "prompts")
+		require.NoError(t, os.MkdirAll(tmplDir, 0755))
+		tmplPath := filepath.Join(tmplDir, "probe.md")
+		require.NoError(t, os.WriteFile(tmplPath, []byte("Name: {tc_name}\nIDs: {tc_ids}\n"), 0644))
+
+		cfg := &config.Config{
+			Project: config.ProjectConfig{Name: "Test", Repo: "org/test"},
+		}
+
+		resolved := &ResolvedAdapter{
+			Command: "create",
+			Name:    "mock-prompt",
+			Config: &config.AdapterConfig{
+				Mode:           "sync",
+				Command:        `echo "ok"`,
+				PromptTemplate: filepath.Join("gtms", "test", "prompts", "probe.md"),
+			},
+			Tier: 1,
+			Mode: "sync",
+		}
+
+		flags := CommandFlags{
+			Folder: "login",
+			// Name intentionally omitted
+		}
+
+		res, err := InvokeWithRoot(context.Background(), root, cfg, resolved, "REQ-002", flags)
+		require.NoError(t, err)
+		assert.Equal(t, "complete", res.Status)
+
+		promptFile := filepath.Join(root, ".gtms", "tmp", res.TaskID+"-prompt.md")
+		data, err := os.ReadFile(promptFile)
+		require.NoError(t, err)
+		content := string(data)
+
+		assert.Contains(t, content, "Name: \n",
+			"assembled prompt must resolve {tc_name} to empty when name is omitted")
+		assert.NotContains(t, content, "{tc_name}",
+			"assembled prompt must not contain the literal {tc_name} token")
+	})
+}
+
+// TestBUG136_PromptCreateStandardResolvesCleanly is the ENH-176 guard.
+// It feeds the promptCreateStandard const from internal/scaffold through
+// prompt.AssembleString and asserts no unresolved {placeholder} survives
+// in the <output_rules> section.
+func TestBUG136_PromptCreateStandardResolvesCleanly(t *testing.T) {
+	// promptCreateStandard is not exported, so read it from the source file.
+	// This avoids creating a cross-package dependency on an unexported const.
+	src, err := os.ReadFile("../scaffold/templates.go")
+	require.NoError(t, err)
+
+	// Extract the promptCreateStandard const body.
+	content := string(src)
+	marker := "promptCreateStandard = `"
+	startIdx := strings.Index(content, marker)
+	require.NotEqual(t, -1, startIdx, "promptCreateStandard const not found in templates.go")
+
+	body := content[startIdx+len(marker):]
+	endIdx := strings.Index(body, "`")
+	require.NotEqual(t, -1, endIdx, "closing backtick not found for promptCreateStandard")
+	template := body[:endIdx]
+
+	// Build a complete vars map matching the 16-key promptVars set.
+	vars := map[string]string{
+		"artefact_file":    "",
+		"branch":           "main",
+		"context":          "test context",
+		"context_file":     "",
+		"environment":      "",
+		"focus":            "",
+		"framework":        "",
+		"guides":           "test guides",
+		"output_dir":       "/tmp/out",
+		"output_subdir":    "",
+		"reference":        "REQ-001",
+		"tc_ids":           "tc-aabbccdd,tc-11223344",
+		"tc_name":          "user-can-login",
+		"testcase":         "",
+		"testcase_content": "",
+		"testcase_file":    "",
+	}
+
+	assembled := prompt.AssembleString(template, vars)
+
+	// Extract <output_rules> section.
+	rulesStart := strings.Index(assembled, "<output_rules>")
+	rulesEnd := strings.Index(assembled, "</output_rules>")
+	require.NotEqual(t, -1, rulesStart, "<output_rules> section not found")
+	require.NotEqual(t, -1, rulesEnd, "</output_rules> section not found")
+	rules := assembled[rulesStart:rulesEnd]
+
+	assert.NotContains(t, rules, "{tc_name}",
+		"<output_rules> must not contain unresolved {tc_name} after assembly")
+	assert.NotContains(t, rules, "{tc_ids}",
+		"<output_rules> must not contain unresolved {tc_ids} after assembly")
 }

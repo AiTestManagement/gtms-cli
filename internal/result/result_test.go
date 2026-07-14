@@ -88,7 +88,7 @@ func TestUpdate(t *testing.T) {
 	err = Update(path, map[string]interface{}{
 		"status":    "complete",
 		"result":    "pass",
-		"artefact":  "gtms/cases/tc-001-checkout.md",
+		"artefact":  "gtms/test/cases/tc-001-checkout.md",
 		"attempts":  1,
 		"summary":   "Successfully created test case",
 		"completed": "2025-02-14T10:05:00Z",
@@ -99,7 +99,7 @@ func TestUpdate(t *testing.T) {
 	readRC, err := Read(path)
 	require.NoError(t, err)
 	assert.Equal(t, "complete", readRC.Status)
-	assert.Equal(t, "gtms/cases/tc-001-checkout.md", readRC.Artefact)
+	assert.Equal(t, "gtms/test/cases/tc-001-checkout.md", readRC.Artefact)
 	assert.Equal(t, 1, readRC.Attempts)
 	assert.Equal(t, "Successfully created test case", readRC.Summary)
 	assert.Equal(t, "2025-02-14T10:05:00Z", readRC.Completed)
@@ -157,7 +157,7 @@ func TestCreateWithAllFields(t *testing.T) {
 		Created:   "2025-02-14T10:00:00Z",
 		Status:    "complete",
 		Result:    "pass", // ENH-130: complete requires result
-		Artefact:  "gtms/cases/tc-099.md",
+		Artefact:  "gtms/test/cases/tc-099.md",
 		Attempts:  3,
 		Summary:   "Completed after retries",
 		Log:       "attempt 1 failed\nattempt 2 failed\nattempt 3 succeeded",
@@ -170,7 +170,7 @@ func TestCreateWithAllFields(t *testing.T) {
 	readRC, err := Read(path)
 	require.NoError(t, err)
 	assert.Equal(t, "complete", readRC.Status)
-	assert.Equal(t, "gtms/cases/tc-099.md", readRC.Artefact)
+	assert.Equal(t, "gtms/test/cases/tc-099.md", readRC.Artefact)
 	assert.Equal(t, 3, readRC.Attempts)
 	assert.Equal(t, "Completed after retries", readRC.Summary)
 	assert.Contains(t, readRC.Log, "attempt 1 failed")
@@ -760,4 +760,56 @@ func TestGitDirty_TriStateSurvivesUpdateRoundTrip(t *testing.T) {
 	require.NotNil(t, got.GitDirty)
 	assert.False(t, *got.GitDirty)
 	assert.Equal(t, "still here", got.Summary)
+}
+
+// --- BUG-130: IsTerminalExecuteContract predicate ---
+
+// TestIsTerminalExecuteContract is a table-driven test covering every
+// (command, status) combination that matters. Only (execute, complete)
+// and (execute, error) return true; every other combination is false.
+func TestIsTerminalExecuteContract(t *testing.T) {
+	tests := []struct {
+		name    string
+		command string
+		status  string
+		want    bool
+	}{
+		// Positive cases: execute + terminal status
+		{"execute complete", "execute", "complete", true},
+		{"execute error", "execute", "error", true},
+
+		// Execute but non-terminal
+		{"execute pending", "execute", "pending", false},
+		{"execute in-progress", "execute", "in-progress", false},
+
+		// Non-execute commands with terminal status
+		{"automate complete", "automate", "complete", false},
+		{"automate error", "automate", "error", false},
+		{"create complete", "create", "complete", false},
+		{"create error", "create", "error", false},
+		{"prime complete", "prime", "complete", false},
+		{"prime error", "prime", "error", false},
+
+		// Non-execute + non-terminal (double negative)
+		{"automate pending", "automate", "pending", false},
+		{"create in-progress", "create", "in-progress", false},
+
+		// Edge: empty command
+		{"empty command complete", "", "complete", false},
+		// Edge: empty status
+		{"execute empty status", "execute", "", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rc := &ResultContract{Command: tt.command, Status: tt.status}
+			got := IsTerminalExecuteContract(rc)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+// TestIsTerminalExecuteContract_Nil verifies the nil safety guard.
+func TestIsTerminalExecuteContract_Nil(t *testing.T) {
+	assert.False(t, IsTerminalExecuteContract(nil), "nil contract must return false")
 }

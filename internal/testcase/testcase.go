@@ -17,8 +17,8 @@ import (
 // project's cases directory for the given target.
 //
 // Target shapes:
-//   - Unqualified: "tc-abc123" -- matches anywhere under gtms/cases/
-//   - Folder-qualified: "folder/tc-abc123" -- matches only under gtms/cases/folder/
+//   - Unqualified: "tc-abc123" -- matches anywhere under gtms/test/cases/
+//   - Folder-qualified: "folder/tc-abc123" -- matches only under gtms/test/cases/folder/
 //
 // A match requires a file whose base name starts with the TC ID followed
 // by "-" or "." (e.g. tc-abc123-login-test.md, tc-abc123.md).
@@ -29,9 +29,9 @@ func Exists(projectRoot, target string) bool {
 	if idx := strings.LastIndex(target, "/"); idx >= 0 {
 		folder := target[:idx]
 		tcID = target[idx+1:]
-		searchDir = filepath.Join(layout.CasesDir(projectRoot), folder)
+		searchDir = filepath.Join(layout.TestCasesDir(projectRoot), folder)
 	} else {
-		searchDir = layout.CasesDir(projectRoot)
+		searchDir = layout.TestCasesDir(projectRoot)
 	}
 
 	// If the search directory does not exist, the TC cannot exist.
@@ -60,12 +60,12 @@ func Exists(projectRoot, target string) bool {
 // ENH-134: extracted to support manualUpdateHash which needs the TC file path
 // for hash computation.
 func FindSource(projectRoot, target string) string {
-	searchDir := layout.CasesDir(projectRoot)
+	searchDir := layout.TestCasesDir(projectRoot)
 	tcID := target
 	if idx := strings.LastIndex(target, "/"); idx >= 0 {
 		folder := target[:idx]
 		tcID = target[idx+1:]
-		searchDir = filepath.Join(layout.CasesDir(projectRoot), folder)
+		searchDir = filepath.Join(layout.TestCasesDir(projectRoot), folder)
 	}
 
 	if _, err := os.Stat(searchDir); os.IsNotExist(err) {

@@ -86,6 +86,7 @@ type AdapterConfig struct {
 	Framework      string `yaml:"framework,omitempty"`  // Test framework identifier (e.g. "bats", "pester", "playwright")
 	SpecDir        string `yaml:"spec-dir,omitempty"`   // Deprecated: use output-dir instead. Normalized to OutputDir at load time.
 	OutputDir      string `yaml:"output-dir,omitempty"` // Where adapter output files are written
+	WorkingDir     string `yaml:"working-dir,omitempty"` // ENH-168: run the adapter (Tier 1/2) from this project-relative dir (cwd)
 	Timeout        string `yaml:"timeout,omitempty"`
 
 	// ArtefactGlob (ENH-136) is a glob pattern with {testcase} variable
@@ -389,6 +390,17 @@ func validate(cfg *Config) error {
 					),
 				)
 			}
+			// ENH-168: working-dir only affects Tier 1/2 adapters (which exec a child
+			// process whose cwd is set). A built-in (Tier 0) adapter execs nothing, so
+			// the key has no effect. Warn rather than error so the command still runs.
+			if ac.WorkingDir != "" && ac.Command == "" && ac.Script == "" && ac.Module == "" {
+				cfg.Warnings = append(cfg.Warnings,
+					fmt.Sprintf(
+						"adapter '%s' sets working-dir but is a built-in (Tier 0) adapter — working-dir has no effect and will be ignored.",
+						name,
+					),
+				)
+			}
 		}
 	}
 
@@ -463,6 +475,26 @@ func validateAdapter(command, name string, ac *AdapterConfig) error {
 			"gtms.config: adapter '%s' has absolute output-dir '%s'. Must be a relative path.",
 			name, ac.OutputDir,
 		)
+	}
+
+	// working-dir (ENH-168) must be relative and must not escape the project root.
+	// Mirrors the output-dir absolute check and the artefact-glob '..' check so the
+	// messages are consistent with the existing validators.
+	if ac.WorkingDir != "" {
+		if filepath.IsAbs(ac.WorkingDir) {
+			return fmt.Errorf(
+				"gtms.config: adapter '%s' has absolute working-dir '%s'. Must be a relative path.",
+				name, ac.WorkingDir,
+			)
+		}
+		for _, part := range strings.Split(filepath.ToSlash(ac.WorkingDir), "/") {
+			if part == ".." {
+				return fmt.Errorf(
+					"gtms.config: adapter '%s' has working-dir '%s' containing '..'. Patterns must be inside the project root.",
+					name, ac.WorkingDir,
+				)
+			}
+		}
 	}
 
 	// timeout must be a valid duration

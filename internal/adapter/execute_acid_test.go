@@ -28,7 +28,7 @@ func setupExecuteTestProject(t *testing.T) (string, *config.Config) {
 	for _, dir := range []string{
 		"gtms/tasks/pending", "gtms/tasks/complete", "gtms/tasks/error",
 		"gtms/tasks/in-progress", "gtms/tasks/in-review",
-		"gtms/cases", "gtms/automation/wiring", "gtms/automation/specs",
+		"gtms/test/cases", "gtms/automation/wiring", "gtms/automation/specs",
 		"gtms/execution",
 		"results",
 		".gtms/results", ".gtms/worktrees", ".gtms/logs",
@@ -38,7 +38,7 @@ func setupExecuteTestProject(t *testing.T) (string, *config.Config) {
 	}
 
 	// Create a test case file that automate/execute reference
-	testCasePath := filepath.Join(root, "gtms/cases", "tc-acid-checkout.md")
+	testCasePath := filepath.Join(root, "gtms/test/cases", "tc-acid-checkout.md")
 	testCaseContent := `---
 id: tc-acid
 title: Acid Test Checkout Flow
@@ -668,7 +668,7 @@ func TestBUG029_Tier2ExecutePersistsArtefactHash(t *testing.T) {
 	for _, dir := range []string{
 		"gtms/tasks/pending", "gtms/tasks/complete", "gtms/tasks/error",
 		"gtms/tasks/in-progress", "gtms/tasks/in-review",
-		"gtms/cases", "gtms/automation/wiring", "gtms/automation/specs",
+		"gtms/test/cases", "gtms/automation/wiring", "gtms/automation/specs",
 		"gtms/execution",
 		".gtms/results", ".gtms/worktrees", ".gtms/logs",
 	} {
@@ -677,7 +677,7 @@ func TestBUG029_Tier2ExecutePersistsArtefactHash(t *testing.T) {
 
 	// Create test case
 	require.NoError(t, os.WriteFile(
-		filepath.Join(root, "gtms/cases", "tc-bug029.md"),
+		filepath.Join(root, "gtms/test/cases", "tc-bug029.md"),
 		[]byte("---\nid: tc-bug029\ntitle: BUG-029 hash test\n---\n\n## Steps\n1. Test\n"), 0644,
 	))
 
@@ -789,7 +789,7 @@ func TestBUG083_InvokerRestoresTargetAfterTier2Overwrite(t *testing.T) {
 	for _, dir := range []string{
 		"gtms/tasks/pending", "gtms/tasks/complete", "gtms/tasks/error",
 		"gtms/tasks/in-progress", "gtms/tasks/in-review",
-		"gtms/cases", "gtms/automation/wiring", "gtms/automation/specs",
+		"gtms/test/cases", "gtms/automation/wiring", "gtms/automation/specs",
 		"gtms/execution",
 		".gtms/results", ".gtms/worktrees", ".gtms/logs",
 	} {
@@ -797,7 +797,7 @@ func TestBUG083_InvokerRestoresTargetAfterTier2Overwrite(t *testing.T) {
 	}
 
 	require.NoError(t, os.WriteFile(
-		filepath.Join(root, "gtms/cases", "tc-bug083.md"),
+		filepath.Join(root, "gtms/test/cases", "tc-bug083.md"),
 		[]byte("---\nid: tc-bug083\ntitle: BUG-083 target restore test\n---\n\n## Steps\n1. Test\n"), 0644,
 	))
 

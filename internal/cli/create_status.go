@@ -21,8 +21,9 @@ func newCreateStatusCmd() *cobra.Command {
 		Short: "Show status of create tasks",
 		Long: `Show the status of create tasks.
 
-  gtms create status              — list all create tasks
-  gtms create status my-feature   — detail for a specific target`,
+  gtms create status              -- list all create tasks
+  gtms create status my-feature   -- detail for a specific target
+`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()

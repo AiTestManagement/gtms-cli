@@ -14,7 +14,7 @@ import (
 // IsBulkFolder checks whether {cases-dir}/{arg}/ exists as a directory,
 // indicating that the argument should be treated as a folder for bulk processing.
 func IsBulkFolder(root, arg string) bool {
-	dir := filepath.Join(layout.CasesDir(root), arg)
+	dir := filepath.Join(layout.TestCasesDir(root), arg)
 	info, err := os.Stat(dir)
 	if err != nil {
 		return false
@@ -28,16 +28,16 @@ func IsBulkFolder(root, arg string) bool {
 // Returns an error if the folder doesn't exist or contains no tc-*.md files.
 func DiscoverTestCases(root, folder string, recursive bool) ([]string, error) {
 	paths := layout.Current()
-	dir := filepath.Join(root, paths.Cases, folder)
+	dir := filepath.Join(root, paths.TestCases, folder)
 	info, err := os.Stat(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("folder '%s/%s/' does not exist", paths.Cases, folder)
+			return nil, fmt.Errorf("folder '%s/%s/' does not exist", paths.TestCases, folder)
 		}
-		return nil, fmt.Errorf("checking folder %s/%s/: %w", paths.Cases, folder, err)
+		return nil, fmt.Errorf("checking folder %s/%s/: %w", paths.TestCases, folder, err)
 	}
 	if !info.IsDir() {
-		return nil, fmt.Errorf("%s/%s is not a directory", paths.Cases, folder)
+		return nil, fmt.Errorf("%s/%s is not a directory", paths.TestCases, folder)
 	}
 
 	var ids []string
@@ -62,13 +62,13 @@ func DiscoverTestCases(root, folder string, recursive bool) ([]string, error) {
 			return nil
 		})
 		if err != nil {
-			return nil, fmt.Errorf("walking %s/%s/: %w", paths.Cases, folder, err)
+			return nil, fmt.Errorf("walking %s/%s/: %w", paths.TestCases, folder, err)
 		}
 	} else {
 		// Non-recursive: read immediate directory only
 		entries, readErr := os.ReadDir(dir)
 		if readErr != nil {
-			return nil, fmt.Errorf("reading %s/%s/: %w", paths.Cases, folder, readErr)
+			return nil, fmt.Errorf("reading %s/%s/: %w", paths.TestCases, folder, readErr)
 		}
 		for _, entry := range entries {
 			if entry.IsDir() {
@@ -88,7 +88,7 @@ func DiscoverTestCases(root, folder string, recursive bool) ([]string, error) {
 	sort.Strings(ids)
 
 	if len(ids) == 0 {
-		return nil, fmt.Errorf("No test cases found in %s/%s/", paths.Cases, folder)
+		return nil, fmt.Errorf("No test cases found in %s/%s/", paths.TestCases, folder)
 	}
 
 	return ids, nil

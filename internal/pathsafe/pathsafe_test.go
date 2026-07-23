@@ -253,6 +253,63 @@ func TestResolveUnderRoot_ProjectRootItself(t *testing.T) {
 	assert.Equal(t, ".", relPath)
 }
 
+func TestResolveUnderRoot_MissingLeafUnderEscapingSymlinkRejected(t *testing.T) {
+	// CODEX-009: root/escaping-link/missing.bats where escaping-link is a symlink
+	// to a directory OUTSIDE root and the leaf does not exist. A purely lexical
+	// fallback would pass containment; resolving the nearest existing ancestor
+	// (the symlink) catches the escape.
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation requires elevated privileges on Windows")
+	}
+	root := t.TempDir()
+	outside := t.TempDir()
+
+	linkPath := filepath.Join(root, "escaping-link")
+	require.NoError(t, os.Symlink(outside, linkPath))
+
+	_, _, err := ResolveUnderRoot(root, "escaping-link/missing.bats")
+
+	require.Error(t, err, "missing leaf under an escaping-symlink parent must be rejected")
+	var pse *PathSafetyError
+	require.True(t, errors.As(err, &pse), "should be *PathSafetyError")
+}
+
+func TestResolveUnderRoot_MissingLeafUnderRealDirAllowed(t *testing.T) {
+	// The nearest-existing-parent resolution must still admit a not-yet-created
+	// leaf under a genuine in-root parent (automate-time wiring writes, standard
+	// link). This is the shared-caller regression guard for the CODEX-009 fix.
+	root := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "tests"), 0755))
+
+	absPath, relPath, err := ResolveUnderRoot(root, "tests/new.bats")
+
+	require.NoError(t, err, "absent leaf under a real in-root dir must resolve")
+	assert.True(t, filepath.IsAbs(absPath))
+	assert.Equal(t, "tests/new.bats", relPath)
+}
+
+func TestResolveUnderRoot_InaccessibleAncestorErrors(t *testing.T) {
+	// CODEX-014: a permission (non-NotExist) error while walking to the nearest
+	// existing ancestor must surface as an error rather than be treated as "absent"
+	// and reattached lexically without resolving symlinks in the blocked portion.
+	if runtime.GOOS == "windows" {
+		t.Skip("directory-permission semantics differ on Windows")
+	}
+	root := t.TempDir()
+	blocked := filepath.Join(root, "blocked")
+	require.NoError(t, os.MkdirAll(blocked, 0755))
+	require.NoError(t, os.Chmod(blocked, 0000))
+	defer os.Chmod(blocked, 0755) //nolint:errcheck // best-effort restore for cleanup
+	if _, err := os.Stat(filepath.Join(blocked, "probe")); err == nil || errors.Is(err, os.ErrNotExist) {
+		t.Skip("process can traverse a 0000 directory (likely root); cannot exercise a permission error")
+	}
+
+	_, _, err := ResolveUnderRoot(root, "blocked/child/missing.bats")
+	require.Error(t, err, "a permission error under the path must not be treated as absent")
+	var pse *PathSafetyError
+	require.True(t, errors.As(err, &pse))
+}
+
 // --- IsWithinRoot tests (BUG-057) ---
 
 func TestIsWithinRoot_ExactMatch(t *testing.T) {

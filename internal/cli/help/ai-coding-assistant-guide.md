@@ -37,7 +37,7 @@ are plain text files in the repo. GTMS stamps files and tracks results; you
 | Command | Syntax | Purpose |
 |---------|--------|---------|
 | `init` | `gtms init [--preset manual\|bats\|playwright]` | Scaffold a project. Plain `gtms init` in an empty repo = `manual` preset; in an initialised project it lists presets and exits. `--presets` lists without scaffolding |
-| `link` | `gtms link <tc-id> --framework <fw> --artefact <path>` | Write or repair a wiring record by hand; `--refresh` re-hashes after a deliberate spec or script edit |
+| `link` | `gtms link <tc-id> --framework <fw> --artefact <path>` | Write or repair a wiring record by hand; `--refresh` re-hashes after a deliberate spec or script edit; `--adapter <name>` repoints the stored execute adapter (see Key Flags) |
 | `delete` | `gtms delete <tc-id \| folder>` | Remove specs and all pipeline artefacts (`--keep-spec` to keep specs; `--dry-run` to preview) |
 | `reset` | `gtms reset [tc-id \| folder]` | Clear execute results; wiring and specs untouched (`--dry-run` to preview) |
 | `version` | `gtms version` | Print the version (canonical form; `--version` also works) |
@@ -52,23 +52,24 @@ adds a `Handoff:` line naming the result contract under `.gtms/results/`.
 
 | Flag | Commands | Purpose |
 |------|----------|---------|
-| `--adapter` | create, prime, automate, execute | Select the adapter (overrides `defaults.<command>`). On a wired execute it must agree with the wiring record's adapter |
+| `--adapter` | create, prime, automate, execute, link | Select the adapter (overrides `defaults.<command>`). On a wired execute, selects a same-framework adapter as the runner for this invocation only; cross-framework is rejected. All four Mode 3 execute names (manual-execute, agent-execute, and their -script variants) take the prime path instead and are never wiring runners or repoint targets. On link, repoints the stored execute adapter permanently (same-framework, bare TC IDs, folder/`-r`/`--all` scopes) |
 | `--framework` | prime, automate, execute, link, triage, status, gaps, map | Framework label on write commands; selector/filter on read commands. Required on execute/triage when a TC is wired for more than one framework |
 | `--reference` | create | Requirement identifier recorded in the test case (e.g. `REQ-001`) |
 | `--focus` | create | Focus area within the source document (prompt-driven adapters) |
 | `--context-file` | create, prime, automate | Supplementary context file for the adapter |
-| `--env` | automate, execute | Target environment recorded on the run (e.g. `staging`) |
+| `--env` | automate, execute | Environment label recorded and passed to the adapter; GTMS does not route on it |
 | `--executed-by` | prime, automate, execute | Operator identity (default: git `user.name`) |
-| `-r, --recursive` | automate, execute, status, gaps, map, delete, reset, link (refresh) | Include subdirectories |
+| `-r, --recursive` | automate, execute, status, gaps, map, delete, reset, link (refresh, repoint) | Include subdirectories |
 | `--force` | init, prime, automate, execute, link | Meaning varies: overwrite config (init), overwrite result template (prime), reprocess/overwrite (automate, link), re-run bulk skips (execute) |
 | `--update-hash` | prime | Refresh `test_case_hash` only; preserves the filled `result:` and execute history |
 | `--allow-stale` | execute | Skip the wiring drift check for this run only; does NOT update wiring or bypass the pending bootstrap |
 | `--fail-fast` | automate, execute | Stop a bulk run on first failure |
 | `--json` | status, gaps, map, list, triage | Machine-readable output |
 | `--show-tools` | list | Add the TOOL column (command/script path); JSON always includes `tool` |
-| `--dry-run` | delete, reset only | Preview without touching files. Other commands parse it but ignore it -- do not rely on it elsewhere |
+| `--dry-run` | delete, reset, link (repoint only) | Preview without touching files; on a link repoint it lists exactly which records would change (either flag position works). Non-repoint link operations REJECT it; every other command parses it but ignores it -- do not rely on it elsewhere |
 | `--keep-spec` | delete | Delete pipeline artefacts, keep the test case specs |
 | `--artefact` / `--check` / `--refresh` / `--strict` | link | Artefact path (write mode) / validate without writing / re-hash in place / reject TC IDs with no spec |
+| `--from-adapter` / `--all` | link | Repoint only: exact-match filter on the stored adapter (MANDATORY for folder, recursive, and `--all` repoints) / project-wide repoint scope (takes no positional, no `-r`) |
 | `-v, --verbose` | global | More detail on any command |
 
 ---
@@ -162,7 +163,11 @@ in the YAML. Eight action built-ins resolve with no config at all:
 driving, `manual-*` for a human). Resolver precedence: `--adapter` flag ->
 `defaults.<command>` -> built-in fallback (`manual-prime` on prime only;
 other commands error). On a wired execute, the wiring record -- not
-`defaults.execute` -- names the adapter.
+`defaults.execute` -- names the adapter; `gtms execute --adapter <name>`
+overrides it for one run (same framework only), `gtms link --adapter <name>`
+repoints it permanently. In `gtms list adapters --json`,
+`canonical_for_wiring: true` marks the adapter automate stamps into new
+wiring for that framework.
 
 ### Feature validation (configured adapters)
 
@@ -260,9 +265,14 @@ test failed. `error` is NOT `fail`: an error means the test could not run
 A `fail` means the assertion ran and the subject failed -- triage it.
 
 In `gtms status --json`, each wired `frameworks[]` entry carries
-`last_status_here` (execution state) and `last_result_here` (outcome), plus
-`wiring_bootstrap: pending | ready` for the first-execute bootstrap state.
-Read those fields; do not parse the icon column.
+`wiring_bootstrap: pending | ready` (first-execute bootstrap state) and
+`wired_adapter` (the stored default runner). Once a terminal result is
+joined it also carries `last_status_here` (execution state),
+`last_result_here` (outcome), and `last_run_adapter` (who produced that
+result) -- absent before the first result, so guard your jq. Wired and
+last-run adapters differ after a one-run `--adapter` override, or after
+repointing wiring that already has a result. Read those fields; do not
+parse the icon column.
 
 ### Stale Detection
 
@@ -307,7 +317,7 @@ a later spec edit flags drift on the manual record. Clear it with
 | Post-fill validation gate | `automate`, `prime`, and `execute` entry points validate TC frontmatter before proceeding. If the TC's frontmatter `test_case_id` doesn't match the filename ID, or required fields are missing, or duplicate IDs exist in the same folder, the command exits non-zero with a validation error. Agents that fill TC content must ensure frontmatter `test_case_id:` matches the `tc-XXXXXXXX` in the filename | Consume the pre-generated IDs from `{tc_ids}` / `$GTMS_TC_IDS` when authoring specs. After filling TC content, verify `test_case_id:` matches before invoking the next pipeline stage. The validation error message names the exact file and invariant that broke |
 | `CLAUDECODE` env var | Tier 1 adapters invoking `claude` inside Claude Code fail with "cannot be launched inside another session" | Use Tier 2 script adapters, or `unset CLAUDECODE` first |
 | Windows binary name | Must use `gtms.exe` not `gtms` on Windows/MINGW | Always include `.exe` suffix in scripts |
-| Wrong adapter on execute | `gtms execute` uses the config default. BATS tests fail if the default is a Playwright runner | Specify `--adapter bats-runner` for BATS, or set the default in `gtms.config`. Note: `gtms init --preset bats` ships `bats-runner` as the default execute adapter -- BATS-first projects work out-of-the-box |
+| Wrong adapter on execute | `gtms execute` uses the wiring record's adapter by default. A cross-framework override (e.g. Playwright adapter on a BATS-wired TC) is rejected before any task is created | For same-framework overrides, pass `--adapter <name>` where the adapter shares the wiring's framework. For projects with one framework, set the default in `gtms.config`. `gtms init --preset bats` ships `bats-runner` as the default execute adapter |
 | Result-contract orthogonal vocabulary | The handoff contract has two orthogonal axes: `status:` carries adapter-execution state (`pending \| in-progress \| complete \| error`); `result:` carries test outcome (`pass \| fail \| skip \| error`). Legacy `status: fail` and `status: skipped` are **retired and rejected** by validation -- writing them triggers a recovery overwrite to `status: error`. `status: complete` requires a non-empty `result:` field. AI-generated specs that assert `status: pass` or `status: fail` on the contract fail | When asserting on the **contract**: `status: complete` + `result: pass` for pass, `status: complete` + `result: fail` for fail, `status: complete` + `result: skip` for skip, `status: error` for adapter crash. When asserting on the **automation record**: `result: pass/fail/skipped/error`. The pipeline maps contract `result: skip` -> record `result: skipped` |
 | Automate pass is not a test pass | Only an EXECUTE-command `result: pass` counts as a test pass. A successful `automate`/`prime`/`create` is pipeline progress, not a test outcome -- `gtms status`, `gtms gaps`, and bulk `gtms execute` all read an automated-but-never-executed TC as not executed | Never infer a pass from a green automate. Bulk `gtms execute <folder>` runs freshly automated TCs; it skips a TC only on a genuine prior execute pass against the current artefact. `--force` re-runs even those -- it is not needed to run never-executed tests |
 | Multi-file automate output | AI adapter emits two or more `<gtms-file>` tags for a single `gtms automate` invocation. GTMS rejects the run at automate time: task moves to `gtms/tasks/error/`, result contract `status: error`, **no** wiring record is written. The streamed files remain on disk for inspection | Inspect the streamed files, fix the adapter's prompt or output so it emits exactly one `<gtms-file>` per test case, re-run `gtms automate`. `create` is unaffected -- many files per invocation is legitimate there |
@@ -335,6 +345,7 @@ a later spec edit flags drift on the manual record. Clear it with
 | Manual `gtms execute` missing-result-file directs to `gtms prime` | When `gtms execute` runs against a manual-execute adapter and the result file at `gtms/manual/records/{tc-id}--manual.result.yaml` is missing, the error message names `gtms prime tc-X --framework manual` -- not the generic `gtms automate` hint. The error flows through the standard `status: error` handoff path: task lands in `gtms/tasks/error/`, pipeline records are built, no silent short-circuit | When testing the manual missing-file path, expect to see the prime hint in stderr AND the error-task placement on disk. If you see the generic "Re-run gtms automate" hint instead, the dispatch helper isn't resolving manual -- check whether your fixture's `gtms.config` actually wires manual-execute as the resolved adapter for the TC under test |
 | `gtms execute` bulk exits non-zero on any failure | `runBulkExecute` (`internal/cli/execute.go:439-441`) returns a non-zero exit code if any TC fails, errors, or skipped-but-not-clean -- even though the bulk command "completed" in the sense that it processed every TC. Spec wording like "the command completes" or "execute runs to completion" reads to a BATS author as `assert_success` (exit 0), but the product is correctly using a UNIX-style aggregate exit code. Surfaced when `tc-663f0e5e` (adapter-driven failed execute) was authored with `assert_success` and had to be flipped to `assert_failure` | When asserting on bulk-execute exit codes: `assert_success` only when **every** TC in the batch passed (or was a clean tooling skip); `assert_failure` whenever any TC's outcome maps to fail/error. For single-TC executes: `assert_success` for pass, `assert_failure` for fail/error. The spec author should write "exits 0 when every TC passes; exits non-zero if any TC fails or errors" rather than ambiguous "completes" / "runs to completion" -- both interpretations of the latter are linguistically valid and BATS authors will pick the wrong one |
 | `gtms execute --result` / `--notes` are gone | The legacy `--result pass\|fail\|skip` and `--notes` flags on `gtms execute` were removed. The `runManualResult`, `pipeline.WriteManualResult`, and `pipeline.RecordManualResult` symbols are deleted. A Go source-shape guard (`TestSourceShape_NoLegacyManualBypass` in `internal/cli/source_shape_test.go`) locks the deletions in -- re-introducing any of those names fails the build. The old framework-routing logic and the bypass-only path-safety branch retired alongside, and the manual `--result` folder-target path was retired as superseded. Future quick-record UX will sit on top of the prime pipeline, not a resurrected direct writer | Manual outcome recording flows exclusively through `gtms prime --framework manual` -> edit `gtms/manual/records/<tc-id>--manual.result.yaml` -> `gtms execute <tc-id> --adapter manual-execute`. Never propose `--result` or `--notes` -- Cobra will reject them with "unknown flag" and the source-shape guard makes re-introduction a build failure. When migrating a fixture that used `--result` as a setup shortcut, see the manual-bypass fixture-authoring lessons in `reference/adapter-guide.md` |
+| `gtms link` repoint takes bare TC IDs only | Repoint mode (`gtms link <tc-id> --adapter <name>`) rejects folder-qualified targets like `feature/tc-a1b2c3d4`, even though standard link accepts them (a known limitation; the rejection fails closed). Repoint also rejects the four reserved prime-path execute adapter names as targets -- execute selects those by name before consulting wiring, so a record repointed to one would never drive a run. On FOLDER and RECURSIVE repoints only, a targeted TC ID with more than one test case spec anywhere in the project aborts before any write (single-TC and `--all` repoints skip that scan). The `.md`-suffix auto-strip applies to repoint targets: `tc-a1b2c3d4.md` resolves like `tc-a1b2c3d4` | Pass the bare `tc-XXXXXXXX` as the repoint target. On folder, recursive, or `--all` repoints, `--from-adapter <old>` is MANDATORY. Preview bulk repoints with `--dry-run` first (works in both flag positions) |
 
 ---
 

@@ -605,7 +605,7 @@ All four action commands ship Tier 0 built-ins (`manual-*`, `agent-*`) you can s
 
 Config-defined adapters with the same name as a built-in take precedence over the built-in. That means a project can give an adapter the name `agent-create` (or `manual-execute`, or any other built-in name) in its `gtms.config` and that configured adapter will be used instead of the shipped built-in. Unknown adapter names still error; the built-in adapter table is closed.
 
-This precedence is the same regardless of mode. Mode 1, Mode 2, and Mode 3 all resolve adapters through the same rules, with one carve-out: on the wired execute path, the wiring record (not `defaults.execute`) names the adapter, and `--adapter` must agree with it. Mode 2 is just the case where the resolved adapter happens to be one you defined.
+This precedence is the same regardless of mode. Mode 1, Mode 2, and Mode 3 all resolve adapters through the same rules, with one carve-out: on the wired execute path, the wiring record (not `defaults.execute`) names the default adapter. Passing `--adapter` selects a same-framework adapter as the runner for that invocation -- the adapter must share the wiring's framework or the command errors before any task is created. Cross-framework overrides are rejected. Mode 3 names (manual-execute, agent-execute) always take the prime path and never enter the wiring override branch.
 
 ### A representative configured-adapter flow
 
@@ -1344,7 +1344,7 @@ Stamps a reusable test script and a wiring record. On a project scaffolded with 
 - Positional argument: `[test-case-id | folder]`. With no argument, automate runs every test case across all folders (recursion is forced on).
 - `--adapter <name>` selects the automate adapter. Built-ins: `agent-automate`, `manual-automate`. Built-in automate ships skeleton support for BATS and Playwright; other frameworks are reachable through configured adapters.
 - `--framework <name>` overrides the framework the preset's automate adapter would use for the stamped skeleton and the wiring record. You do not need it on a configured preset; supply it to stamp a different framework for one run, such as in a multi-framework project.
-- `--env <name>` records a target environment on the task file and result contract and passes it to the adapter. It is not part of the wiring record.
+- `--env <name>` records an environment label on the task file and result contract and passes it to the adapter. The adapter may act on it; GTMS does not route on it. It is not part of the wiring record.
 - `--executed-by <name>` records the operator identity.
 - `--context-file <path>` supplies a context file to the adapter.
 - `--force` reprocesses and overwrites existing output files for the test case.
@@ -1359,10 +1359,10 @@ Runs a wired test or records a manual result, depending on the adapter.
 
 - Positional argument: `[test-case-id | folder]`. With no positional argument, recursion is implied across the whole project.
 - `--adapter <name>` selects the execute adapter. Which of the two branches runs is decided by the effective adapter: the `--adapter` value, or `defaults.execute` from config when no flag is given.
-  - **Wiring path** (the effective adapter is a runner adapter): execute reads the wiring record, runs the test script through the resolved adapter, and records the outcome. A supplied `--adapter` value must agree with the wiring record's adapter.
+  - **Wiring path** (the effective adapter is a runner adapter): execute reads the wiring record, runs the test script through the resolved adapter, and records the outcome. A supplied `--adapter` selects a same-framework adapter as the runner for this invocation -- cross-framework overrides are rejected before any task is created.
   - **Result-template path** (the effective adapter is one of the four Mode 3 execute adapters: `manual-execute`, `agent-execute`, or their `-script` variants): execute reads the filled prime result template, validates it, and records the result. The wiring record is not consulted on this path. On a manual-preset project this is the default, so no flag is needed.
 - `--framework <name>` selects which wiring record to run when a test case is wired for more than one framework (required in that case). In bulk mode, test cases without a wiring record for that framework are skipped.
-- `--env <name>` records the target environment.
+- `--env <name>` records an environment label on the run and passes it to the adapter. The adapter may act on it; GTMS does not route on it.
 - `--executed-by <name>` records the operator identity (default: git `user.name`).
 - `--force` (bulk mode only) re-runs test cases the bulk loop would otherwise skip, such as those whose latest result is already a pass.
 - `--fail-fast` stops a bulk run on the first failure.
@@ -1375,25 +1375,46 @@ Execute is time-bounded. A sync execute adapter with no `timeout:` set is cancel
 
 ### `gtms link`
 
-A wiring record connects a test case to its automation script. `gtms link` writes or validates one by hand -- reach for it when you have an existing test script that needs to be tied to a test case, or when an existing wiring record needs to be repaired or refreshed.
+A wiring record connects a test case to its automation script. `gtms link` writes or repairs one by hand. It has three repair modes, one question each:
+
+- **Write / relink** (`--artefact`) -- *what does it run?* Points the wiring at a test script file.
+- **Refresh** (`--refresh`) -- *is what it runs still what I reviewed?* Re-acknowledges a test case spec or script edit by recomputing the hashes.
+- **Repoint** (`--adapter`) -- *who runs it?* Changes which execute adapter the wiring names, and nothing else.
 
 Records are written to `gtms/automation/wiring/<tc-id>--<framework>.wiring.yaml`.
 
 Positional:
 
-- `<tc-id | folder>` -- the test case in write or `--check` mode; the test case or a folder to scan in `--refresh` mode.
+- `<tc-id | folder>` -- the test case in write or `--check` mode; the test case or a folder to scan in `--refresh` mode; the test case (bare ID only) or a folder in repoint mode. Repoint also accepts `--all` in place of a positional for project-wide scope.
 
 Flags:
 
-- `--framework <name>` names the framework whose wiring record is being written or checked. Required in write and `--check` modes. Optional with `--refresh`: omit it to refresh every framework's record for the target.
-- `--artefact <path>` names the test script file to link. Required in write mode; not valid with `--refresh`.
+- `--framework <name>` names the framework whose wiring record is being written or checked. Required in write and `--check` modes. Optional with `--refresh`: omit it to refresh every framework's record for the target. In repoint mode the new adapter's framework selects the wiring record on its own; an explicit `--framework` is an assertion that must agree with that adapter's framework, and a mismatch stops the command before anything is written -- it never filters or overrides.
+- `--artefact <path>` names the test script file to link. Required in write mode; not valid with `--refresh` or `--adapter`.
 - `--check` validates without writing. It confirms the artefact file exists (using the path stored in the wiring record when `--artefact` is omitted) and reports whether the record exists. It does not compare hashes -- stale-wiring detection is `gtms status`'s job.
 - `--refresh` recomputes the testcase-hash and artefact-hash on an existing wiring record without retyping the artefact path. Use this to clear stale-wiring warnings after a deliberate test case spec or script edit.
-- `--force` overwrites an existing wiring record.
+- `--adapter <name>` repoints the wiring record to a different execute adapter. GTMS rewrites only the adapter field: the artefact path and both hashes are preserved, so nothing goes stale and a pending first-execute stays pending. A missing artefact file warns and proceeds -- repoint fixes who runs the test, not what it runs. The old adapter does not need to exist in `gtms.config`.
+- `--from-adapter <name>` narrows a repoint to records whose stored adapter is exactly this value. Optional for a single test case; required for folder, recursive, and `--all` repoints, so a bulk repoint can never touch wiring you did not mean to change.
+- `--all` repoints across the whole project (requires `--from-adapter`; takes no positional and no `-r`).
+- `--dry-run` is honoured in repoint mode only: it previews exactly which records would change, old adapter to new, and writes nothing. Works in both positions: `gtms link ... --dry-run` and `gtms --dry-run link ...`.
+- `--force` overwrites an existing wiring record in write mode. Not valid with `--adapter`.
 - `--strict` rejects a link or check whose target test case ID has no test case spec under `gtms/test/cases/`. In write mode the spec is required regardless (the `testcase-hash` is computed from it), so `--strict` mainly sharpens `--check`.
-- `-r` / `--recursive` includes subdirectories when `--refresh` targets a folder.
+- `-r` / `--recursive` includes subdirectories when `--refresh` or a folder repoint targets a folder.
 
-`gtms automate` writes wiring records automatically. Reach for `gtms link` only when you need to author or repair one outside the automate flow, or with `--refresh` to acknowledge a test case spec or artefact edit that made an existing record stale.
+Repoint stops before writing anything when the request is unsafe: the four built-in prime-path execute adapters (`manual-execute`, `agent-execute`, and their `-script` variants) are rejected as targets, because `gtms execute` selects those by name before it consults wiring -- a record repointed to one would never drive a run. A folder or recursive repoint also aborts if any targeted test case ID has more than one test case spec anywhere in the project (single-TC and `--all` repoints do not run this scan), and any repoint aborts if the new adapter's framework does not match the wiring's. After a bulk repoint, the summary reports how many records were repointed, skipped, warned, or errored; re-running the same command is safe -- zero remaining matches reports success.
+
+The common repoint scenario is a decommissioned runner machine. Its adapter entry is deleted from `gtms.config`, a replacement is configured, and one command moves the whole tranche:
+
+```bash
+gtms link my-suite -r --from-adapter old-machine --adapter new-machine --dry-run   # preview
+gtms link my-suite -r --from-adapter old-machine --adapter new-machine            # repoint
+```
+
+Repoint changes the stored default permanently; `gtms execute --adapter <name>` overrides the runner for one invocation without touching the record. `gtms status` shows both sides -- the wired default and the runner that produced the latest result.
+
+Two current limitations, both tracked and both failing safely: repoint targets take bare test case IDs only (a folder-qualified form like `feature/tc-a1b2c3d4` is rejected in repoint mode), and mixed-case folder names fail on case-sensitive filesystems for every folder-aware command.
+
+`gtms automate` writes wiring records automatically. Reach for `gtms link` only when you need to author or repair one outside the automate flow: `--artefact` to change what a record runs, `--refresh` to acknowledge an edit, `--adapter` to change who runs it.
 
 ### `gtms status`
 
@@ -1419,7 +1440,7 @@ onboarding   3  ✓       ○ 0/3     ○ 0/3    —
 platform     5  ✓       ✓         ⊘ 3/5    ⊘ 2
 ```
 
-A folder scope (`gtms status login`) drops into a per-test-case table with a `LAST RESULT` column showing the recorded result and its framework annotation. A test case ID (`gtms status tc-a3f72b10`) shows a detail card instead: one line each for CREATE, AUTOMATE, and EXECUTE, with the recorded result on the EXECUTE line, plus paths to the automation script and last run.
+A folder scope (`gtms status login`) drops into a per-test-case table with a `LAST RESULT` column showing the recorded result and its framework annotation. A test case ID (`gtms status tc-a3f72b10`) shows a detail card instead: one line each for CREATE, AUTOMATE, and EXECUTE, with the recorded result on the EXECUTE line, plus paths to the automation script and last run. For a wired test case with a result, the detail card also shows a `Runner:` line naming the adapter that produced that result; whenever that differs from the adapter the wiring currently names, the wired default appears in parentheses beside it -- after a one-run `gtms execute --adapter` override, or right after a repoint until the next run. The JSON carries the same pair on each `frameworks[]` entry as `wired_adapter` and `last_run_adapter`.
 
 ### `gtms gaps`
 
@@ -1572,9 +1593,9 @@ Both forms print a single line: `gtms <version>`. Use the subcommand in scripts 
 ### Global flags
 
 - `-v` / `--verbose` works on every command and increases output detail. It is the only global flag shown in help.
-- `--dry-run` is a local flag on `gtms delete` and `gtms reset` only; it previews what would be deleted or cleared without touching any files.
+- `--dry-run` is honoured in three places: `gtms delete`, `gtms reset`, and `gtms link` in repoint mode. It previews what would be deleted, cleared, or repointed without touching any files.
 
-On the other commands, `--dry-run` parses but does nothing: the adapter still runs and artefacts are still written. Do not rely on it outside `delete` and `reset`.
+On the other commands, `--dry-run` parses but does nothing: the adapter still runs and artefacts are still written. The exception is non-repoint `gtms link` (write, check, and refresh modes), which rejects the flag outright rather than ignoring it. Do not rely on `--dry-run` outside `delete`, `reset`, and link repoint.
 
 ### Commands deferred from this guide
 

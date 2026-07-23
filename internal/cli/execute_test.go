@@ -392,3 +392,108 @@ title: Unwired TC
 	assert.Contains(t, stderr, "not wired",
 		"unwired TC must be skipped with 'not wired' reason")
 }
+
+// BUG-165 decisive regression: dispatch-level proof that Mode 3 bypass
+// ignores a stale/synthetic wiring record. The test seeds a wiring record
+// naming "manual-execute-script" as the adapter, sets defaults.execute to
+// "agent-execute-script", and runs bare execute (no --adapter flag). The
+// Mode 3 bypass must fire because the default is a Mode 3 name, so the
+// adapter that ACTUALLY RUNS is agent-execute-script (the default), NOT
+// manual-execute-script (the wiring). This is NOT a resolver-level test --
+// it exercises the CLI dispatch path in internal/cli/execute.go.
+func TestExecuteDispatch_Mode3BypassesStaleWiring(t *testing.T) {
+	skipIfShort(t)
+
+	root := t.TempDir()
+
+	// TC spec.
+	writeTestFile(t, root, filepath.Join("gtms/test/cases", "m3bypass", "tc-b165a001-dispatch.md"), `---
+test_case_id: tc-b165a001
+title: BUG-165 dispatch regression
+---
+`)
+
+	// Seed a synthetic wiring record naming manual-execute-script as the
+	// adapter. Under the bug (interim narrowing), canonical resolution
+	// could have picked this name. Under Option A, wiring is irrelevant
+	// because the Mode 3 default bypasses wiring entirely.
+	writeTamperedWiring(t, root, "tc-b165a001", "manual", "manual-execute-script",
+		"gtms/manual/records/tc-b165a001--manual.result.yaml")
+
+	// Prime a manual result file so the built-in manual-execute path has
+	// something to read (the Mode 3 adapter will attempt to read it).
+	manualDir := filepath.Join(root, "gtms", "manual", "records")
+	require.NoError(t, os.MkdirAll(manualDir, 0755))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(manualDir, "tc-b165a001--manual.result.yaml"),
+		[]byte("test_case_id: tc-b165a001\nframework: manual\nresult: pass\ntest_case_hash: deadbeef\n"),
+		0644))
+
+	// Config: defaults.execute = agent-execute-script (Mode 3 name).
+	// Both -script variants registered under adapters.execute so Resolve
+	// can find them.
+	cfg := &config.Config{
+		Adapters: map[string]map[string]*config.AdapterConfig{
+			"execute": {
+				"agent-execute-script": {
+					Framework: "manual", Mode: "sync",
+					Script: "echo ok",
+				},
+				"manual-execute-script": {
+					Framework: "manual", Mode: "sync",
+					Script: "echo ok",
+				},
+			},
+		},
+		Defaults: map[string]string{"execute": "agent-execute-script"},
+	}
+
+	restore := withExecuteGlobals(t, root, cfg)
+	defer restore()
+
+	cmd := &cobra.Command{Use: "execute"}
+	cmd.SetContext(context.Background())
+
+	stderr := captureStderr(t, func() {
+		_ = runBulkExecute(cmd, root, "m3bypass",
+			/* adapterFlag */ "",
+			/* environmentFlag */ "",
+			/* executedBy */ "test-user",
+			/* frameworkFlag */ "",
+			/* force */ false,
+			/* failFast */ false,
+			/* recursive */ false,
+			/* allowStale */ false,
+		)
+	})
+
+	// Primary assertion 1: wiring bypass must fire -- no "not wired" skip.
+	assert.NotContains(t, stderr, "not wired",
+		"Mode 3 default must bypass wiring -- no 'not wired' skips expected")
+
+	// Primary assertion 2: the TC must be processed (attempted, not skipped).
+	assert.Contains(t, stderr, "tc-b165a001",
+		"TC must appear in stderr (was processed, not skipped)")
+
+	// Primary assertion 3: the adapter that ran is agent-execute-script
+	// (the Mode 3 default), NOT manual-execute-script (the wiring record).
+	// Check the result contract on disk: InvokeWithRoot stamps the adapter
+	// name in the handoff before the adapter is invoked, so even if the
+	// adapter errors, the handoff exists with the correct adapter field.
+	handoffs, _ := filepath.Glob(filepath.Join(root, ".gtms", "results", "*.handoff.yaml"))
+	require.NotEmpty(t, handoffs, "at least one handoff must be written (adapter was invoked)")
+
+	// Read the handoff and assert the adapter field.
+	for _, hf := range handoffs {
+		content, err := os.ReadFile(hf)
+		require.NoError(t, err)
+		body := string(content)
+		if !strings.Contains(body, "tc-b165a001") {
+			continue // not our TC
+		}
+		assert.Contains(t, body, "adapter: agent-execute-script",
+			"the adapter that ran must be agent-execute-script (the Mode 3 default), not manual-execute-script (the wiring)")
+		assert.NotContains(t, body, "adapter: manual-execute-script",
+			"wiring record's adapter must NOT be used -- Mode 3 bypass must ignore it")
+	}
+}

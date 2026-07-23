@@ -30,14 +30,18 @@ func effectiveDefault(cfg *config.Config, command string) (string, bool) {
 // ENH-160: Configured field distinguishes "set in defaults.X but not a no-flag
 // runtime default" (execute on manual preset) from a true runtime default.
 type adapterEntry struct {
-	Command    string `json:"command"`
-	Name       string `json:"name"`
-	Tier       int    `json:"tier"`
-	Tool       string `json:"tool"`
-	Framework  string `json:"framework"`
-	Mode       string `json:"mode"`
-	Default    bool   `json:"default"`
-	Configured bool   `json:"configured"`
+	Command            string `json:"command"`
+	Name               string `json:"name"`
+	Tier               int    `json:"tier"`
+	Tool               string `json:"tool"`
+	Framework          string `json:"framework"`
+	Mode               string `json:"mode"`
+	Default            bool   `json:"default"`
+	Configured         bool   `json:"configured"`
+	// ENH-191: true for exactly one wiring-driven execute adapter per
+	// effective framework. Nil (omitted from JSON) on placeholder hint
+	// rows and non-execute adapters where the field is not meaningful.
+	CanonicalForWiring *bool `json:"canonical_for_wiring,omitempty"`
 }
 
 // frameworkEntry holds one row for the frameworks table/JSON output.
@@ -199,6 +203,35 @@ func buildAdapterEntries(cfg *config.Config) []adapterEntry {
 		entries[i].Default = true
 	}
 
+	// ENH-191: compute canonical_for_wiring for execute adapters.
+	// For each effective framework, exactly one wiring-driven execute adapter
+	// is canonical (the one ResolveCanonicalExecuteAdapter would pick).
+	// Non-execute adapters, Mode 3 reserved names, and hint rows are false/omitted.
+	for i := range entries {
+		e := &entries[i]
+		if e.Tier == hintTierSentinel {
+			continue // omit for placeholder rows (nil pointer = omitempty)
+		}
+		if e.Command != "execute" {
+			f := false
+			e.CanonicalForWiring = &f
+			continue
+		}
+		if adapter.IsMode3ExecuteAdapterName(e.Name) {
+			f := false
+			e.CanonicalForWiring = &f
+			continue
+		}
+		// Compute effective (inherent) framework for this adapter.
+		ef := e.Framework
+		if ef == "" {
+			ef = e.Name // adapter-name fallback
+		}
+		canonical, _, _ := adapter.ResolveCanonicalExecuteAdapter(cfg, ef)
+		val := (canonical == e.Name)
+		e.CanonicalForWiring = &val
+	}
+
 	// Sort: by command order, then alphabetical by name
 	sort.Slice(entries, func(i, j int) bool {
 		oi := commandOrder[entries[i].Command]
@@ -223,6 +256,15 @@ func buildFrameworkEntries(entries []adapterEntry) []frameworkEntry {
 			continue
 		}
 		fw := e.Framework
+		// REV-105 CLAUDE-002 (revised): the `gtms list frameworks` inventory
+		// groups adapters by their DECLARED framework, so a framework-less
+		// adapter -- create, automate, OR execute -- appears under (none). This
+		// is the user-facing view; the name-fallback effective framework is an
+		// internal wiring-resolution detail surfaced via `canonical_for_wiring`
+		// on `gtms list adapters`, not here. The two views intentionally differ:
+		// applying the name fallback here produced a confusing synthetic
+		// "<adapter-name> framework" row and broke the documented (none)
+		// grouping (tc-6391c031). See REV-105 for the disposition change.
 		if fw == "" {
 			fw = "(none)"
 		}

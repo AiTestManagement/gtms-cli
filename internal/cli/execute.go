@@ -38,8 +38,8 @@ the primed result file.
 
 Single test case:
   gtms execute tc-a1b2c3d4                          -- adapter comes from the wiring record
-  gtms execute tc-a1b2c3d4 --adapter bats-runner    -- confirm the wiring record's adapter explicitly
-  gtms execute tc-a1b2c3d4 --env staging            -- run against staging environment
+  gtms execute tc-a1b2c3d4 --adapter runner-b       -- override with a same-framework adapter
+  gtms execute tc-a1b2c3d4 --env staging            -- record staging as the environment label and pass it to the adapter
 
 Folder (bulk mode):
   gtms execute my-feature                      -- execute all test cases in gtms/test/cases/my-feature/
@@ -165,21 +165,40 @@ Adapter execution:
 				// explicit flag value only.
 				framework = frameworkFlag
 			} else {
-				// Wiring lookup. With --framework: exactly one wiring or fail.
-				// Without --framework: exactly-one shortcut, otherwise
-				// disambiguation error.
+				// ENH-191: when --adapter is a wiring-driven override, validate
+				// it up front and use its implied framework as the wiring selector.
+				var overrideResolved *adapter.ResolvedAdapter
+				var impliedFramework string
+				if adapterFlag != "" {
+					var oErr error
+					overrideResolved, impliedFramework, oErr = adapter.ResolveWiringExecuteAdapter(cfg, adapterFlag, frameworkFlag)
+					if oErr != nil {
+						msg := fmt.Sprintf("Cannot use --adapter %q: %v", adapterFlag, oErr)
+						output.Errorf(msg, "Check gtms.config adapters.execute for valid same-framework adapters.")
+						return output.AsDisplayed(fmt.Errorf(msg))
+					}
+				}
+
+				// Wiring lookup. With override: implied framework selects wiring.
+				// With --framework (no override): explicit framework selects.
+				// Neither: exactly-one shortcut or disambiguation error.
 				var wiringRec *wiring.WiringRecord
-				if frameworkFlag != "" {
+				wiringFramework := frameworkFlag
+				if impliedFramework != "" {
+					wiringFramework = impliedFramework
+				}
+
+				if wiringFramework != "" {
 					var wErr error
-					wiringRec, _, wErr = wiring.Find(root, target, frameworkFlag)
+					wiringRec, _, wErr = wiring.Find(root, target, wiringFramework)
 					if wErr != nil {
-						output.Errorf(fmt.Sprintf("Reading wiring for %s--%s: %v", target, frameworkFlag, wErr),
+						output.Errorf(fmt.Sprintf("Reading wiring for %s--%s: %v", target, wiringFramework, wErr),
 							"Check the wiring file for parse errors.")
 						return output.AsDisplayed(wErr)
 					}
 					if wiringRec == nil {
-						msg := fmt.Sprintf("No wiring record found for '%s' (framework: %s).", target, frameworkFlag)
-						output.Errorf(msg, fmt.Sprintf("Run 'gtms automate %s --framework %s' (or 'gtms link') to wire it.", target, frameworkFlag))
+						msg := fmt.Sprintf("No wiring record found for '%s' (framework: %s).", target, wiringFramework)
+						output.Errorf(msg, fmt.Sprintf("Run 'gtms automate %s --framework %s' (or 'gtms link') to wire it.", target, wiringFramework))
 						return output.AsDisplayed(fmt.Errorf(msg))
 					}
 				} else {
@@ -208,24 +227,20 @@ Adapter execution:
 
 				framework = wiringRec.Framework
 
-				// Conflict rule: explicit --adapter must agree with the
-				// selected wiring record's adapter. Wiring is authoritative;
-				// flags may select or confirm, never silently override.
-				if adapterFlag != "" && adapterFlag != wiringRec.Adapter {
-					msg := fmt.Sprintf(
-						"--adapter %q conflicts with wiring %s--%s (adapter: %s).",
-						adapterFlag, target, framework, wiringRec.Adapter)
-					output.Errorf(msg, fmt.Sprintf("Drop --adapter or pass --adapter %s.", wiringRec.Adapter))
-					return output.AsDisplayed(fmt.Errorf(msg))
-				}
-
-				// Resolve via the wiring record's adapter, not the project default.
-				var rErr error
-				resolved, rErr = adapter.Resolve(cfg, "execute", wiringRec.Adapter)
-				if rErr != nil {
-					output.Errorf(fmt.Sprintf("Wiring adapter %q not configured: %v", wiringRec.Adapter, rErr),
-						"Restore the adapter in gtms.config or re-run automate after fixing it.")
-					return output.AsDisplayed(rErr)
+				// ENH-191: same-framework override -- resolve the override
+				// adapter instead of the wired adapter. The wiring record's
+				// adapter field is never mutated.
+				if overrideResolved != nil {
+					resolved = overrideResolved
+				} else {
+					// No override -- resolve via the wiring record's adapter.
+					var rErr error
+					resolved, rErr = adapter.Resolve(cfg, "execute", wiringRec.Adapter)
+					if rErr != nil {
+						output.Errorf(fmt.Sprintf("Wiring adapter %q not configured: %v", wiringRec.Adapter, rErr),
+							"Restore the adapter in gtms.config or re-run automate after fixing it.")
+						return output.AsDisplayed(rErr)
+					}
 				}
 
 				// BUG-057: containment check on the wiring's artefact path
@@ -328,8 +343,8 @@ Adapter execution:
 		},
 	}
 
-	cmd.Flags().StringVar(&adapterFlag, "adapter", "", "Adapter to use (must agree with the wiring record's adapter)")
-	cmd.Flags().StringVar(&environmentFlag, "env", "", "Target environment (e.g., staging, production)")
+	cmd.Flags().StringVar(&adapterFlag, "adapter", "", "Adapter to use (same-framework override or Mode 3 prime-path selection)")
+	cmd.Flags().StringVar(&environmentFlag, "env", "", "Environment label recorded and passed to the adapter; GTMS does not route on it")
 	cmd.Flags().StringVar(&executedByFlag, "executed-by", "", "Identity to record on the executed_by field (defaults to GTMS_EXECUTED_BY, then git user.name)")
 	cmd.Flags().StringVar(&frameworkFlag, "framework", "", "Framework to select among a TC's wiring records")
 	cmd.Flags().BoolVar(&forceFlag, "force", false, "Re-run already-passing test cases in bulk mode (wiring and drift skips still apply)")
@@ -501,6 +516,19 @@ func runBulkExecute(cmd *cobra.Command, root string, folder string, adapterFlag,
 		}
 	}
 
+	// ENH-191: when --adapter is a wiring-driven override, validate it once
+	// up front (before any TC is processed) and derive the implied framework.
+	var overrideResolved *adapter.ResolvedAdapter
+	var impliedFramework string
+	if !isManualPath && adapterFlag != "" {
+		overrideResolved, impliedFramework, err = adapter.ResolveWiringExecuteAdapter(cfg, adapterFlag, frameworkFlag)
+		if err != nil {
+			msg := fmt.Sprintf("Cannot use --adapter %q: %v", adapterFlag, err)
+			output.Errorf(msg, "Check gtms.config adapters.execute for valid same-framework adapters.")
+			return output.AsDisplayed(fmt.Errorf(msg))
+		}
+	}
+
 	total := len(tcIDs)
 	recursiveLabel := ""
 	if recursive {
@@ -530,35 +558,44 @@ func runBulkExecute(cmd *cobra.Command, root string, folder string, adapterFlag,
 			resolved = manualResolved
 			framework = frameworkFlag
 		} else {
+			// ENH-191: when override is active, use the implied framework
+			// as the wiring selector. Otherwise use the explicit --framework.
+			bulkFramework := frameworkFlag
+			if impliedFramework != "" {
+				bulkFramework = impliedFramework
+			}
+
 			// Wiring selection for this TC.
-			wiringRec, skipReason := selectWiringForBulk(root, tcID, frameworkFlag)
+			wiringRec, skipReason := selectWiringForBulk(root, tcID, bulkFramework)
 			if skipReason != "" {
 				skipped++
+				// ENH-191: when override is active and wiring doesn't match,
+				// the skip reason should mention the framework mismatch.
+				if overrideResolved != nil && skipReason != "wiring parse error" {
+					skipReason = fmt.Sprintf("no %s wiring (override adapter: %s)", impliedFramework, adapterFlag)
+				}
 				fmt.Fprintf(os.Stderr, "  %s %-16s skipped (%s)  (%d/%d)\n",
 					skipIcon(skipReason), tcID, skipReason, idx, total)
 				continue
 			}
 
-			// Explicit --adapter must agree with wiring's adapter.
-			if adapterFlag != "" && adapterFlag != wiringRec.Adapter {
-				skipped++
-				reason := fmt.Sprintf("--adapter conflicts with wiring (wants %s)", wiringRec.Adapter)
-				fmt.Fprintf(os.Stderr, "  %s %-16s skipped (%s)  (%d/%d)\n",
-					skipIcon(reason), tcID, reason, idx, total)
-				continue
-			}
-
-			// Resolve via the wiring record's adapter, not the project default.
-			var rErr error
-			resolved, rErr = adapter.Resolve(cfg, "execute", wiringRec.Adapter)
-			if rErr != nil {
-				errored++
-				fmt.Fprintf(os.Stderr, "  %s %-16s error: wiring adapter %q not configured  (%d/%d)\n",
-					output.IconError, tcID, wiringRec.Adapter, idx, total)
-				if failFast {
-					break
+			// ENH-191: same-framework override -- use the pre-resolved
+			// override adapter instead of the wired adapter.
+			if overrideResolved != nil {
+				resolved = overrideResolved
+			} else {
+				// No override -- resolve via the wiring record's adapter.
+				var rErr error
+				resolved, rErr = adapter.Resolve(cfg, "execute", wiringRec.Adapter)
+				if rErr != nil {
+					errored++
+					fmt.Fprintf(os.Stderr, "  %s %-16s error: wiring adapter %q not configured  (%d/%d)\n",
+						output.IconError, tcID, wiringRec.Adapter, idx, total)
+					if failFast {
+						break
+					}
+					continue
 				}
-				continue
 			}
 
 			framework = wiringRec.Framework
@@ -724,34 +761,12 @@ func runBulkExecute(cmd *cobra.Command, root string, folder string, adapterFlag,
 	return nil
 }
 
-// isMode3ExecuteAdapterName reports whether the given execute adapter
-// name is one of the Mode 3 execute adapters that read a filled result
-// template instead of an automation artefact. CON-023 wiring-
-// authoritative execute requires every other adapter to go through
-// wiring lookup; Mode 3 execute adapters legitimately have no wiring
-// record and must bypass that gate before any wiring resolution.
-//
-// The closed set covers both Tier 0 built-ins (manual-execute,
-// agent-execute) and their Tier 2 script variants introduced by
-// ENH-160 (manual-execute-script, agent-execute-script).
-//
-// This predicate is also used to check cfg.Defaults["execute"] so
-// that a no-flag `gtms execute tc-X` on a manual-preset project
-// bypasses wiring when the configured default is a Mode 3 name
-// (ENH-163).
-//
-// This is intentionally a name-based predicate, distinct from
-// adapter.IsManualFramework. The wiring-bypass decision happens before
-// the adapter is resolved, so the CLI cannot ask the resolved adapter
-// what it is. If a future enhancement adds another Mode 3 execute
-// adapter, update this list alongside the adapter registration --
-// otherwise the new adapter will fall through to wiring lookup and
-// fail with "No wiring records found".
+// isMode3ExecuteAdapterName delegates to adapter.IsMode3ExecuteAdapterName.
+// ENH-191: the authoritative list now lives in internal/adapter/mode3.go so
+// both the CLI dispatch and the adapter layer (resolver exclusion, override
+// validation) share one definition.
 func isMode3ExecuteAdapterName(name string) bool {
-	return name == "manual-execute" ||
-		name == "agent-execute" ||
-		name == "manual-execute-script" ||
-		name == "agent-execute-script"
+	return adapter.IsMode3ExecuteAdapterName(name)
 }
 
 // selectWiringForBulk picks a wiring record for one TC in the bulk path.

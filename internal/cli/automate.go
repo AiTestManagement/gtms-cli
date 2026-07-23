@@ -210,7 +210,7 @@ Adapter execution:
 
 	cmd.Flags().StringVar(&adapterFlag, "adapter", "", "Adapter to use (overrides default)")
 	cmd.Flags().StringVar(&frameworkFlag, "framework", "", "Test framework label (e.g., playwright, bats); overrides the adapter's configured framework")
-	cmd.Flags().StringVar(&environmentFlag, "env", "", "Target environment (e.g., staging, production)")
+	cmd.Flags().StringVar(&environmentFlag, "env", "", "Environment label recorded and passed to the adapter; GTMS does not route on it")
 	cmd.Flags().StringVar(&executedByFlag, "executed-by", "", "Identity to record on the executed_by field (defaults to GTMS_EXECUTED_BY, then git user.name)")
 	cmd.Flags().StringVar(&contextFileFlag, "context-file", "", "Path to context file (coding standards, API docs, etc.)")
 	cmd.Flags().BoolVar(&forceFlag, "force", false, "Reprocess even if already automated (bulk skip checks bypassed; existing output files replaced)")
@@ -422,6 +422,13 @@ func formatAutomateOutput(res *adapter.InvokeResult) {
 	if IsVerbose() {
 		fmt.Fprintf(os.Stderr, "    Task: %s\n", res.TaskID)
 		fmt.Fprintf(os.Stderr, "    Branch: %s\n", res.Branch)
+	}
+
+	// ENH-191 wiring-time report (AC7): emit the selected execute adapter on
+	// the sync automate path under -v. The async completion path
+	// (status_common.go) and gtms link emit the same line on their own paths.
+	if res.WiringAdapter != "" && IsVerbose() {
+		fmt.Fprintf(os.Stderr, "Execute adapter for wiring: %s\n", res.WiringAdapter)
 	}
 
 	if res.Mode == "async" {

@@ -459,6 +459,32 @@ func runStatusDetail(w io.Writer, projectRoot, testCaseID string, jsonOut bool, 
 		fmt.Fprintf(w, "  Drift detected: %s\n", driftTime)
 	}
 
+	// ENH-191: Runner provenance line for wiring-derived entries with an
+	// execution result. Shows the adapter that actually ran, and appends the
+	// wired default when they differ.
+	//
+	// REV-105 CLAUDE-001: scope this to the framework the EXECUTE line above
+	// represents (detail.Framework). detail.Frameworks holds one entry per
+	// wiring record -- all frameworks, unfiltered -- so on a multi-wired TC
+	// viewed with a --framework selector the unscoped loop rendered a second,
+	// unlabeled Runner line for the OTHER framework's runner directly under
+	// the selected framework's EXECUTE result, misattributing provenance. The
+	// EXECUTE line is already scoped to detail.Framework; the Runner line must
+	// match it so exactly one runner is shown, for the result on display.
+	for _, fe := range detail.Frameworks {
+		if fe.Framework != detail.Framework {
+			continue
+		}
+		if !fe.Wired || fe.LastRunAdapter == "" {
+			continue
+		}
+		if fe.WiredAdapter != "" && fe.WiredAdapter != fe.LastRunAdapter {
+			fmt.Fprintf(w, "  Runner: %s (wired default: %s)\n", fe.LastRunAdapter, fe.WiredAdapter)
+		} else {
+			fmt.Fprintf(w, "  Runner: %s\n", fe.LastRunAdapter)
+		}
+	}
+
 	fmt.Fprintln(w)
 
 	// File paths

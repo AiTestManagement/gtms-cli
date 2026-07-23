@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 
 	"github.com/aitestmanagement/gtms-cli/internal/adapter"
@@ -123,12 +124,17 @@ func checkAsyncStatus(ctx context.Context, projectRoot string, cfg *config.Confi
 		// immutable on the execute path.
 		switch command {
 		case "automate":
-			wireWarns, pErr := adapter.WriteAutomateWiring(projectRoot, GetConfig(), tf, rc)
+			// ENH-191: WriteAutomateWiring now returns (adapterName, warnings, error).
+			wiringAdapter, wireWarns, pErr := adapter.WriteAutomateWiring(projectRoot, GetConfig(), tf, rc)
 			for _, w := range wireWarns {
 				output.Warnf(w)
 			}
 			if pErr != nil {
 				output.Warnf(fmt.Sprintf("Pipeline record could not be written for %s: %v", tf.ID, pErr))
+			}
+			// ENH-191 wiring-time report: emit the selected execute adapter under -v.
+			if wiringAdapter != "" && IsVerbose() {
+				fmt.Fprintf(os.Stderr, "Execute adapter for wiring: %s\n", wiringAdapter)
 			}
 		case "execute":
 			if pErr := adapter.WriteExecuteResultsFile(projectRoot, tf, rc); pErr != nil {

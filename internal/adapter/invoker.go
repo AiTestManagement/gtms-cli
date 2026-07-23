@@ -57,6 +57,11 @@ type InvokeResult struct {
 	ArtifactPaths []string // relative paths of produced files
 	Warnings      []string // non-fatal issues to surface to user
 	Target        string   // the target argument (folder for create, tc-id for automate/execute)
+	// ENH-191: the execute adapter stamped into the wiring record during a
+	// sync automate. The CLI emits the verbose "Execute adapter for wiring:
+	// <name>" report from this; empty for non-automate commands or when no
+	// wiring was written (e.g. failed/dry-run automate).
+	WiringAdapter string
 }
 
 // Invoke is the unified invocation orchestrator (Phase 4: Handoff).
@@ -278,7 +283,7 @@ func InvokeWithRoot(ctx context.Context, projectRoot string, cfg *config.Config,
 		if rcErr != nil {
 			warnings = append(warnings, fmt.Sprintf("Pipeline record could not be written: %v", rcErr))
 		} else {
-			pWarn, pErr := buildPipelineRecords(projectRoot, cfg, tf, rc)
+			_, pWarn, pErr := buildPipelineRecords(projectRoot, cfg, tf, rc)
 			warnings = append(warnings, pWarn...)
 			if pErr != nil {
 				warnings = append(warnings, fmt.Sprintf("Pipeline record could not be written: %v", pErr))
@@ -648,8 +653,20 @@ func buildAdapterContext(projectRoot, taskID string, resolved *ResolvedAdapter, 
 // execute adapter when writing the new wiring record (CON-023 / ENH-145).
 // ctx is threaded through so Tier 2 post-overwrite Git-context re-stamping
 // (CON-023 / ENH-146) can honour cancellation.
-func handleSyncResult(ctx context.Context, projectRoot string, cfg *config.Config, tf *task.TaskFile, resultPath string, resolved *ResolvedAdapter, invResult *InvocationResult, outputDir string, preInvokeFiles map[string]struct{}, artefactHash string) (*InvokeResult, error) {
+func handleSyncResult(ctx context.Context, projectRoot string, cfg *config.Config, tf *task.TaskFile, resultPath string, resolved *ResolvedAdapter, invResult *InvocationResult, outputDir string, preInvokeFiles map[string]struct{}, artefactHash string) (res *InvokeResult, retErr error) {
 	now := time.Now().UTC().Format(time.RFC3339)
+
+	// ENH-191: capture the wiring execute adapter written during a sync
+	// automate so the CLI can emit the verbose "Execute adapter for wiring:
+	// <name>" report. Stamped onto whichever InvokeResult this function
+	// returns; the success branches assign it below. Empty on failure /
+	// non-automate paths, where no report should fire.
+	var wiringAdapter string
+	defer func() {
+		if res != nil {
+			res.WiringAdapter = wiringAdapter
+		}
+	}()
 
 	// For Tier 2: check if the script updated the result contract.
 	// ENH-130: enter validation for ANY status the script wrote beyond the
@@ -835,7 +852,8 @@ func handleSyncResult(ctx context.Context, projectRoot string, cfg *config.Confi
 
 			// Build pipeline records for sync tasks (BUG-023: call on both success and failure
 			// so that automation record's last-formal-result is updated to reflect the outcome)
-			pWarn, pErr := buildPipelineRecords(projectRoot, cfg, tf, rc)
+			wa, pWarn, pErr := buildPipelineRecords(projectRoot, cfg, tf, rc)
+			wiringAdapter = wa
 			warnings = append(warnings, pWarn...)
 			if pErr != nil {
 				warnings = append(warnings, fmt.Sprintf("Pipeline record could not be written: %v", pErr))
@@ -1016,7 +1034,8 @@ func handleSyncResult(ctx context.Context, projectRoot string, cfg *config.Confi
 		// S3: Build pipeline records for completed sync tasks
 		rc, rcErr := result.Read(resultPath)
 		if rcErr == nil {
-			pWarn, pErr := buildPipelineRecords(projectRoot, cfg, tf, rc)
+			wa, pWarn, pErr := buildPipelineRecords(projectRoot, cfg, tf, rc)
+			wiringAdapter = wa
 			warnings = append(warnings, pWarn...)
 			if pErr != nil {
 				warnings = append(warnings, fmt.Sprintf("Pipeline record could not be written: %v", pErr))
@@ -1125,7 +1144,7 @@ func handleSyncResult(ctx context.Context, projectRoot string, cfg *config.Confi
 	// last-formal-result is updated to reflect the outcome (not left empty).
 	rc, rcErr := result.Read(resultPath)
 	if rcErr == nil {
-		pWarn, pErr := buildPipelineRecords(projectRoot, cfg, tf, rc)
+		_, pWarn, pErr := buildPipelineRecords(projectRoot, cfg, tf, rc)
 		warnings = append(warnings, pWarn...)
 		if pErr != nil {
 			warnings = append(warnings, fmt.Sprintf("Pipeline record could not be written: %v", pErr))
@@ -1187,9 +1206,10 @@ func stampGitContext(ctx context.Context, projectRoot string, rc *result.ResultC
 }
 
 // buildPipelineRecords dispatches the post-invocation pipeline write based
-// on command type. Returns any warnings (typically the canonical
-// execute-adapter fallback diagnostic from WriteAutomateWiring) plus any
-// error so the caller can surface both on the result contract.
+// on command type. Returns the wiring execute adapter (automate only, "" for
+// execute or when no wiring was written), any warnings (typically the
+// canonical execute-adapter fallback diagnostic from WriteAutomateWiring),
+// and any error so the caller can surface all three.
 //
 // CON-023 / ENH-145 / ENH-146 (cutover complete):
 //   - automate: WriteAutomateWiring writes the six-field wiring file at
@@ -1199,14 +1219,19 @@ func stampGitContext(ctx context.Context, projectRoot string, rc *result.ResultC
 //     at gtms/execution/<task>--<tc>.results.yaml (ADR-020 / CON-016).
 //     Wiring is immutable on the execute path; the result contract under
 //     .gtms/results/ is the canonical store of the test outcome.
-func buildPipelineRecords(projectRoot string, cfg *config.Config, tf *task.TaskFile, rc *result.ResultContract) ([]string, error) {
+func buildPipelineRecords(projectRoot string, cfg *config.Config, tf *task.TaskFile, rc *result.ResultContract) (string, []string, error) {
 	switch tf.Type {
 	case "automate":
+		// ENH-191: return the wiring's execute adapter so the sync CLI path
+		// (handleSyncResult -> formatAutomateOutput) can emit the verbose
+		// "Execute adapter for wiring: <name>" report. The async completion
+		// path (status_common.go) and gtms link call WriteAutomateWiring
+		// directly and emit their own report.
 		return WriteAutomateWiring(projectRoot, cfg, tf, rc)
 	case "execute":
-		return nil, WriteExecuteResultsFile(projectRoot, tf, rc)
+		return "", nil, WriteExecuteResultsFile(projectRoot, tf, rc)
 	}
-	return nil, nil
+	return "", nil, nil
 }
 
 // deriveOutputSubdir extracts the subdirectory path from a test case source path.

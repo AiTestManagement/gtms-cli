@@ -106,6 +106,11 @@ type FrameworkEntry struct {
 	WiringDrift     string `json:"wiring_drift"` // "" | "testcase" | "artefact" | "both"
 	ArtefactPresent bool   `json:"artefact_present"`
 	Artefact        string `json:"artefact"`
+	// ENH-191: dual-provenance fields. Scoped to wiring-derived entries
+	// (Wired: true) only; the synthesized manual entry (BUG-127, Wired: false)
+	// gains neither field and its rendering is unchanged.
+	WiredAdapter  string `json:"wired_adapter,omitempty"`   // adapter stamped in the wiring record
+	LastRunAdapter string `json:"last_run_adapter,omitempty"` // adapter that produced the latest terminal result
 	// BUG-102: bootstrap state of the wiring record's artefact-hash.
 	// "pending" when artefact-hash is the uninitialised sentinel
 	// (wiring.PendingArtefactHash), "ready" when it is a real hash.

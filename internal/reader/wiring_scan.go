@@ -51,6 +51,7 @@ type overlayHit struct {
 	GitCommit   string
 	GitBranch   string
 	GitDirty    *bool
+	Adapter     string // ENH-191: the adapter that produced this result
 }
 
 // overlayKey is the canonical map key for the join.
@@ -193,6 +194,7 @@ func scanTerminalResults(projectRoot string, wiringByTC map[string][]*wiring.Wir
 			GitCommit:   rc.GitCommit,
 			GitBranch:   rc.GitBranch,
 			GitDirty:    rc.GitDirty,
+			Adapter:     rc.Adapter, // ENH-191: carry the actual runner
 		}
 		prev, ok := by[key]
 		if !ok || stamp > prev.stamp || (stamp == prev.stamp && mtime > prev.mtime) {
@@ -422,6 +424,7 @@ func buildPipelineEntry(
 			ArtefactPresent: c.ArtefactPresent,
 			Artefact:        w.Artefact,
 			WiringBootstrap: bootstrap,
+			WiredAdapter:    w.Adapter, // ENH-191: wiring-derived provenance
 		}
 		if hit, ok := overlay[overlayKey(w.TestCase, w.Framework)]; ok {
 			fe.LastExecutedHere = hit.ExecutedAt
@@ -436,6 +439,11 @@ func buildPipelineEntry(
 			fe.LogExcerpt = hit.Notes
 			fe.ExecutedBy = hit.ExecutedBy
 			fe.Environment = hit.Environment
+			// ENH-191: last-run adapter from the overlay (only when a
+			// terminal result is joined).
+			if hit.Adapter != "" {
+				fe.LastRunAdapter = hit.Adapter
+			}
 		}
 		frameworks = append(frameworks, fe)
 	}

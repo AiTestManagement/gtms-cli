@@ -471,3 +471,164 @@ func TestValidate_RejectsArbitraryTestCaseHash(t *testing.T) {
 		}
 	}
 }
+
+// --- ENH-192: ParseFilename and DiscoverAll tests ---
+
+func TestParseFilename_ValidShape(t *testing.T) {
+	tc, fw, ok := ParseFilename("tc-abc12345--bats.wiring.yaml")
+	if !ok {
+		t.Fatal("expected ok=true")
+	}
+	if tc != "tc-abc12345" || fw != "bats" {
+		t.Errorf("got tc=%q fw=%q", tc, fw)
+	}
+}
+
+func TestParseFilename_InvalidShapes(t *testing.T) {
+	cases := []string{
+		"not-a-wiring.yaml",
+		"nodashes.wiring.yaml",
+		"--framework.wiring.yaml",
+		"tc-abc--.wiring.yaml",
+	}
+	for _, name := range cases {
+		_, _, ok := ParseFilename(name)
+		if ok {
+			t.Errorf("ParseFilename(%q) expected ok=false", name)
+		}
+	}
+}
+
+func TestDiscoverAll_ReturnsAllFiles(t *testing.T) {
+	root := t.TempDir()
+	recA := sampleRecord()
+	recA.TestCase = "tc-aaaa1111"
+	recA.Framework = "bats"
+	_, _ = Write(root, recA)
+
+	recB := sampleRecord()
+	recB.TestCase = "tc-bbbb2222"
+	recB.Framework = "playwright"
+	_, _ = Write(root, recB)
+
+	results, err := DiscoverAll(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(results))
+	}
+	for _, r := range results {
+		if r.Err != nil {
+			t.Errorf("unexpected error for %s: %v", r.Path, r.Err)
+		}
+		if r.Record == nil {
+			t.Errorf("record should not be nil for %s", r.Path)
+		}
+	}
+}
+
+func TestDiscoverAll_MalformedFileIncluded(t *testing.T) {
+	root := t.TempDir()
+	rec := sampleRecord()
+	_, _ = Write(root, rec)
+
+	// Write a malformed wiring file.
+	dir := layout.WiringDir(root)
+	badPath := filepath.Join(dir, "tc-bad11111--bats.wiring.yaml")
+	_ = os.WriteFile(badPath, []byte("not: valid: yaml: ["), 0644)
+
+	results, err := DiscoverAll(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(results))
+	}
+
+	var found bool
+	for _, r := range results {
+		if r.TCFromName == "tc-bad11111" {
+			found = true
+			if r.Err == nil {
+				t.Error("expected error for malformed file")
+			}
+			if r.Record != nil {
+				t.Error("record should be nil for malformed file")
+			}
+		}
+	}
+	if !found {
+		t.Error("malformed file not included in results")
+	}
+}
+
+func TestDiscoverAll_ShapeViolatingFilename(t *testing.T) {
+	root := t.TempDir()
+	dir := layout.WiringDir(root)
+	_ = os.MkdirAll(dir, 0755)
+
+	// File with .wiring.yaml suffix but no -- separator.
+	badPath := filepath.Join(dir, "noshape.wiring.yaml")
+	_ = os.WriteFile(badPath, []byte("testcase: tc-x\n"), 0644)
+
+	results, err := DiscoverAll(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if results[0].Err == nil {
+		t.Error("expected error for shape-violating filename")
+	}
+}
+
+func TestDiscoverAll_EmptyDirectory(t *testing.T) {
+	root := t.TempDir()
+	dir := layout.WiringDir(root)
+	_ = os.MkdirAll(dir, 0755)
+
+	results, err := DiscoverAll(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 0 {
+		t.Fatalf("expected 0 results, got %d", len(results))
+	}
+}
+
+func TestDiscoverAll_IdentityMismatchIsError(t *testing.T) {
+	// CODEX-002: a schema-valid file whose declared testcase/framework disagrees
+	// with its filename must be reported as an error and never exposed as a
+	// selectable record (otherwise it is a cross-record overwrite vector).
+	root := t.TempDir()
+	dir := layout.WiringDir(root)
+	_ = os.MkdirAll(dir, 0755)
+
+	// Filename says tc-aaa11111--bats, but the record declares tc-bbb22222.
+	content := "testcase: tc-bbb22222\ntestcase-hash: 1111111111111111\nframework: bats\nadapter: some-runner\nartefact: test/x.bats\nartefact-hash: pending\n"
+	path := filepath.Join(dir, "tc-aaa11111--bats.wiring.yaml")
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	results, err := DiscoverAll(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if results[0].Err == nil {
+		t.Error("expected identity-mismatch error")
+	} else if !strings.Contains(results[0].Err.Error(), "identity mismatch") {
+		t.Errorf("expected 'identity mismatch' in error, got: %v", results[0].Err)
+	}
+	if results[0].Record != nil {
+		t.Error("record should be nil for an identity-mismatched file")
+	}
+	if results[0].TCFromName != "tc-aaa11111" {
+		t.Errorf("expected TCFromName tc-aaa11111, got %q", results[0].TCFromName)
+	}
+}

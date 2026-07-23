@@ -420,7 +420,7 @@ func TestWriteAutomateWiring_FallbackDiagnostic_NamesCompetingAdapters(t *testin
 		Result: "pass", Artefact: "test/acceptance/tc-fb01.bats",
 	}
 
-	warnings, err := WriteAutomateWiring(root, cfg, tf, rc)
+	_, warnings, err := WriteAutomateWiring(root, cfg, tf, rc)
 	require.NoError(t, err)
 	require.Len(t, warnings, 1, "exactly one fallback-diagnostic warning")
 
@@ -473,7 +473,7 @@ func TestWriteAutomateWiring_DefaultSelectsAdapter_NoWarning(t *testing.T) {
 		Result: "pass", Artefact: "test/acceptance/tc-fb02.bats",
 	}
 
-	warnings, err := WriteAutomateWiring(root, cfg, tf, rc)
+	_, warnings, err := WriteAutomateWiring(root, cfg, tf, rc)
 	require.NoError(t, err)
 	assert.Empty(t, warnings,
 		"single-default fast path must not emit a fallback warning")
@@ -525,7 +525,7 @@ func TestWriteAutomateWiring_RejectsRelativeTraversalOutsideRoot(t *testing.T) {
 		Result: "pass", Artefact: "../automate-traversal-target.txt",
 	}
 
-	warnings, err := WriteAutomateWiring(root, minimalBatsConfig(), tf, rc)
+	_, warnings, err := WriteAutomateWiring(root, minimalBatsConfig(), tf, rc)
 	require.Error(t, err)
 	assert.True(t, pathsafe.IsPathSafetyError(err),
 		"adapter-produced traversal artefact must yield *pathsafe.PathSafetyError")
@@ -558,7 +558,7 @@ func TestWriteAutomateWiring_RejectsAbsoluteOutsideRoot(t *testing.T) {
 		Result: "pass", Artefact: outsidePath,
 	}
 
-	_, err := WriteAutomateWiring(root, minimalBatsConfig(), tf, rc)
+	_, _, err := WriteAutomateWiring(root, minimalBatsConfig(), tf, rc)
 	require.Error(t, err)
 	assert.True(t, pathsafe.IsPathSafetyError(err),
 		"absolute outside-root artefact must yield *pathsafe.PathSafetyError")
@@ -592,7 +592,7 @@ func TestWriteAutomateWiring_AbsoluteInsideRootNormalisesToRelative(t *testing.T
 		Result: "pass", Artefact: absArtefact,
 	}
 
-	_, err := WriteAutomateWiring(root, minimalBatsConfig(), tf, rc)
+	_, _, err := WriteAutomateWiring(root, minimalBatsConfig(), tf, rc)
 	require.NoError(t, err)
 
 	rec, _, _ := wiring.Find(root, "tc-ps03", "bats")

@@ -158,7 +158,7 @@ gtms execute tc-a1b2c3d
 
 > **Prerequisite:** `gtms execute` requires a wiring record for the TC and framework (written by `gtms automate` or `gtms link`). The wiring record has no lifecycle status -- if none exists, execute fails with `No wiring record found for 'tc-XXX' (framework: bats)`.
 
-> **`artefact:` is a cache, not the source of truth.** The stored path is an opportunistic pointer to the spec file; the canonical identity is the **TC ID plus framework**. `gtms execute` reads the artefact path straight from the wiring record and runs it -- filenames need not contain the TC ID (that rule was dropped to support shared-file frameworks like Playwright grouped tests, where the TC ID lives only in the test name). It does **not** glob the project tree for `tc-{id}`, and it does **not** rewrite or auto-heal the record. If the stored path is missing from disk, execute surfaces that failure rather than searching for a replacement -- repoint the wiring record with `gtms link` (or refresh it with `gtms link --refresh`), do not rely on a glob. Adapter authors should write the `artefact:` field accurately on automate so the pointer stays valid and the record remains a reliable human breadcrumb.
+> **`artefact:` is a cache, not the source of truth.** The stored path is an opportunistic pointer to the spec file; the canonical identity is the **TC ID plus framework**. `gtms execute` reads the artefact path straight from the wiring record and runs it -- filenames need not contain the TC ID (that rule was dropped to support shared-file frameworks like Playwright grouped tests, where the TC ID lives only in the test name). It does **not** glob the project tree for `tc-{id}`, and it does **not** rewrite or auto-heal the record. If the stored path is missing from disk, execute surfaces that failure rather than searching for a replacement -- relink the record at the right file with `gtms link ... --artefact <path> --force` (or refresh it with `gtms link --refresh`), do not rely on a glob. (Changing which ADAPTER the record names is the third repair, repoint: `gtms link <tc-id> --adapter <name>` -- see Useful flags below.) Adapter authors should write the `artefact:` field accurately on automate so the pointer stays valid and the record remains a reliable human breadcrumb.
 
 ### Full pipeline at a glance
 
@@ -252,9 +252,34 @@ The dashboard renders linked TCs identically to automate-produced TCs (`✓ ✓ 
 ### Useful flags
 
 - `--check` — read-only validation. Reports artefact existence and record state, exits non-zero on missing artefact or absent record. Does not write.
-- `--refresh` -- re-acknowledge existing wiring after you have reviewed a spec or artefact edit, without relinking or regenerating. It recomputes `testcase-hash` and `artefact-hash` in place, preserves the `framework` / `adapter` / `artefact` identity fields, runs no automate adapter, and never touches the artefact file. This is the safest of the three stale-wiring recovery paths (see the drift lesson below); reach for it when only the spec changed and the artefact still asserts the current intent. `gtms link --refresh tc-XXXXXXXX` refreshes every framework wiring for that TC (narrow with `--framework <fw>`); `gtms link --refresh <folder>` refreshes only the stale records under the folder (`-r` / `--recursive` descends, mirroring `gtms status` / `gtms execute`). Writes are per-record, not atomic across a batch: a record whose artefact was deleted or moved outside the project-owned allowlist fails with a diagnostic while the rest complete, and the command exits non-zero if any failed. A wiring record still carrying `artefact-hash: pending` (the bootstrap shape) keeps `pending` -- only `testcase-hash` is refreshed -- so it stays first-executeable. The other link flags do not combine with `--refresh`: `--artefact` (that is a relink), `--check` (use `gtms status`), and `--force` (`--refresh` is itself the acknowledgement) are each rejected with a diagnostic pointing at the right form. (`--env` and `--executed-by` were never wiring fields and were removed from `gtms link` entirely in BUG-137; passing them to any `link` form now fails with Cobra's `unknown flag` error.)
+- `--refresh` -- re-acknowledge existing wiring after you have reviewed a spec or artefact edit, without relinking or regenerating. It recomputes `testcase-hash` and `artefact-hash` in place, preserves the `framework` / `adapter` / `artefact` identity fields, runs no automate adapter, and never touches the artefact file. This is the safest of the three stale-wiring recovery paths (see the drift lesson below); reach for it when only the spec changed and the artefact still asserts the current intent. `gtms link --refresh tc-XXXXXXXX` refreshes every framework wiring for that TC (narrow with `--framework <fw>`); `gtms link --refresh <folder>` refreshes only the stale records under the folder (`-r` / `--recursive` descends, mirroring `gtms status` / `gtms execute`). Writes are per-record, not atomic across a batch: a record whose artefact was deleted or moved outside the project-owned allowlist fails with a diagnostic while the rest complete, and the command exits non-zero if any failed. A wiring record still carrying `artefact-hash: pending` (the bootstrap shape) keeps `pending` -- only `testcase-hash` is refreshed -- so it stays first-executeable. The other link flags do not combine with `--refresh`: `--artefact` (that is a relink), `--check` (use `gtms status`), and `--force` (`--refresh` is itself the acknowledgement) are each rejected with a diagnostic pointing at the right form. (`--env` and `--executed-by` were never wiring fields and were removed from `gtms link` entirely; passing them to any `link` form now fails with Cobra's `unknown flag` error.)
 - `--force` -- overwrite an existing record (and refresh the paired wiring at `gtms/automation/wiring/<tc>--<framework>.wiring.yaml`, including `artefact-hash`). Writes fresh fields from the new flag values. Reach for `--force` only when you are relinking to a different artefact; when only the spec changed and you just want to acknowledge the current artefact, prefer `--refresh` above (it preserves the artefact and recomputes hashes without a relink). Per-run execute state lives on `.gtms/results/<task>.handoff.yaml`; existing handoffs are not deleted by `gtms link --force`, but the next `gtms execute` will write a fresh one alongside (or replace the prior one when the task-id collides).
 - `--strict` -- opt-in TC-spec preflight. Rejects link calls whose TC ID has no matching spec under `gtms/test/cases/`, with `test case 'tc-XXXXXXXX' not found in gtms/test/cases/`. Off by default — the brownfield contract (link the artefact first, write the spec later) is preserved exactly as it was. Combine with `--check` (`gtms link --check --strict`) for a read-only validation that also catches phantom TC IDs. Use it when scripting bulk imports from a list of TC IDs and you want to fail fast on typos. Supports folder-qualified targets: `gtms link folder/tc-abc12345 --strict ...` requires the spec to live under `gtms/test/cases/folder/`.
+
+- `--adapter <name>` -- **repoint mode**: change WHICH execute adapter the
+  wiring record names, and nothing else. Artefact path and both hashes are
+  preserved (including `artefact-hash: pending`); a missing artefact file
+  warns and proceeds (execute stays blocked -- that is a separate repair);
+  the OLD adapter does not need to exist in `gtms.config`, which is the
+  point -- the motivating case is a decommissioned machine whose adapter
+  entry was deleted. Combine with `--from-adapter <old>` as a precondition:
+  only records whose stored adapter is exactly `<old>` are touched.
+  `--from-adapter` is optional on a single TC and MANDATORY for folder,
+  recursive, and `--all` scopes, so a bulk repoint can never rewrite
+  unrelated same-framework wiring. `--dry-run` previews the exact record
+  set (old -> new) and writes nothing, in either flag position. Re-running
+  a completed bulk repoint is safe: zero matches reports success. Guard
+  rails, all of which stop before any write: the four reserved built-in
+  execute names are rejected as targets (execute selects them before
+  wiring is consulted, so repointed wiring would be ignored); on FOLDER
+  and RECURSIVE repoints, a targeted TC ID with more than one test case
+  spec anywhere in the project aborts the batch before any write
+  (single-TC and `--all` repoints do not run this scan); a new adapter
+  whose framework does not match the wiring aborts the batch. Repoint targets take BARE TC IDs only --
+  folder-qualified forms like `feature/tc-a1b2c3d4` are rejected in
+  repoint mode (a known limitation; the rejection fails closed).
+  Repoint does not combine with `--artefact`,
+  `--refresh`, `--check`, `--strict`, or `--force`.
 
 ### What `gtms link` is not
 
@@ -569,7 +594,7 @@ internal flag written by `gtms init --demo` -- do not set it by hand.
 | `status-script` | Path to a script that checks async adapter progress. Called during `gtms {command} status`. Must update `$GTMS_RESULT_FILE` when the remote work completes. Requires `mode: async` and `script` to be set. |
 | `output-dir` | **Dual-role: write target + read root for discovery.** Where adapter output files are written (relative to project root). Must be a relative path -- absolute paths are rejected. An explicit `output-dir` always wins, for every tier including the built-in automate adapters. If not set, GTMS uses the standard default for the command and adapter class: create -> `gtms/test/cases/<folder>/`; automate on a **command/script (Tier 1/2)** adapter -> `gtms/automation/specs/<adapter>/`; automate on the **built-in `agent-automate`/`manual-automate`** -> the framework-native dir (`test/acceptance/` for BATS, `gtms/scripts/playwright/` for Playwright); execute -> `results/`. The same value also tells GTMS's runtime artefact discovery where to look when the stored `artefact:` cache is stale, so **declare it accurately even for read-only pipeline stages** (e.g. execute adapters that read pre-generated spec files). Brownfield: point `output-dir` at the directory your framework already scans (its `testDir`) so the built-in automate writes there and the framework discovers the spec. |
 | `timeout` | Maximum duration for adapter execution (e.g. `30s`, `5m`, `1h`). Uses Go duration format. If the adapter exceeds this time, GTMS cancels it and reports an error. **Default: 30 minutes for sync adapters**. Set an explicit value to override. On cancellation, GTMS terminates the full process tree (not just the immediate child). The default can also be overridden at runtime via the `GTMS_DEFAULT_EXECUTE_TIMEOUT` env var (Go duration format); intended for acceptance-test harnesses so they don't have to wait for the 30-minute production default. Empty, unparseable, or non-positive values are ignored and the 30-minute default is used. |
-| `framework` | Framework name for this adapter (e.g. `bats`, `playwright`, `pw-mobile`). Used to qualify wiring records: `tc-xxx--{framework}.wiring.yaml`. **Must be unique per command** -- two adapters under the same command with the same framework name will overwrite each other's records. See [Multi-Framework Adapters](#multi-framework-adapters) below. |
+| `framework` | Framework name for this adapter (e.g. `bats`, `playwright`, `pw-mobile`). Used to qualify wiring records: `tc-xxx--{framework}.wiring.yaml`. Sharing is command-specific: same-framework EXECUTE adapters are supported alternative runners for one result slot (the fleet pattern); same-framework AUTOMATE adapters are alternative producers of one shared (TC, framework) wiring identity, not coexisting variants. Use DISTINCT framework labels only when results must coexist independently. See [Multi-Framework Adapters](#multi-framework-adapters) below. |
 | `working-dir` | Project-relative directory the adapter process runs in (its current working directory). Applies to Tier 1 (`command:`) and Tier 2 (`script:`) adapters only -- setting it on a built-in (Tier 0) adapter emits a `⚠` load-time warning and is ignored. Must be a relative path (absolute rejected) and may not escape the project root with `..`. Unset: the adapter runs from the project root. Distinct from `output-dir` (where output goes) and from `{work_dir}` / `$GTMS_WORK_DIR` (the worktree base handed to the adapter for reference), neither of which `working-dir` changes. Brownfield use: point it at a harness subdirectory (its own `node_modules/` and config) so a shipped runner works unedited. |
 | `artefact-glob` | Glob pattern with a `{testcase}` placeholder (must contain it; project-relative, no `..`; `**` matches recursively). Historically fed a lazy artefact-discovery/auto-create step, but the wiring cutover made the wiring record immutable on the execute path: `gtms execute` no longer globs or auto-creates a record, and a missing wiring record is a hard error resolved via `gtms automate` or `gtms link`. The field is still accepted and validated at config load. Example: `test/acceptance/**/{testcase}*.bats`. |
 
@@ -729,7 +754,7 @@ These variables are available in **Tier 1 `command:` templates** via `{variable_
 | `{context_file}` | Absolute path to file specified by `--context-file` flag | Short | create, automate |
 | `{guides}` | Concatenated content of all `.md` files from `guide-dir` | **Unbounded** | create, automate (if `guide-dir` set) |
 | `{prompt_file}` | Path to assembled prompt temp file (`.gtms/tmp/{task-id}-prompt.md`) | Short | All (if `prompt-template` set) |
-| `{environment}` | `--env` flag value (target environment) | Short | automate, execute |
+| `{environment}` | `--env` flag value -- an environment label GTMS records on the run and passes through; the adapter may act on it, GTMS does not route on it | Short | automate, execute |
 | `{output_subdir}` | Test case's subfolder under `gtms/test/cases/` (e.g. `cwd-scoping/`). Includes trailing `/` when non-empty, empty string for root-level test cases. Available in prompt templates for informational use. **Do not use to prefix `<gtms-file>` filenames** — GTMS automatically routes streamed files to the correct subdirectory (see [Subdirectory Routing](#subdirectory-routing)). | Short | automate, execute (empty for create) |
 | `{tc_ids}` | Comma-separated list of 20 pre-generated test case IDs in `tc-{8hex}` format. Use these IDs for generated test case files so they follow the GTMS naming convention. | Short | create |
 | `{tc_name}` | Optional name from the second positional argument (e.g. `gtms create login user-can-login` → `user-can-login`). Empty if not provided. | Short | create |
@@ -746,7 +771,7 @@ A `prompt-template` file (any tier) is assembled from a **different, smaller set
 | `{branch}` | Git branch associated with the task. | Short |
 | `{context}` | Content of the `--context-file` flag file. | **Unbounded** |
 | `{context_file}` | Absolute path to the `--context-file` file. | Short |
-| `{environment}` | `--env` flag value (target environment). | Short |
+| `{environment}` | `--env` flag value -- an environment label GTMS records and passes through; GTMS does not route on it. | Short |
 | `{focus}` | `--focus` flag value. | Short |
 | `{framework}` | Target framework name, from the `--framework` flag or the adapter's `framework` config. **Prompt-only** -- not a Tier 1 command-template variable. | Short |
 | `{guides}` | Concatenated `.md` guide files from `guide-dir`, each XML-wrapped. | **Unbounded** |
@@ -971,7 +996,7 @@ These variables are exported to Tier 2 scripts:
 | `GTMS_CONTEXT_FILE` | Absolute path to file specified by `--context-file` flag | Short | create, automate |
 | `GTMS_GUIDES` | Concatenated content of all `.md` files from `guide-dir` | **Unbounded** | create, automate (if `guide-dir` set) |
 | `GTMS_PROMPT_FILE` | Path to assembled prompt temp file (`.gtms/tmp/{task-id}-prompt.md`) | Short | All (if `prompt-template` set) |
-| `GTMS_ENVIRONMENT` | `--env` flag value (target environment) | Short | automate, execute |
+| `GTMS_ENVIRONMENT` | `--env` flag value -- an environment label GTMS records on the run and passes through; the adapter may act on it (e.g. choose a target host or deployment), GTMS does not route on it | Short | automate, execute |
 | `GTMS_OUTPUT_SUBDIR` | Test case's subfolder under `gtms/test/cases/` (e.g. `cwd-scoping/`). Includes trailing `/` when non-empty, empty string for root-level test cases. | Short | automate, execute (empty for create) |
 | `GTMS_TC_IDS` | Comma-separated list of 20 pre-generated test case IDs in `tc-{8hex}` format. Use these IDs for generated test case files so they follow the GTMS naming convention. | Short | create |
 | `GTMS_TC_NAME` | Optional name from the second positional argument (e.g. `gtms create login user-can-login` → `user-can-login`). Empty if not provided. | Short | create |
@@ -1946,7 +1971,7 @@ EOF
 
 ### Approach 2: Stdout Streaming — GTMS Writes Files (Recommended)
 
-**Status: Implemented.** Reviewed in [REV-004](../PRPs/code_reviews/REV-004-streaming-stdout.md).
+**Status: Implemented.**
 
 The adapter outputs file content to stdout using delimiters. GTMS streams stdout in real time and writes files incrementally as each delimited block completes. The adapter needs zero file-write permissions.
 
@@ -3001,7 +3026,7 @@ The execute pipeline is keyed on the wiring record -- `gtms/automation/wiring/<t
 
 **Config gotchas:**
 - `testDir` in `playwright.config.ts` must include the directory where GTMS writes specs. The shipped `playwright` preset writes specs to `gtms/scripts/playwright` (the runner's `output-dir`), and Playwright's default `testDir: './tests'` excludes it. **Preferred fix:** set the automate/execute adapter `output-dir` to the directory Playwright already scans (its `testDir`), so GTMS writes specs where Playwright looks. Alternative: set `testDir: '.'` in the Playwright config, or point it at `gtms/scripts/playwright`. Playwright silently skips specs outside `testDir`.
-- **Reporters that open a browser/UI wedge non-interactive `execute` (DOC-011).** A common config -- `reporter: [['list'], ['html', { open: 'on-failure' }]]` -- makes `gtms execute` hang on the first *failing* test: Playwright launches the HTML report server (default port `:9323`) and tries to open a browser that does not exist in a headless shell, so the process blocks. Symptoms: execute never returns on a run that includes a failure, a stranded `node` holds `:9323`, and a `● in-progress` task is left in `gtms/tasks/in-progress/`. Passing runs never trigger it, so it looks intermittent. **Fix:** set `open: 'never'` -- `reporter: [['list'], ['html', { open: 'never' }]]`. The env form `PW_TEST_HTML_REPORT_OPEN=never` does not help: a Tier-2 adapter's environment is stripped at the GTMS boundary, so it never reaches `npx playwright test`. Prefer the config change. (The default 30-minute execute timeout is the safety net that eventually reaps such a hang -- see the `timeout` field -- but stopping the trigger is better.)
+- **Reporters that open a browser/UI wedge non-interactive `execute`.** A common config -- `reporter: [['list'], ['html', { open: 'on-failure' }]]` -- makes `gtms execute` hang on the first *failing* test: Playwright launches the HTML report server (default port `:9323`) and tries to open a browser that does not exist in a headless shell, so the process blocks. Symptoms: execute never returns on a run that includes a failure, a stranded `node` holds `:9323`, and a `● in-progress` task is left in `gtms/tasks/in-progress/`. Passing runs never trigger it, so it looks intermittent. **Fix:** set `open: 'never'` -- `reporter: [['list'], ['html', { open: 'never' }]]`. The env form `PW_TEST_HTML_REPORT_OPEN=never` does not help: a Tier-2 adapter's environment is stripped at the GTMS boundary, so it never reaches `npx playwright test`. Prefer the config change. (The default 30-minute execute timeout is the safety net that eventually reaps such a hang -- see the `timeout` field -- but stopping the trigger is better.)
 - Multiple browser projects: 6 scaffold tests x 5 projects = 30 runs. Use `--project=chromium` during development.
 - `forbidOnly: true` in CI config causes unexpected exit 1 if `test.only()` is left in a spec.
 
@@ -3397,14 +3422,80 @@ Each can be executed independently and tracks its own artefact and hashes.
 
 - **Cross-platform testing** — same test case automated for desktop and mobile (Playwright), or Linux (BATS) and Windows (Pester)
 - **Multiple test frameworks** — unit tests (Jest) and E2E tests (Cypress) both validating the same requirement
-- **Environment-specific runners** — staging vs production adapters producing separate result trails
+- **Environment-specific runners** -- staging and production runners with DISTINCT framework labels (e.g. `pw-staging` + `pw-prod`) when you need separate result trails; give them the SAME framework label when they are alternative routes to one consolidated result and last-run-wins is what you want
 
-### Important: framework names must be unique per command
+### Framework sharing, the canonical adapter, and result slots
 
-Two adapters under the same command with the **same** framework name will overwrite each other's automation records. The framework name is the key — choose distinct, descriptive names:
+Multiple EXECUTE adapters may share one framework. GTMS does not enforce
+framework-name uniqueness, and sharing is a supported pattern -- a fleet of
+near-identical execute adapters, one per remote machine, all declaring
+`framework: playwright`, is exactly how multi-machine execution is meant to
+be configured.
 
-| Instead of | Use |
-|-----------|-----|
+What IS single is the result slot: one wiring identity record and one
+headline result per (TC, framework). Runs from different same-framework
+adapters land in that one slot, and the last run wins. The collision the
+old guidance warned about is per test case, not per config -- two adapters
+only contend when they touch the SAME test case's wiring.
+
+Which same-framework adapter new wiring receives is the **canonical**
+adapter: a `defaults.execute` entry whose framework matches wins; otherwise
+a sole matching adapter; otherwise the first match in name order.
+`gtms list adapters --json` marks it (`canonical_for_wiring: true`), and
+`gtms automate` / `gtms link` report the chosen adapter when run with `-v`.
+One inventory nuance: `gtms list frameworks` groups adapters by their
+DECLARED `framework:` field, so a framework-less adapter appears under
+`(none)` there -- the adapter-name fallback applies to canonical wiring
+resolution (reflected in `canonical_for_wiring`), not to the inventory
+grouping.
+
+Three levers control which runner executes a test case:
+
+- The wiring record holds the DEFAULT runner (stamped canonically).
+- `gtms execute --adapter <name>` overrides it for ONE run. Same framework
+  only -- cross-framework overrides are rejected before any task is created.
+- `gtms link --adapter <name>` repoints the stored default PERMANENTLY
+  (see the repoint mode in the Brownfield section).
+
+`gtms status` shows both sides: `wired_adapter` (the stored default) and
+`last_run_adapter` (the runner that produced the latest result) on each
+`frameworks[]` entry in the JSON, and a `Runner:` line in the detail view.
+
+Two boundaries to keep straight:
+
+- **AUTOMATE adapters sharing a framework** are alternative producers of
+  the SAME wiring identity, not independently coexisting variants -- in
+  bulk mode without `--force`, automate treats an existing (TC, framework)
+  wiring record as already automated.
+- **Fleet adapters whose names differ from the shared framework must
+  declare `framework:` explicitly.** An execute adapter with no
+  `framework:` field falls back to its NAME as the framework, so a
+  machine-shaped name like `remote-v10475` would otherwise misdirect the
+  wiring lookup. Declaring it on every fleet adapter is recommended for
+  clarity.
+
+```yaml
+# Fleet pattern: one execute adapter per machine, one shared framework.
+adapters:
+  execute:
+    remote-v10475:
+      mode: sync
+      framework: playwright   # explicit -- required for machine-shaped names
+      script: gtms/adapters/remote-v10475.sh
+    remote-v10476:
+      mode: sync
+      framework: playwright
+      script: gtms/adapters/remote-v10476.sh
+defaults:
+  execute: remote-v10475      # the canonical adapter new wiring receives
+```
+
+When you need results to COEXIST rather than share one slot -- separate
+per-platform or per-variant trails on the dashboard -- use distinct
+framework labels; each label gets its own wiring record and result slot:
+
+| One shared slot | Separate coexisting slots |
+|-----------------|---------------------------|
 | `playwright` + `playwright` | `pw-desktop` + `pw-mobile` |
 | `bats` + `bats` | `bats-linux` + `bats-windows` |
 | `pytest` + `pytest` | `pytest-unit` + `pytest-integration` |
@@ -3455,14 +3546,14 @@ These are known gaps between the documented contract and the current implementat
 |-----------|--------|-----------|
 | ~~Worktree isolation not wired in~~ | **Corrected.** `GTMS_WORK_DIR` is exported and carries the task's working-directory base (the worktree path when the command created one, else the project root), distinct from `GTMS_PROJECT_ROOT`. Concurrent agents are isolated by running in separate git worktrees managed by the external orchestration layer. |  |
 | ~~Tier 1 artefact field not set (non-streaming)~~ | **Fixed.** GTMS now scans the output directory for new files when no streaming delimiters are found. |  |
-| ~~Windows `cmd /c` fallback for Tier 2~~ | **Tier 1 fixed.** Tier 1 falls back to `cmd /c` on Windows when `sh` is not found. Tier 2 still requires `sh` -- no fallback. Install Git Bash or WSL for Tier 2 scripts on Windows. | REV-002 CRIT-3 |
-| Exit code extraction uses Unix-specific syscall | On Windows, non-zero exit codes always reported as 1 (no diagnostic detail) | REV-002 CRIT-2 |
-| Async status polling only for execute | `status-script` is only called by `gtms execute status`. Create and automate status commands don't poll. | REV-002 |
+| ~~Windows `cmd /c` fallback for Tier 2~~ | **Tier 1 fixed.** Tier 1 falls back to `cmd /c` on Windows when `sh` is not found. Tier 2 still requires `sh` -- no fallback. Install Git Bash or WSL for Tier 2 scripts on Windows. |  |
+| Exit code extraction uses Unix-specific syscall | On Windows, non-zero exit codes always reported as 1 (no diagnostic detail) |  |
+| Async status polling only for execute | `status-script` is only called by `gtms execute status`. Create and automate status commands don't poll. |  |
 | Stdout streaming requires `<gtms-file>` tags | Streaming only activates when adapter output contains `<gtms-file>` tags. Plain stdout is not captured to files. |  |
 | ~~No input sanitization on target IDs~~ | **Fixed.** All filename-construction sites validate identifier components via `internal/pathsafe.ValidateFilenameComponent`. Path separators, traversal sequences, and control characters are rejected at the package boundary. `gtms link` CLI guard gap also closed. |  |
-| Errors silently swallowed on state transitions | `task.Move()` and `result.Update()` failures discarded in some paths | REV-002 |
+| Errors silently swallowed on state transitions | `task.Move()` and `result.Update()` failures discarded in some paths |  |
 | ~~`--env` flag not implemented~~ | **Fixed.** `--env` flag available on `gtms automate` and `gtms execute`. Threaded to `{environment}` (Tier 1), `GTMS_ENVIRONMENT` (Tier 2), and `{environment}` in prompt templates. |  |
-| ~~`--dry-run` flag not functional~~ | **Fixed for `delete` and `reset`.** Both honour `--dry-run` as a local flag (the root-position `gtms --dry-run delete` form also works); the flag is hidden from every other command's help and parses as a silent no-op there. Per-command `--dry-run` for the remaining mutating commands is open as future work. |  |
+| ~~`--dry-run` flag not functional~~ | **Fixed for `delete`, `reset`, and `gtms link` repoint mode.** All three honour `--dry-run` as a local flag, and the root-position form (`gtms --dry-run <cmd> ...`) works for each. Other `gtms link` modes reject `--dry-run` outright (a `--refresh` preview mode is future work); on the remaining mutating commands the flag is hidden and parses as a silent no-op. Per-command `--dry-run` elsewhere is open as future work. |  |
 | ~~Timeout kills process (SIGKILL)~~ | **Fixed.** Cancellation now kills the full process tree: Unix uses `setpgid` + `kill(-pgid, SIGKILL)`; Windows uses `taskkill /T /F /PID`. A 30-minute default timeout applies to all sync adapters when no `timeout:` is configured. |  |
 
 ---

@@ -29,6 +29,7 @@ package pathsafe
 import (
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 )
@@ -151,8 +152,18 @@ func ResolveUnderRoot(projectRoot, inputPath string) (absPath, relPath string, e
 	// Try to evaluate symlinks on the resolved path.
 	evalPath, evalErr := filepath.EvalSymlinks(candidate)
 	if evalErr != nil {
-		// File might not exist yet -- use the cleaned absolute path.
-		evalPath = filepath.Clean(candidate)
+		// The leaf (and possibly some parents) do not exist yet -- legitimate for
+		// not-yet-created artefacts (automate-time wiring writes, standard link).
+		// Resolve symlinks on the NEAREST EXISTING ancestor, then re-attach the
+		// unresolved suffix. A purely lexical fallback would let an escaping-symlink
+		// parent with a missing leaf pass containment (CODEX-009); resolving the
+		// existing ancestor catches that while still admitting absent leaves under
+		// genuine in-root parents.
+		resolvedExisting, suffix, prefixErr := resolveExistingPrefix(candidate)
+		if prefixErr != nil {
+			return "", "", &PathSafetyError{Path: inputPath, Cause: prefixErr}
+		}
+		evalPath = filepath.Clean(filepath.Join(resolvedExisting, suffix))
 	}
 
 	// Containment check: evalPath must be under evalRoot.
@@ -173,6 +184,41 @@ func ResolveUnderRoot(projectRoot, inputPath string) (absPath, relPath string, e
 	}
 
 	return evalPath, filepath.ToSlash(rel), nil
+}
+
+// resolveExistingPrefix finds the nearest existing ancestor of candidate,
+// resolves its symlinks, and returns that resolved path plus the remaining
+// not-yet-existing suffix. This lets containment checks resolve real symlinks in
+// the existing portion of a path while still admitting a not-yet-created leaf
+// (CODEX-009). os.Lstat is used so a symlink itself counts as existing; a broken
+// symlink in the existing portion surfaces as an error.
+func resolveExistingPrefix(candidate string) (resolved, suffix string, err error) {
+	cur := filepath.Clean(candidate)
+	missing := ""
+	for {
+		_, statErr := os.Lstat(cur)
+		if statErr == nil {
+			r, e := filepath.EvalSymlinks(cur)
+			if e != nil {
+				return "", "", fmt.Errorf("evaluating symlinks for %q: %w", cur, e)
+			}
+			return r, missing, nil
+		}
+		// CODEX-014: only a genuine "does not exist" error justifies ascending. A
+		// permission or transient I/O error is NOT proof of absence; treating it as
+		// an absent suffix would skip symlink resolution inside an inaccessible
+		// portion of the path. Surface any other error.
+		if !errors.Is(statErr, os.ErrNotExist) {
+			return "", "", fmt.Errorf("stat %q: %w", cur, statErr)
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			// Reached the filesystem root without an existing ancestor (unexpected).
+			return filepath.Clean(candidate), "", nil
+		}
+		missing = filepath.Join(filepath.Base(cur), missing)
+		cur = parent
+	}
 }
 
 // IsWithinRoot checks if absPath is contained within absRoot.

@@ -5,16 +5,17 @@
 // gtms/automation/wiring/{tc-id}--{framework}.wiring.yaml carrying exactly six
 // identity fields: testcase, testcase-hash, framework, adapter, artefact,
 // artefact-hash. No status, lifecycle, cycle, last-dev-result, or
-// results-file — those are not identity. Pre-CON-023 lived in the legacy
+// results-file -- those are not identity. Pre-CON-023 lived in the legacy
 // .automation.md shape via internal/pipeline; this package replaces the
 // identity portion of that contract.
 //
-// gtms automate and gtms link are the only writers. gtms execute reads
-// wiring, recomputes hashes, reports drift, and never mutates it — with one
-// exception: the one-way pending → <real hash> bootstrap performed by
-// gtms execute on first run for wiring records created by the built-in
-// agent-automate / manual-automate adapters (ENH-151). After bootstrap, the
-// "never mutates" rule holds for all subsequent execute runs.
+// gtms automate, gtms link, and gtms link --adapter (repoint, ENH-192) are
+// the writers. gtms execute reads wiring, recomputes hashes, reports drift,
+// and never mutates it -- with one exception: the one-way pending -> <real
+// hash> bootstrap performed by gtms execute on first run for wiring records
+// created by the built-in agent-automate / manual-automate adapters (ENH-151).
+// After bootstrap, the "never mutates" rule holds for all subsequent execute
+// runs.
 package wiring
 
 import (
@@ -271,6 +272,91 @@ func Scan(projectRoot string) (map[string][]*WiringRecord, error) {
 			continue
 		}
 		out[rec.TestCase] = append(out[rec.TestCase], rec)
+	}
+	return out, nil
+}
+
+// DiscoveryResult holds the outcome of parsing a single wiring file. Unlike
+// Scan and FindAllForTC which silently skip malformed files, DiscoverAll
+// returns every file so callers can do per-file error accounting.
+type DiscoveryResult struct {
+	Path       string
+	Record     *WiringRecord
+	Err        error
+	TCFromName string
+	FWFromName string
+}
+
+// ParseFilename extracts the test case ID and framework from a wiring
+// filename of the form {tc}--{framework}.wiring.yaml. Returns ("", "", false)
+// when the filename does not match the expected shape.
+func ParseFilename(name string) (tc, fw string, ok bool) {
+	if !strings.HasSuffix(name, FileSuffix) {
+		return "", "", false
+	}
+	stem := strings.TrimSuffix(name, FileSuffix)
+	idx := strings.Index(stem, "--")
+	if idx < 1 || idx == len(stem)-2 {
+		return "", "", false
+	}
+	return stem[:idx], stem[idx+2:], true
+}
+
+// DiscoverAll reads every .wiring.yaml file in the wiring directory and
+// returns a DiscoveryResult per file. Malformed files are included with a
+// non-nil Err (and nil Record). Files whose name does not match the
+// {tc}--{framework} shape are still returned with Err set.
+//
+// A missing wiring directory returns (nil, nil).
+func DiscoverAll(projectRoot string) ([]DiscoveryResult, error) {
+	dir := layout.WiringDir(projectRoot)
+	if _, err := os.Stat(dir); os.IsNotExist(err) {
+		return nil, nil
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, fmt.Errorf("reading wiring directory: %w", err)
+	}
+
+	var out []DiscoveryResult
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if !strings.HasSuffix(name, FileSuffix) {
+			continue
+		}
+		path := filepath.Join(dir, name)
+
+		tc, fw, shapeOK := ParseFilename(name)
+		if !shapeOK {
+			out = append(out, DiscoveryResult{
+				Path: path,
+				Err:  fmt.Errorf("filename %q does not match {tc}--{framework}%s shape", name, FileSuffix),
+			})
+			continue
+		}
+
+		rec, readErr := Read(path)
+		// CODEX-002: a schema-valid record whose declared identity disagrees with
+		// its filename is a cross-record overwrite vector (a file named A--fw
+		// containing testcase B would be selected as B and its write would land on
+		// B's real record via wiring.Path). Reject it as a per-file error so it is
+		// reported and never exposed as a selectable record.
+		if readErr == nil && rec != nil && (rec.TestCase != tc || rec.Framework != fw) {
+			readErr = fmt.Errorf("wiring identity mismatch: filename %q implies %s--%s but record declares %s--%s",
+				name, tc, fw, rec.TestCase, rec.Framework)
+			rec = nil
+		}
+		out = append(out, DiscoveryResult{
+			Path:       path,
+			Record:     rec,
+			Err:        readErr,
+			TCFromName: tc,
+			FWFromName: fw,
+		})
 	}
 	return out, nil
 }

@@ -58,19 +58,39 @@ func ResolveCanonicalExecuteAdapter(cfg *config.Config, framework string) (strin
 	executeAdapters := cfg.Adapters["execute"]
 
 	// Step 1: single-default fast path.
-	if d := cfg.Defaults["execute"]; d != "" {
-		if ac, ok := executeAdapters[d]; ok && ac != nil && ac.Framework == framework {
-			return d, nil, nil
+	// ENH-191: use inherent effective framework (config field, else adapter-name
+	// fallback) so an adapter with empty framework: can match when its name
+	// equals the requested framework. All four Mode 3 reserved names are
+	// excluded -- they are dispatched by name before wiring lookup
+	// (execute.go), so wiring cannot select them.
+	if d := cfg.Defaults["execute"]; d != "" && !IsMode3ExecuteAdapterName(d) {
+		if ac, ok := executeAdapters[d]; ok && ac != nil {
+			candidateFramework := ac.Framework
+			if candidateFramework == "" {
+				candidateFramework = d // adapter-name fallback
+			}
+			if candidateFramework == framework {
+				return d, nil, nil
+			}
 		}
 	}
 
 	// Step 2: framework filter.
+	// ENH-191: inherent effective framework. Mode 3 names excluded
+	// (all four -- see mode3.go).
 	var matches []string
 	for name, ac := range executeAdapters {
 		if ac == nil {
 			continue
 		}
-		if ac.Framework == framework {
+		if IsMode3ExecuteAdapterName(name) {
+			continue
+		}
+		candidateFramework := ac.Framework
+		if candidateFramework == "" {
+			candidateFramework = name // adapter-name fallback
+		}
+		if candidateFramework == framework {
 			matches = append(matches, name)
 		}
 	}
@@ -165,24 +185,26 @@ func isBuiltinAutomateAdapter(name string) bool {
 	return builtinActionAdapters["automate"][name]
 }
 
-func WriteAutomateWiring(projectRoot string, cfg *config.Config, tf *task.TaskFile, rc *result.ResultContract) ([]string, error) {
+// ENH-191: return value extended to (adapterName, warnings, error) so callers
+// can emit the wiring-time report "Execute adapter for wiring: <name>".
+func WriteAutomateWiring(projectRoot string, cfg *config.Config, tf *task.TaskFile, rc *result.ResultContract) (string, []string, error) {
 	if tf == nil || rc == nil {
-		return nil, errors.New("task file and result contract are required")
+		return "", nil, errors.New("task file and result contract are required")
 	}
 	if tf.Type != "automate" {
-		return nil, nil
+		return "", nil, nil
 	}
 	if tf.Framework == "" {
-		return nil, errors.New("task file is missing framework; cannot write wiring without it")
+		return "", nil, errors.New("task file is missing framework; cannot write wiring without it")
 	}
 	if tf.Framework == "manual" {
-		return nil, nil
+		return "", nil, nil
 	}
 	if rc.Artefact == "" {
-		return nil, nil
+		return "", nil, nil
 	}
 	if rc.Status != "complete" {
-		return nil, nil
+		return "", nil, nil
 	}
 
 	// ENH-151: avoid double-writing the wiring that BuiltinAutomate just
@@ -204,15 +226,21 @@ func WriteAutomateWiring(projectRoot string, cfg *config.Config, tf *task.TaskFi
 		if findErr == nil && existing != nil &&
 			wiring.IsPendingArtefactHash(existing.ArtefactHash) &&
 			existing.Artefact == filepath.ToSlash(rc.Artefact) {
-			return nil, nil
+			// ENH-191 AC7: the wiring-time report must fire on the Tier 0
+			// built-in automate writer too. BuiltinAutomate already wrote the
+			// pending wiring, so we skip the re-write (preserving the sentinel)
+			// but still return the adapter it stamped so the caller's verbose
+			// "Execute adapter for wiring: <name>" report is emitted. Returning
+			// "" here silently dropped the report on the built-in path.
+			return existing.Adapter, nil, nil
 		}
 	}
 
-	// Resolve canonical execute adapter — wiring.adapter is the runner,
+	// Resolve canonical execute adapter -- wiring.adapter is the runner,
 	// NOT the automate adapter that produced the artefact.
 	executeAdapter, matches, err := ResolveCanonicalExecuteAdapter(cfg, tf.Framework)
 	if err != nil {
-		return nil, fmt.Errorf("resolving canonical execute adapter for wiring: %w", err)
+		return "", nil, fmt.Errorf("resolving canonical execute adapter for wiring: %w", err)
 	}
 
 	var warnings []string
@@ -223,11 +251,11 @@ func WriteAutomateWiring(projectRoot string, cfg *config.Config, tf *task.TaskFi
 	// Compute testcase-hash from the resolved spec file.
 	specPath, err := pipeline.ResolveTestCaseSpec(projectRoot, tf.Target)
 	if err != nil {
-		return warnings, fmt.Errorf("resolving test case spec for wiring: %w", err)
+		return "", warnings, fmt.Errorf("resolving test case spec for wiring: %w", err)
 	}
 	testCaseHash, err := pipeline.HashFile(filepath.Join(projectRoot, filepath.FromSlash(specPath)))
 	if err != nil {
-		return warnings, fmt.Errorf("hashing test case spec for wiring: %w", err)
+		return "", warnings, fmt.Errorf("hashing test case spec for wiring: %w", err)
 	}
 
 	// BUG-057: containment check on the adapter-produced artefact path
@@ -237,13 +265,13 @@ func WriteAutomateWiring(projectRoot string, cfg *config.Config, tf *task.TaskFi
 	// to project-relative slash form; wiring never stores absolute paths.
 	absArtefact, storedArtefact, safeErr := pathsafe.ResolveUnderRoot(projectRoot, rc.Artefact)
 	if safeErr != nil {
-		return warnings, fmt.Errorf("unsafe artefact path for wiring: %w", safeErr)
+		return "", warnings, fmt.Errorf("unsafe artefact path for wiring: %w", safeErr)
 	}
 
 	// Compute artefact-hash from the produced artefact.
 	artefactHash, err := pipeline.HashFile(absArtefact)
 	if err != nil {
-		return warnings, fmt.Errorf("hashing artefact for wiring: %w", err)
+		return "", warnings, fmt.Errorf("hashing artefact for wiring: %w", err)
 	}
 
 	rec := &wiring.WiringRecord{
@@ -255,9 +283,9 @@ func WriteAutomateWiring(projectRoot string, cfg *config.Config, tf *task.TaskFi
 		ArtefactHash: artefactHash,
 	}
 	if _, err := wiring.Write(projectRoot, rec); err != nil {
-		return warnings, err
+		return "", warnings, err
 	}
-	return warnings, nil
+	return executeAdapter, warnings, nil
 }
 
 // CanonicalFallbackWarning renders a one-line user-facing warning when
@@ -335,6 +363,7 @@ func WriteExecuteResultsFile(projectRoot string, tf *task.TaskFile, rc *result.R
 				TCID:    tf.Target,
 				Outcome: executionOutcome(rc),
 				Message: rc.Summary,
+				Adapter: rc.Adapter, // ENH-191: populate per-row adapter
 			},
 		},
 	}

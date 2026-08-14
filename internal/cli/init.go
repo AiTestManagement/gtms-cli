@@ -68,10 +68,9 @@ re-run init.`,
 				return fmt.Errorf("could not determine working directory: %w", err)
 			}
 
-			// Validate: git repo required
-			if !git.IsRepo(ctx, cwd) {
-				output.Errorf("Not a git repository.", "Run 'git init' first, then 'gtms init'.")
-				return output.AsDisplayed(fmt.Errorf("not a git repository"))
+			// Validate: git repo required, and git must be runnable (ENH-189)
+			if err := requireGitRepo(ctx, cwd, notARepoHintInit); err != nil {
+				return err
 			}
 
 			// Validate: mutual exclusion of guidance flags
@@ -230,7 +229,9 @@ re-run init.`,
 							_ = config.WriteConfig(configPath, cfg2)
 						}
 					}
-					formatDemoOutput(cwd, demoResult, !guidanceOffFlag)
+					// Existing-config demo-merge: no fresh inference happened here, so
+					// no project completion banner is printed (unchanged pre-ENH-190).
+					formatDemoOutput(cwd, "", "", false, demoResult, !guidanceOffFlag)
 					return nil
 				}
 
@@ -242,7 +243,7 @@ re-run init.`,
 					}
 					repo := repoFlag
 					if repo == "" {
-						repo = git.InferRepo(ctx, cwd, "org/repo-name")
+						repo = git.InferRepo(ctx, cwd, config.NoOriginRepo)
 					}
 
 					// Warn if not at git root
@@ -285,7 +286,9 @@ re-run init.`,
 							_ = config.WriteConfig(configPath, cfg)
 						}
 					}
-					formatDemoOutput(cwd, demoResult, !guidanceOffFlag)
+					// Fresh init+demo: show the same completion banner and no-origin
+					// guidance as normal init, reflecting the just-inferred repo value.
+					formatDemoOutput(cwd, name, repo, true, demoResult, !guidanceOffFlag)
 					return nil
 				}
 			}
@@ -341,7 +344,7 @@ re-run init.`,
 
 			repo := repoFlag
 			if repo == "" {
-				repo = git.InferRepo(ctx, cwd, "org/repo-name")
+				repo = git.InferRepo(ctx, cwd, config.NoOriginRepo)
 			}
 
 			// Run scaffolding
@@ -379,7 +382,7 @@ re-run init.`,
 	}
 
 	cmd.Flags().StringVar(&nameFlag, "name", "", "Project name (default: directory name)")
-	cmd.Flags().StringVar(&repoFlag, "repo", "", "Repository path, e.g. org/repo (default: inferred from git remote)")
+	cmd.Flags().StringVar(&repoFlag, "repo", "", "Repository path, e.g. org/repo (default: inferred from the origin remote; stores no-origin-remote when origin is unavailable)")
 	cmd.Flags().StringVar(&presetFlag, "preset", "", "Workflow preset: manual, bats, playwright")
 	cmd.Flags().BoolVar(&presetsFlag, "presets", false, "List available presets and exit")
 	cmd.Flags().BoolVar(&forceFlag, "force", false, "Overwrite existing config or allow nested project creation")
@@ -401,6 +404,36 @@ func printPresetList(w *os.File) {
 	fmt.Fprintf(w, "  gtms init --preset <name>     Scaffold a GTMS project with the named preset\n")
 }
 
+// noOriginBannerLabel is the friendly parenthetical shown in project banners in
+// place of the reserved config.NoOriginRepo sentinel (ENH-190).
+const noOriginBannerLabel = "no origin remote configured"
+
+// noOriginGuidance is the one-time actionable line printed by both init paths
+// (normal and fresh --demo) when the no-origin sentinel is selected (ENH-190).
+// It is init-only: it must never appear on later --verbose runs, nor when a real
+// origin was inferred or an explicit --repo was supplied.
+const noOriginGuidance = "Set project.repo to org/repo after configuring an origin remote."
+
+// repoBannerLabel renders a stored repo value for a user-facing "(...)" project
+// banner, translating the reserved no-origin sentinel to friendly prose so the
+// raw sentinel never leaks to the user (ENH-190).
+func repoBannerLabel(repo string) string {
+	if config.IsNoOriginRepo(repo) {
+		return noOriginBannerLabel
+	}
+	return repo
+}
+
+// printProjectCompletionBanner prints the "Project: {name} ({repo})" completion
+// line to stdout, translating the no-origin sentinel and emitting the one-time
+// init guidance only when the sentinel is in effect (ENH-190).
+func printProjectCompletionBanner(name, repo string) {
+	fmt.Printf("Project: %s (%s)\n", name, repoBannerLabel(repo))
+	if config.IsNoOriginRepo(repo) {
+		fmt.Printf("%s\n", noOriginGuidance)
+	}
+}
+
 // formatInitOutput prints the success summary after initialisation.
 func formatInitOutput(root, name, repo, preset string, result *scaffold.Result, guidanceEnabled bool) {
 	// AC #26: Preset: <name> within first three output lines, exact match
@@ -408,7 +441,7 @@ func formatInitOutput(root, name, repo, preset string, result *scaffold.Result, 
 	// that exactly matches "Preset: <name>", no leading indent).
 	fmt.Printf("%s GTMS initialised in %s\n", output.IconComplete, root)
 	fmt.Printf("Preset: %s\n", preset)
-	fmt.Printf("Project: %s (%s)\n", name, repo)
+	printProjectCompletionBanner(name, repo)
 	fmt.Println()
 
 	// S3 awareness: when items were restored in a pre-existing gtms/, show them first
@@ -533,9 +566,20 @@ func formatInitOutput(root, name, repo, preset string, result *scaffold.Result, 
 }
 
 // formatDemoOutput prints the success summary after demo seeding.
-func formatDemoOutput(root string, result *scaffold.DemoSeedResult, guidanceEnabled bool) {
+//
+// ENH-190: the fresh init+demo path passes showProject=true with the project
+// name and inferred repo so demo initialization prints the same completion
+// banner (and no-origin guidance) as normal init. The existing-config
+// demo-merge path passes showProject=false: it did not run a fresh inference,
+// so it prints no project banner (unchanged behaviour).
+func formatDemoOutput(root, name, repo string, showProject bool, result *scaffold.DemoSeedResult, guidanceEnabled bool) {
 	fmt.Printf("%s Demo data seeded in %s\n", output.IconComplete, root)
 	fmt.Println()
+
+	if showProject {
+		printProjectCompletionBanner(name, repo)
+		fmt.Println()
+	}
 
 	if len(result.FilesCreated) > 0 {
 		fmt.Println("  Created:")

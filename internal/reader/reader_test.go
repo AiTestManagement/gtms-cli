@@ -1888,3 +1888,226 @@ branch: main
 		"Record result=error must not trigger the BUG-044 bypass; ExecuteStatus must be 'failed' so the detail view renders 'Failed'")
 	assert.Equal(t, "error", entries[0].LastResult)
 }
+
+// --- BUG-162 Symptom B: manual-path execution-timestamp join ---
+//
+// The manual result FILE carries no timestamp, so a stale errored execute task
+// used to override a newer recorded manual pass/skip. The fix joins the
+// committed gtms/execution/*.results.yaml completed_at into entry.LastRunAt so
+// the existing BUG-044 recordSupersedes reconciliation fires on the manual path.
+
+// writeExecutionResult writes a gtms/execution/<taskID>--<tc>.results.yaml file
+// with a single result row, matching internal/execution.ResultsFile's shape.
+func writeExecutionResult(t *testing.T, root, taskID, tc, framework, outcome, completedAt string) {
+	t.Helper()
+	rel := filepath.Join("gtms/execution", taskID+"--"+tc+".results.yaml")
+	body := "schema_version: \"1.0\"\n" +
+		"task_id: " + taskID + "\n" +
+		"framework: " + framework + "\n" +
+		"completed_at: " + completedAt + "\n" +
+		"results:\n" +
+		"  - tc_id: " + tc + "\n" +
+		"    outcome: " + outcome + "\n"
+	writeFile(t, root, rel, body)
+}
+
+func writeErrorExecuteTask(t *testing.T, root, taskID, tc, created string) {
+	t.Helper()
+	writeFile(t, root, filepath.Join("gtms/tasks", "error", taskID+"-execute-"+tc+".md"),
+		"---\nid: "+taskID+"\ntype: execute\ntarget: "+tc+"\nadapter: manual-execute\nstatus: error\ncreated: \""+created+"\"\nbranch: main\n---\n")
+}
+
+func TestBUG162_ManualRecordSupersedesStaleErrorTask(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "gtms.config", "project:\n  name: x\n  repo: x\n")
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-77777777.md"), "---\ntest_case_id: tc-77777777\ntitle: Manual skip supersedes stale error\n---\n")
+	seedLegacyRecord(t, root, legacyRecord{TC: "tc-77777777", Framework: "manual", Result: "skip"})
+	writeExecutionResult(t, root, "task-7777bbbb", "tc-77777777", "manual", "skip", "2026-07-30T12:00:00Z")
+	writeErrorExecuteTask(t, root, "task-7777aaaa", "tc-77777777", "2026-07-30T08:00:00Z")
+
+	entries, err := PipelineStatus(root, nil, "", false)
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+	assert.Equal(t, "skipped", entries[0].ExecuteStatus,
+		"newer manual skip execution must supersede the older error task")
+	assert.Equal(t, "skipped", entries[0].LastResult)
+	assert.Equal(t, "2026-07-30T12:00:00Z", entries[0].LastRunAt,
+		"LastRunAt must come from the execution record's completed_at")
+}
+
+func TestBUG162_ManualPassSupersedesStaleErrorTask(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "gtms.config", "project:\n  name: x\n  repo: x\n")
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-66666666.md"), "---\ntest_case_id: tc-66666666\ntitle: Manual pass supersedes stale error\n---\n")
+	seedLegacyRecord(t, root, legacyRecord{TC: "tc-66666666", Framework: "manual", Result: "pass"})
+	writeExecutionResult(t, root, "task-6666bbbb", "tc-66666666", "manual", "pass", "2026-07-30T12:00:00Z")
+	writeErrorExecuteTask(t, root, "task-6666aaaa", "tc-66666666", "2026-07-30T08:00:00Z")
+
+	entries, err := PipelineStatus(root, nil, "", false)
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+	assert.Equal(t, "complete", entries[0].ExecuteStatus,
+		"newer manual pass execution must supersede the older error task")
+	assert.Equal(t, "pass", entries[0].LastResult)
+}
+
+func TestBUG162_NewerErrorTaskStillWinsOnManualPath(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "gtms.config", "project:\n  name: x\n  repo: x\n")
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-88888888.md"), "---\ntest_case_id: tc-88888888\ntitle: Newer error still wins\n---\n")
+	seedLegacyRecord(t, root, legacyRecord{TC: "tc-88888888", Framework: "manual", Result: "pass"})
+	writeExecutionResult(t, root, "task-8888bbbb", "tc-88888888", "manual", "pass", "2026-07-30T08:00:00Z")
+	writeErrorExecuteTask(t, root, "task-8888aaaa", "tc-88888888", "2026-07-30T12:00:00Z")
+
+	entries, err := PipelineStatus(root, nil, "", false)
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+	assert.Equal(t, "error", entries[0].ExecuteStatus,
+		"an error task newer than the recorded manual execution must still win")
+	assert.Equal(t, "pass", entries[0].LastResult,
+		"the recorded outcome text is preserved even when the error task wins")
+}
+
+func TestBUG162_NoExecutionRecordLeavesErrorTaskWinning(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "gtms.config", "project:\n  name: x\n  repo: x\n")
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-1f395061.md"), "---\ntest_case_id: tc-1f395061\ntitle: Missing execution record\n---\n")
+	seedLegacyRecord(t, root, legacyRecord{TC: "tc-1f395061", Framework: "manual", Result: "pass"})
+	// No gtms/execution record at all.
+	writeErrorExecuteTask(t, root, "task-1f39aaaa", "tc-1f395061", "2026-07-30T12:00:00Z")
+
+	entries, err := PipelineStatus(root, nil, "", false)
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+	assert.Empty(t, entries[0].LastRunAt,
+		"no trustworthy execution record must leave LastRunAt empty")
+	assert.Equal(t, "error", entries[0].ExecuteStatus,
+		"with LastRunAt empty the conservative error-task-wins path stays in force")
+}
+
+func TestBUG162_MalformedCandidateIgnoredOlderValidWins(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "gtms.config", "project:\n  name: x\n  repo: x\n")
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-2b1d0854.md"), "---\ntest_case_id: tc-2b1d0854\ntitle: Malformed newest, older valid supersedes\n---\n")
+	seedLegacyRecord(t, root, legacyRecord{TC: "tc-2b1d0854", Framework: "manual", Result: "skip"})
+	// Malformed newest candidate (unparseable YAML) -- must be skipped, not fatal.
+	writeFile(t, root, filepath.Join("gtms/execution", "task-2b1dffff--tc-2b1d0854.results.yaml"),
+		"schema_version: \"1.0\"\n  : : not valid yaml :::\n\t- broken\n")
+	// Older VALID candidate.
+	writeExecutionResult(t, root, "task-2b1dbbbb", "tc-2b1d0854", "manual", "skip", "2026-07-30T10:00:00Z")
+	writeErrorExecuteTask(t, root, "task-2b1daaaa", "tc-2b1d0854", "2026-07-30T08:00:00Z")
+
+	entries, err := PipelineStatus(root, nil, "", false)
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+	assert.Equal(t, "2026-07-30T10:00:00Z", entries[0].LastRunAt,
+		"a malformed candidate must be ignored while an older valid candidate still supplies LastRunAt")
+	assert.Equal(t, "skipped", entries[0].ExecuteStatus)
+}
+
+func TestBUG162_MultipleRecordsNewestCompletedAtWins(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "gtms.config", "project:\n  name: x\n  repo: x\n")
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-94762df1.md"), "---\ntest_case_id: tc-94762df1\ntitle: Newest completed_at wins\n---\n")
+	seedLegacyRecord(t, root, legacyRecord{TC: "tc-94762df1", Framework: "manual", Result: "pass"})
+	// Two valid records; the older (08:00) predates the error task (10:00),
+	// the newer (12:00) postdates it. Only correct newest-selection supersedes.
+	writeExecutionResult(t, root, "task-9476aaaa", "tc-94762df1", "manual", "pass", "2026-07-30T08:00:00Z")
+	writeExecutionResult(t, root, "task-9476cccc", "tc-94762df1", "manual", "pass", "2026-07-30T12:00:00Z")
+	writeErrorExecuteTask(t, root, "task-9476bbbb", "tc-94762df1", "2026-07-30T10:00:00Z")
+
+	entries, err := PipelineStatus(root, nil, "", false)
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+	assert.Equal(t, "2026-07-30T12:00:00Z", entries[0].LastRunAt,
+		"the newest parsed completed_at must be selected, not the oldest or filesystem order")
+	assert.Equal(t, "complete", entries[0].ExecuteStatus,
+		"newest execution (12:00) is newer than the error task (10:00), so it supersedes")
+}
+
+func TestBUG162_ManualExecutionLastRunAt_TieBreakByFilename(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "gtms.config", "project:\n  name: x\n  repo: x\n")
+	// Two valid candidates with EQUAL completed_at -> greatest-lexical filename wins.
+	writeExecutionResult(t, root, "task-aaaa1111", "tc-tie", "manual", "pass", "2026-07-30T12:00:00Z")
+	writeExecutionResult(t, root, "task-zzzz9999", "tc-tie", "manual", "pass", "2026-07-30T12:00:00Z")
+	got := manualExecutionLastRunAt(root, "tc-tie", "pass")
+	assert.Equal(t, "2026-07-30T12:00:00Z", got,
+		"equal completed_at is deterministic (filename tie-break), never mtime-dependent")
+
+	// An outcome that does not match any candidate yields no timestamp.
+	assert.Empty(t, manualExecutionLastRunAt(root, "tc-tie", "skipped"),
+		"an outcome that matches no candidate must return empty")
+	// A non-manual candidate is not eligible.
+	writeExecutionResult(t, root, "task-bats0001", "tc-bats", "bats", "pass", "2026-07-30T12:00:00Z")
+	assert.Empty(t, manualExecutionLastRunAt(root, "tc-bats", "pass"),
+		"a non-manual framework must not satisfy the manual join")
+}
+
+func TestBUG162_WiredManualSelectionSupersedes(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "gtms.config", "project:\n  name: x\n  repo: x\n")
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-99999999.md"), "---\ntest_case_id: tc-99999999\ntitle: Wired-plus-manual selection supersedes\n---\n")
+	// Wired to bats (wiring only, no terminal result) AND a recorded manual skip.
+	seedLegacyRecord(t, root, legacyRecord{TC: "tc-99999999", Framework: "bats", Result: ""})
+	seedLegacyRecord(t, root, legacyRecord{TC: "tc-99999999", Framework: "manual", Result: "skip"})
+	writeExecutionResult(t, root, "task-9999bbbb", "tc-99999999", "manual", "skip", "2026-07-30T12:00:00Z")
+	writeErrorExecuteTask(t, root, "task-9999aaaa", "tc-99999999", "2026-07-30T08:00:00Z")
+
+	// --framework manual (strict) selects the manual result on the wired TC.
+	entries, err := PipelineStatus(root, nil, "manual", true)
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+	assert.Equal(t, "manual", entries[0].SelectedFramework)
+	assert.Equal(t, "skipped", entries[0].ExecuteStatus,
+		"BUG-127 wired-plus-manual path must also join the execution timestamp and supersede the stale error")
+	assert.Equal(t, "2026-07-30T12:00:00Z", entries[0].LastRunAt)
+}
+
+// TestBUG162_OffsetTimestampDoesNotFalselySupersede guards the RFC3339
+// lexical-comparison hazard: a manual completed_at carrying a non-Z offset that
+// is lexically GREATER but chronologically OLDER than the error task must NOT
+// suppress the newer error. Canonicalizing LastRunAt to whole-second UTC Z makes
+// the lexical recordSupersedes comparison chronologically correct.
+func TestBUG162_OffsetTimestampDoesNotFalselySupersede(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "gtms.config", "project:\n  name: x\n  repo: x\n")
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-0ff5e701.md"), "---\ntest_case_id: tc-0ff5e701\ntitle: Offset timestamp must not falsely supersede\n---\n")
+	seedLegacyRecord(t, root, legacyRecord{TC: "tc-0ff5e701", Framework: "manual", Result: "pass"})
+	// Manual run at 11:00 UTC written with a +02:00 offset -> the raw string
+	// "2026-07-30T13:00:00+02:00" sorts lexically ABOVE the error task's
+	// "2026-07-30T12:00:00Z" (12:00 UTC), even though it is an HOUR older.
+	writeExecutionResult(t, root, "task-0ff5bbbb", "tc-0ff5e701", "manual", "pass", "2026-07-30T13:00:00+02:00")
+	writeErrorExecuteTask(t, root, "task-0ff5aaaa", "tc-0ff5e701", "2026-07-30T12:00:00Z")
+
+	entries, err := PipelineStatus(root, nil, "", false)
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+	assert.Equal(t, "error", entries[0].ExecuteStatus,
+		"an offset completed_at that is chronologically older than the error task must not suppress it")
+	assert.Equal(t, "2026-07-30T11:00:00Z", entries[0].LastRunAt,
+		"LastRunAt must be canonicalized to whole-second UTC Z (11:00), not the raw +02:00 string")
+	assert.Equal(t, "pass", entries[0].LastResult)
+}
+
+// TestBUG162_FractionalSecondsCanonicalized proves fractional-second
+// completed_at values are parsed and canonicalized (sub-second precision
+// dropped) so the lexical comparison stays correct: a fractional run newer than
+// the error task still supersedes.
+func TestBUG162_FractionalSecondsCanonicalized(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "gtms.config", "project:\n  name: x\n  repo: x\n")
+	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-fac00001.md"), "---\ntest_case_id: tc-fac00001\ntitle: Fractional seconds canonicalized\n---\n")
+	seedLegacyRecord(t, root, legacyRecord{TC: "tc-fac00001", Framework: "manual", Result: "pass"})
+	// Fractional-second manual run at 12:00:00.5 UTC, newer than the 08:00 error.
+	writeExecutionResult(t, root, "task-fac0bbbb", "tc-fac00001", "manual", "pass", "2026-07-30T12:00:00.500Z")
+	writeErrorExecuteTask(t, root, "task-fac0aaaa", "tc-fac00001", "2026-07-30T08:00:00Z")
+
+	entries, err := PipelineStatus(root, nil, "", false)
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+	assert.Equal(t, "complete", entries[0].ExecuteStatus,
+		"a fractional-second manual run newer than the error task must supersede it")
+	assert.Equal(t, "2026-07-30T12:00:00Z", entries[0].LastRunAt,
+		"fractional seconds must be dropped by canonicalization to whole-second UTC Z")
+}

@@ -561,7 +561,7 @@ func TestRunStatusOverview_RecursiveFlatList(t *testing.T) {
 	root := setupFolderSummaryFixture(t)
 	var buf bytes.Buffer
 
-	scope := buildScopeFromArg(root, "", true)
+	scope, _ := buildScopeFromArg(root, "", true)
 	err := runStatusOverview(&buf, root, scope, false, "", false)
 	require.NoError(t, err)
 
@@ -667,7 +667,7 @@ func TestRunStatusOverview_RecursiveFlatList_JSON(t *testing.T) {
 	root := setupFolderSummaryFixture(t)
 	var buf bytes.Buffer
 
-	scope := buildScopeFromArg(root, "", true)
+	scope, _ := buildScopeFromArg(root, "", true)
 	err := runStatusOverview(&buf, root, scope, true, "", false)
 	require.NoError(t, err)
 
@@ -1788,4 +1788,30 @@ title: Pester Test
 		"BUG-082 regression: Pester-only TC must NOT be counted as not-automated when no --framework flag")
 	assert.Equal(t, 0, entries[0].FrameworkMismatch,
 		"BUG-082 regression: no framework filter means no mismatches")
+}
+
+// TestBUG162_FormatExecuteStageIcon_FoldsLastResult pins Symptom A: the per-TC
+// detail EXECUTE icon derives from the test result for a completed run (cross
+// for a fail), keeps status detail's own lifecycle-error glyph (cross, not
+// map's warning triangle), and never mutates ExecuteStatus.
+func TestBUG162_FormatExecuteStageIcon_FoldsLastResult(t *testing.T) {
+	cases := []struct {
+		name          string
+		executeStatus string
+		lastResult    string
+		want          string
+	}{
+		{"completed pass", "complete", "pass", output.IconComplete},
+		{"completed fail folds to cross", "complete", "fail", output.IconError},
+		{"skipped", "skipped", "skipped", output.IconSkipped},
+		{"lifecycle error stays cross in detail", "error", "pass", output.IconError},
+		{"in-progress wins", "in-progress", "fail", output.IconInProgress},
+		{"pending with no result", "pending", "none", output.IconPending},
+		{"never executed", "none", "none", "—"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			assert.Equal(t, c.want, formatExecuteStageIcon(c.executeStatus, c.lastResult))
+		})
+	}
 }

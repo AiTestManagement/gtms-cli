@@ -11,6 +11,7 @@ import (
 	"github.com/aitestmanagement/gtms-cli/internal/config"
 	"github.com/aitestmanagement/gtms-cli/internal/output"
 	"github.com/aitestmanagement/gtms-cli/internal/reader"
+	targetpkg "github.com/aitestmanagement/gtms-cli/internal/target"
 )
 
 func newMapCmd() *cobra.Command {
@@ -58,19 +59,28 @@ the summary.
 			strict := framework != ""
 
 			if len(args) > 0 {
-				arg := strings.ToLower(args[0])
-				arg = normaliseTarget(arg)
-				if isTestCaseID(arg) {
-					// TC ID → detail view (no scope)
-					return runMap(os.Stdout, root, nil, detail, arg, jsonOut, defaultFw, strict)
-				}
-				// Not a TC ID → treat as folder scope for overview
-				folder, err := validateFolderArg(arg)
+				// BUG-167: shared classifier -- folder case preserved (existence
+				// first), only confirmed TC IDs lowercased/stripped.
+				res, err := targetpkg.Classify(root, args[0])
 				if err != nil {
 					output.Errorf(err.Error(), "")
 					return output.AsDisplayed(err)
 				}
-				scope := buildScopeFromArg(root, folder, recursive)
+				if res.Kind == targetpkg.KindTCID {
+					// BUG-059 (REV-113): a folder-qualified TC must resolve scoped.
+					if err := requireScopedSpec(root, res); err != nil {
+						output.Errorf(err.Error(), "")
+						return output.AsDisplayed(err)
+					}
+					// TC ID -> detail view (flat lookup on the bare ID, no scope)
+					return runMap(os.Stdout, root, nil, detail, res.TCID, jsonOut, defaultFw, strict)
+				}
+				// Folder scope for overview
+				scope, serr := buildScopeFromArg(root, res.Target, recursive)
+				if serr != nil {
+					output.Errorf(serr.Error(), "")
+					return output.AsDisplayed(serr)
+				}
 				return runMap(os.Stdout, root, scope, detail, "", jsonOut, defaultFw, strict)
 			}
 
@@ -469,33 +479,21 @@ func formatExecuteIcon(entry reader.MapEntry) string {
 	//                                      unrecognised state).
 	var icon string
 	switch {
-	// 1-3: active task-derived states.
+	// 1-3: active task-derived states (map's own front-half; the lifecycle
+	// error glyph \u26a0 is map-specific and stays here, NOT in the shared fold --
+	// ADR-021 / BUG-162 DECISION A2).
 	case entry.ExecuteStatus == "in-progress":
 		icon = output.IconInProgress
 	case entry.ExecuteStatus == "error":
 		icon = output.IconWarning
 	case entry.ExecuteStatus == "pending" && entry.LastResult == "none":
 		icon = output.IconPending
-	// 4: terminal LastResult.
-	case entry.LastResult == "pass":
-		icon = output.IconComplete
-	case entry.LastResult == "fail":
-		icon = output.IconError
-	case entry.LastResult == "error":
-		// Defensive: legacyExecuteStatus already maps result=error to
-		// ExecuteStatus=error so this branch is rarely reached. Kept
-		// for direct-from-overlay paths where ExecuteStatus stayed
-		// "none" but LastResult bubbled "error" up.
-		icon = output.IconWarning
-	case entry.LastResult == "skipped":
-		// ENH-127: runtime-skipped tests render \u2298 in the EXECUTE column on
-		// the traceability map, matching how `gtms status` already renders
-		// them. Without this case the LastResult drops through to the
-		// em-dash default and a skipped TC mis-displays as "not started".
-		icon = output.IconSkipped
-	// 5: not started / unrecognised.
+	// 4-5: terminal LastResult (pass/fail/skipped/error) + not-started default,
+	// via the shared derivation so map and `gtms status` detail cannot diverge
+	// on these rungs (BUG-162 Symptom A). output.ExecuteResultIcon returns the
+	// em-dash for "none"/unrecognised, preserving the previous default.
 	default:
-		icon = "\u2014" // em dash
+		icon = output.ExecuteResultIcon(entry.LastResult)
 	}
 	if entry.Stale {
 		icon += " " + output.IconWarning

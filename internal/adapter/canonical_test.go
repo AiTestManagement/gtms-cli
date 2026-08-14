@@ -1,12 +1,42 @@
 package adapter
 
 import (
+	"errors"
+	"strings"
 	"testing"
 
 	"github.com/aitestmanagement/gtms-cli/internal/config"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// TestResolveCanonical_NoMatch_TypedError pins BUG-171 item 1 at the resolver
+// level: the no-match case returns a *MissingExecuteAdapterError carrying the
+// requested framework and configured inventory, its message keeps the stable
+// lowercase substring, and it contains no em-dash (ASCII "--" only).
+func TestResolveCanonical_NoMatch_TypedError(t *testing.T) {
+	cfg := &config.Config{
+		Adapters: map[string]map[string]*config.AdapterConfig{
+			"execute": {
+				"runner-a": {Framework: "playwright", Script: "run.sh", Mode: "sync"},
+			},
+		},
+	}
+	_, _, err := ResolveCanonicalExecuteAdapter(cfg, "bats")
+	require.Error(t, err)
+
+	var mae *MissingExecuteAdapterError
+	require.True(t, errors.As(err, &mae), "resolver should return a typed *MissingExecuteAdapterError")
+	assert.Equal(t, "bats", mae.Framework)
+	assert.Contains(t, mae.Error(), "no execute adapter configured for framework")
+	assert.Contains(t, mae.ConfiguredAdapters(), "runner-a(framework=playwright)")
+
+	// ASCII typography: no em-dash anywhere in the message string.
+	for _, r := range mae.Error() {
+		require.Less(t, r, rune(0x80), "message must be ASCII (no em-dash); found %q", string(r))
+	}
+	assert.True(t, strings.Contains(mae.Error(), "--"), "message should use ASCII -- separator")
+}
 
 // ENH-191: ResolveCanonicalExecuteAdapter tests for the inherent-framework
 // extension and Mode 3 exclusion.

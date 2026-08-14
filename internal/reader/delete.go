@@ -10,6 +10,7 @@ import (
 
 	"github.com/aitestmanagement/gtms-cli/internal/layout"
 	"github.com/aitestmanagement/gtms-cli/internal/pathsafe"
+	"github.com/aitestmanagement/gtms-cli/internal/testcase"
 )
 
 // PathSafetyError is a type alias for pathsafe.PathSafetyError, preserving
@@ -31,6 +32,9 @@ func IsPathSafetyError(err error) bool {
 //   - ResultFiles: result/output files discovered via automation record executed_artefact fields
 //
 // ENH-128: replaced typed BATSScripts/JUnitResults fields with generic TestScripts/ResultFiles.
+//
+// BUG-173: PreservedArtefacts records referenced test artefacts that delete did
+// NOT remove. These are never counted among the deleted totals.
 type DeleteResult struct {
 	TestCasesProcessed   int
 	TestCaseSpecsRemoved int
@@ -40,6 +44,21 @@ type DeleteResult struct {
 	ResultFiles          int
 	ResultContracts      int
 	FilesDeleted         []string
+	PreservedArtefacts   []PreservedArtefact
+}
+
+// PreservedArtefact names a referenced test artefact that delete deliberately
+// left on disk (BUG-173). The safe default preserves every referenced artefact;
+// a forced deletion (`--force-artefact-deletion`) still preserves an artefact
+// that a test case OUTSIDE the deletion set references.
+//
+// SurvivingTCs is empty for the safe default (plain delete, no force). When a
+// forced deletion is blocked by an external reference, SurvivingTCs holds the
+// sorted set of referencing test case IDs outside the deletion set -- this
+// drives the sharing warning.
+type PreservedArtefact struct {
+	Path         string   // project-relative, forward-slash
+	SurvivingTCs []string // sorted; empty => safe-default preserve
 }
 
 // TotalFiles returns the total number of files deleted (or that would be deleted).
@@ -47,160 +66,70 @@ func (r *DeleteResult) TotalFiles() int {
 	return r.TestCaseSpecsRemoved + r.AutomationRecords + r.TestScripts + r.TaskFiles + r.ResultFiles + r.ResultContracts
 }
 
-// DeleteArtifacts traces and removes all pipeline artifacts for the given test case(s).
+// DeleteArtifacts traces and removes pipeline artifacts for the given test case(s).
 //
 // If tcID is non-empty, only that single test case is deleted (scope is ignored).
 // If tcID is empty, scope determines which test cases are deleted.
 // When keepSpec is true, the test case spec file is preserved.
-// When dryRun is true, files are counted but not removed.
-func DeleteArtifacts(projectRoot string, scope *ScopeInfo, tcID string, keepSpec bool, dryRun bool) (*DeleteResult, error) {
-	result := &DeleteResult{}
-
-	if tcID != "" {
-		if err := deleteSingleTC(projectRoot, tcID, keepSpec, dryRun, result); err != nil {
-			return nil, err
-		}
-		result.TestCasesProcessed = 1
-		return result, nil
-	}
-
-	return deleteByScope(projectRoot, scope, keepSpec, dryRun, result)
-}
-
-// deleteByScope deletes artifacts for all test cases within the given scope.
-func deleteByScope(projectRoot string, scope *ScopeInfo, keepSpec bool, dryRun bool, result *DeleteResult) (*DeleteResult, error) {
-	testCases, err := scanTestCases(projectRoot, scope)
-	if err != nil {
-		return nil, fmt.Errorf("scanning test cases: %w", err)
-	}
-
-	for _, tc := range testCases {
-		if err := deleteSingleTC(projectRoot, tc.ID, keepSpec, dryRun, result); err != nil {
-			return nil, err
-		}
-		result.TestCasesProcessed++
-	}
-
-	return result, nil
-}
-
-// deleteSingleTC traces and removes all artifacts for a single test case.
+// When force is true (`--force-artefact-deletion`), referenced test artefacts
+// become deletion candidates -- but an artefact referenced by any test case
+// OUTSIDE the selected deletion set is still preserved (BUG-173).
+// When dryRun is true, the plan is computed but no files are removed.
 //
-// Atomicity (ENH-128 AC #5): the function performs a precheck pass over EVERY
-// record-declared artefact path (both `artefact` and `executed_artefact`
-// fields across all automation records for this TC) BEFORE any os.Remove call.
-// If any declared path resolves outside the project-owned allowlist,
-// the function returns a PathSafetyError naming the offending path and no
-// files are touched. This guards against partial-deletion-then-fail behaviour
-// where a safety check fires too late and a "safe sibling" has already been
-// removed.
-func deleteSingleTC(projectRoot, tcID string, keepSpec, dryRun bool, result *DeleteResult) error {
-	// 1. Discover automation records first -- their artefact fields drive the
-	//    record-declared path set we must validate atomically.
-	records, err := findAutomationRecordFiles(projectRoot, tcID)
+// BUG-173: the complete operation is planned (buildDeletePlan) BEFORE any
+// filesystem mutation, so bulk output is independent of TC iteration order and
+// dry-run previews the same plan as the real run. The ENH-128 atomic
+// path-safety precheck runs during planning: an unsafe selected artefact path
+// aborts the whole operation before any removal.
+func DeleteArtifacts(projectRoot string, scope *ScopeInfo, tcID string, keepSpec, force, dryRun bool) (*DeleteResult, error) {
+	plan, err := buildDeletePlan(projectRoot, scope, tcID, keepSpec, force)
 	if err != nil {
-		return fmt.Errorf("finding automation records for %s: %w", tcID, err)
+		return nil, err
+	}
+	return executeDeletePlan(plan, dryRun)
+}
+
+// executeDeletePlan removes every file the plan resolved (a no-op per file in
+// dry-run) and materialises the DeleteResult, including the preserved-artefact
+// list. Deletion order matches the historical grouping: specs, artefacts,
+// result files, records, task files, result contracts.
+func executeDeletePlan(plan *deletePlan, dryRun bool) (*DeleteResult, error) {
+	result := &DeleteResult{
+		TestCasesProcessed: plan.testCasesProcessed,
+		PreservedArtefacts: plan.preserved,
 	}
 
-	// 2. PRECHECK: resolve every declared artefact path. Any path-safety
-	//    violation must abort the operation BEFORE any deletion runs.
-	scripts, err := findTestScripts(projectRoot, records)
-	if err != nil {
-		return err
-	}
-	resultFiles, err := findResultFilesFromRecords(projectRoot, records)
-	if err != nil {
-		return err
-	}
-
-	// 2b. Cross-category dedupe: scripts win priority over resultFiles.
-	// BUG-073: a file declared as both artefact: and executed_artefact:
-	// (possibly via different relative forms) resolves to the same canonical
-	// absolute path. Without this step, the file would be deleted in 3b and
-	// then 3c would attempt to delete it again, failing mid-operation.
-	scriptSeen := make(map[string]bool, len(scripts))
-	for _, p := range scripts {
-		scriptSeen[p] = true
-	}
-	var dedupedResults []string
-	for _, p := range resultFiles {
-		if !scriptSeen[p] {
-			dedupedResults = append(dedupedResults, p)
-		}
-	}
-	resultFiles = dedupedResults
-
-	// 3. After validation, perform the actual deletions in stable order.
-
-	// 3a. Test case specs (skip if keepSpec)
-	if !keepSpec {
-		specs, err := findTestCaseSpecs(projectRoot, tcID)
-		if err != nil {
-			return fmt.Errorf("finding test case specs for %s: %w", tcID, err)
-		}
-		for _, path := range specs {
+	remove := func(paths []string, counter *int) error {
+		for _, path := range paths {
 			if err := removeFile(path, dryRun); err != nil {
 				return err
 			}
-			result.TestCaseSpecsRemoved++
+			*counter++
 			result.FilesDeleted = append(result.FilesDeleted, path)
 		}
+		return nil
 	}
 
-	// 3b. Test scripts -- discovered from automation record artefact fields
-	for _, path := range scripts {
-		if err := removeFile(path, dryRun); err != nil {
-			return err
-		}
-		result.TestScripts++
-		result.FilesDeleted = append(result.FilesDeleted, path)
+	if err := remove(plan.specs, &result.TestCaseSpecsRemoved); err != nil {
+		return nil, err
+	}
+	if err := remove(plan.artefactDeletes, &result.TestScripts); err != nil {
+		return nil, err
+	}
+	if err := remove(plan.resultFiles, &result.ResultFiles); err != nil {
+		return nil, err
+	}
+	if err := remove(plan.records, &result.AutomationRecords); err != nil {
+		return nil, err
+	}
+	if err := remove(plan.taskFiles, &result.TaskFiles); err != nil {
+		return nil, err
+	}
+	if err := remove(plan.resultContracts, &result.ResultContracts); err != nil {
+		return nil, err
 	}
 
-	// 3c. Result files -- discovered from automation record executed_artefact fields
-	for _, path := range resultFiles {
-		if err := removeFile(path, dryRun); err != nil {
-			return err
-		}
-		result.ResultFiles++
-		result.FilesDeleted = append(result.FilesDeleted, path)
-	}
-
-	// 3d. Now delete the automation records themselves
-	for _, path := range records {
-		if err := removeFile(path, dryRun); err != nil {
-			return err
-		}
-		result.AutomationRecords++
-		result.FilesDeleted = append(result.FilesDeleted, path)
-	}
-
-	// 3e. Task files (all status dirs, all command types)
-	tasks, err := findTaskFiles(projectRoot, tcID)
-	if err != nil {
-		return fmt.Errorf("finding task files for %s: %w", tcID, err)
-	}
-	for _, path := range tasks {
-		if err := removeFile(path, dryRun); err != nil {
-			return err
-		}
-		result.TaskFiles++
-		result.FilesDeleted = append(result.FilesDeleted, path)
-	}
-
-	// 3f. Result contracts (.gtms/results/)
-	contracts, err := findResultContracts(projectRoot, tcID)
-	if err != nil {
-		return fmt.Errorf("finding result contracts for %s: %w", tcID, err)
-	}
-	for _, path := range contracts {
-		if err := removeFile(path, dryRun); err != nil {
-			return err
-		}
-		result.ResultContracts++
-		result.FilesDeleted = append(result.FilesDeleted, path)
-	}
-
-	return nil
+	return result, nil
 }
 
 // findTestCaseSpecs walks gtms/test/cases/ recursively to find spec files for the given TC ID.
@@ -212,8 +141,6 @@ func findTestCaseSpecs(projectRoot, tcID string) ([]string, error) {
 	}
 
 	var matches []string
-	prefix := tcID + "-"
-	exact := tcID + ".md"
 
 	err := filepath.Walk(tcDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
@@ -222,11 +149,10 @@ func findTestCaseSpecs(projectRoot, tcID string) ([]string, error) {
 		if info.IsDir() {
 			return nil
 		}
-		name := info.Name()
-		if !strings.HasSuffix(name, ".md") {
-			return nil
-		}
-		if strings.HasPrefix(name, prefix) || name == exact {
+		// REV-122: the ONE shared spec predicate -- identical to the uniqueness guard
+		// (testcase.FindAllSpecs) and the existence check (testcase.ResolveSpec), so
+		// the guard counts exactly what this mutation removes.
+		if testcase.MatchesSpecFile(info.Name(), tcID) {
 			matches = append(matches, path)
 		}
 		return nil

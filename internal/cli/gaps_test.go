@@ -301,7 +301,7 @@ func TestRunGaps_RecursiveFlatList(t *testing.T) {
 	root := setupGapsFolderFixture(t)
 	var buf bytes.Buffer
 
-	scope := buildScopeFromArg(root, "", true)
+	scope, _ := buildScopeFromArg(root, "", true)
 	err := runGaps(&buf, root, scope, false, "", false)
 	require.NoError(t, err)
 
@@ -318,7 +318,7 @@ func TestRunGaps_RecursiveFlatList_JSON(t *testing.T) {
 	root := setupGapsFolderFixture(t)
 	var buf bytes.Buffer
 
-	scope := buildScopeFromArg(root, "", true)
+	scope, _ := buildScopeFromArg(root, "", true)
 	err := runGaps(&buf, root, scope, true, "", false)
 	require.NoError(t, err)
 
@@ -346,7 +346,7 @@ title: Skipped Test
 	})
 
 	var buf bytes.Buffer
-	scope := buildScopeFromArg(root, "", true)
+	scope, _ := buildScopeFromArg(root, "", true)
 	err := runGaps(&buf, root, scope, false, "", false)
 	require.NoError(t, err)
 
@@ -370,7 +370,7 @@ title: Skipped Test
 	})
 
 	var buf bytes.Buffer
-	scope := buildScopeFromArg(root, "", true)
+	scope, _ := buildScopeFromArg(root, "", true)
 	err := runGaps(&buf, root, scope, true, "", false)
 	require.NoError(t, err)
 
@@ -396,7 +396,7 @@ title: Skipped Test
 	})
 
 	var buf bytes.Buffer
-	scope := buildScopeFromArg(root, "", true)
+	scope, _ := buildScopeFromArg(root, "", true)
 	err := runGaps(&buf, root, scope, false, "", false)
 	require.NoError(t, err)
 
@@ -430,7 +430,7 @@ requirement: REQ-E
 	})
 
 	var buf bytes.Buffer
-	scope := buildScopeFromArg(root, "", true)
+	scope, _ := buildScopeFromArg(root, "", true)
 	err := runGaps(&buf, root, scope, true, "", false)
 	require.NoError(t, err)
 
@@ -474,7 +474,7 @@ requirement: REQ-M
 	// Default mode (no --framework): both wiring records considered; the
 	// stale framework must still surface.
 	var buf bytes.Buffer
-	scope := buildScopeFromArg(root, "", true)
+	scope, _ := buildScopeFromArg(root, "", true)
 	err := runGaps(&buf, root, scope, true, "", false)
 	require.NoError(t, err)
 	var report reader.GapReport
@@ -531,7 +531,7 @@ requirement: REQ-M
 	})
 
 	var buf bytes.Buffer
-	scope := buildScopeFromArg(root, "", true)
+	scope, _ := buildScopeFromArg(root, "", true)
 	err := runGaps(&buf, root, scope, true, "", false)
 	require.NoError(t, err)
 	var report reader.GapReport
@@ -587,7 +587,7 @@ requirement: REQ-M
 	})
 
 	var buf bytes.Buffer
-	scope := buildScopeFromArg(root, "", true)
+	scope, _ := buildScopeFromArg(root, "", true)
 	err := runGaps(&buf, root, scope, true, "", false)
 	require.NoError(t, err)
 	var report reader.GapReport
@@ -634,7 +634,7 @@ requirement: REQ-M
 	})
 
 	var buf bytes.Buffer
-	scope := buildScopeFromArg(root, "", true)
+	scope, _ := buildScopeFromArg(root, "", true)
 	err := runGaps(&buf, root, scope, true, "", false)
 	require.NoError(t, err)
 	var report reader.GapReport
@@ -678,7 +678,7 @@ requirement: REQ-M
 	})
 
 	var buf bytes.Buffer
-	scope := buildScopeFromArg(root, "", true)
+	scope, _ := buildScopeFromArg(root, "", true)
 	err := runGaps(&buf, root, scope, true, "", false)
 	require.NoError(t, err)
 	var report reader.GapReport
@@ -740,7 +740,7 @@ requirement: REQ-M
 	})
 
 	var buf bytes.Buffer
-	scope := buildScopeFromArg(root, "", true)
+	scope, _ := buildScopeFromArg(root, "", true)
 	err := runGaps(&buf, root, scope, false, "", false)
 	require.NoError(t, err)
 
@@ -783,7 +783,7 @@ requirement: REQ-M
 	})
 
 	var buf bytes.Buffer
-	scope := buildScopeFromArg(root, "", true)
+	scope, _ := buildScopeFromArg(root, "", true)
 	err := runGaps(&buf, root, scope, true, "", false)
 	require.NoError(t, err)
 
@@ -830,7 +830,7 @@ requirement: REQ-N
 	require.True(t, os.IsNotExist(statErr), "fixture must not have terminal results")
 
 	var buf bytes.Buffer
-	scope := buildScopeFromArg(root, "", true)
+	scope, _ := buildScopeFromArg(root, "", true)
 	err := runGaps(&buf, root, scope, false, "", false)
 	require.NoError(t, err)
 
@@ -892,7 +892,7 @@ title: Manual fail
 	})
 
 	var buf bytes.Buffer
-	scope := buildScopeFromArg(root, "", true)
+	scope, _ := buildScopeFromArg(root, "", true)
 	err := runGaps(&buf, root, scope, true, "", false)
 	require.NoError(t, err)
 	var report reader.GapReport
@@ -922,7 +922,7 @@ title: Manual skip
 	})
 
 	var buf bytes.Buffer
-	scope := buildScopeFromArg(root, "", true)
+	scope, _ := buildScopeFromArg(root, "", true)
 	err := runGaps(&buf, root, scope, true, "", false)
 	require.NoError(t, err)
 	var report reader.GapReport
@@ -957,7 +957,7 @@ title: Bats fail + manual pass
 	})
 
 	var buf bytes.Buffer
-	scope := buildScopeFromArg(root, "", true)
+	scope, _ := buildScopeFromArg(root, "", true)
 	err := runGaps(&buf, root, scope, true, "", false)
 	require.NoError(t, err)
 	var report reader.GapReport
@@ -1006,7 +1006,7 @@ test_case_hash_at_execute: "deadbeefcafef00d"
 	// (non-manual preferred on equal cycle). Drift does NOT surface because
 	// the selected record is bats, not manual.
 	var buf bytes.Buffer
-	scope := buildScopeFromArg(root, "", true)
+	scope, _ := buildScopeFromArg(root, "", true)
 	err := runGaps(&buf, root, scope, true, "", false)
 	require.NoError(t, err)
 	var report reader.GapReport

@@ -12,6 +12,7 @@ import (
 	"github.com/aitestmanagement/gtms-cli/internal/config"
 	"github.com/aitestmanagement/gtms-cli/internal/output"
 	"github.com/aitestmanagement/gtms-cli/internal/reader"
+	targetpkg "github.com/aitestmanagement/gtms-cli/internal/target"
 )
 
 func newStatusCmd() *cobra.Command {
@@ -55,25 +56,38 @@ Use 'gaps' for coverage analysis or 'map' for requirement traceability.
 			strict := framework != ""
 
 			if len(args) > 0 {
-				arg := strings.ToLower(args[0])
-				arg = normaliseTarget(arg)
-				if isTestCaseID(arg) {
-					// TC ID → detail view
-					return runStatusDetail(os.Stdout, root, arg, jsonOut, defaultFw, strict)
-				}
-				// Not a TC ID → treat as folder scope for overview
-				folder, err := validateFolderArg(arg)
+				// BUG-167: shared classifier -- folder case preserved (existence
+				// first), only confirmed TC IDs lowercased/stripped.
+				res, err := targetpkg.Classify(root, args[0])
 				if err != nil {
 					output.Errorf(err.Error(), "")
 					return output.AsDisplayed(err)
 				}
-				scope := buildScopeFromArg(root, folder, recursive)
+				if res.Kind == targetpkg.KindTCID {
+					// BUG-059 (REV-113): a folder-qualified TC must resolve scoped.
+					if err := requireScopedSpec(root, res); err != nil {
+						output.Errorf(err.Error(), "")
+						return output.AsDisplayed(err)
+					}
+					// TC ID -> detail view (flat lookup on the bare ID)
+					return runStatusDetail(os.Stdout, root, res.TCID, jsonOut, defaultFw, strict)
+				}
+				// Folder scope for overview
+				scope, serr := buildScopeFromArg(root, res.Target, recursive)
+				if serr != nil {
+					output.Errorf(serr.Error(), "")
+					return output.AsDisplayed(serr)
+				}
 				return runStatusOverview(os.Stdout, root, scope, jsonOut, defaultFw, strict)
 			}
 
 			// No arg: -r → recursive flat list; default → folder summary
 			if recursive {
-				scope := buildScopeFromArg(root, "", true)
+				scope, serr := buildScopeFromArg(root, "", true)
+				if serr != nil {
+					output.Errorf(serr.Error(), "")
+					return output.AsDisplayed(serr)
+				}
 				return runStatusOverview(os.Stdout, root, scope, jsonOut, defaultFw, strict)
 			}
 			// BUG-082: pass the explicit --framework value, not the
@@ -441,7 +455,13 @@ func runStatusDetail(w io.Writer, projectRoot, testCaseID string, jsonOut bool, 
 	if detail.Framework != "" && detail.LastResult != "none" && detail.LastResult != "" {
 		execLabel += " [" + detail.Framework + "]"
 	}
-	execIcon := formatStageStatus(detail.ExecuteStatus)
+	// BUG-162 Symptom A: the per-TC detail EXECUTE line is RESULT-AWARE (ADR-021
+	// amendment). A cleanly completed run whose test outcome is `fail` must render
+	// ✗ beside the "Fail" label, not ✓ -- folding LastResult the same way `gtms map`
+	// does, via the shared output.ExecuteResultIcon. The orthogonal ENH-130 data is
+	// untouched (ExecuteStatus stays "complete" for a fail). The status TABLE/overview
+	// (runStatusOverview) stays STATUS-TIED per BUG-078 and is NOT changed.
+	execIcon := formatExecuteStageIcon(detail.ExecuteStatus, detail.LastResult)
 	if detail.Stale {
 		execIcon += " " + output.IconWarning
 		execLabel += " -- script modified since last run"
@@ -544,6 +564,30 @@ func formatStageStatus(status string) string {
 		return "\u2014" // em dash
 	default:
 		return "\u2014"
+	}
+}
+
+// formatExecuteStageIcon returns the EXECUTE icon for the per-TC detail view,
+// folding the orthogonal ENH-130 test result into the glyph (BUG-162 Symptom A,
+// ADR-021 amendment). Lifecycle states keep status-detail's own front-half:
+// in-progress -> ●, pending(+no result) -> ○, and lifecycle error -> ✗
+// (status detail's error glyph; `gtms map` uses ⚠ for error and that divergence
+// is intentional and out of scope). Terminal results (pass/fail/skipped) route
+// through the SHARED output.ExecuteResultIcon so detail and map cannot diverge.
+//
+// This is the detail-view derivation ONLY. The status table/overview
+// (runStatusOverview) deliberately stays status-tied via formatStageStatus
+// (BUG-078) and must not call this.
+func formatExecuteStageIcon(executeStatus, lastResult string) string {
+	switch {
+	case executeStatus == "in-progress":
+		return output.IconInProgress
+	case executeStatus == "error":
+		return output.IconError
+	case executeStatus == "pending" && (lastResult == "none" || lastResult == ""):
+		return output.IconPending
+	default:
+		return output.ExecuteResultIcon(lastResult)
 	}
 }
 

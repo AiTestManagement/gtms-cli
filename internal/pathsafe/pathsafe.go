@@ -103,6 +103,32 @@ func IsPathSafetyError(err error) bool {
 	return errors.As(err, &pse)
 }
 
+// CanonicalRoot resolves projectRoot to the same canonical form ResolveUnderRoot
+// uses internally: absolute, with symlinks (and Windows 8.3 short names)
+// evaluated. Callers that build their own paths under the root -- by joining, or
+// by relativising an absolute path back for display -- must canonicalise the
+// root through this first, or their paths diverge from artefact paths that went
+// through ResolveUnderRoot. On Windows a raw root may be an 8.3 short path
+// (C:\Users\RUNNER~1\...) while ResolveUnderRoot returns the long form
+// (C:\Users\runneradmin\...); without a shared canonical root, filepath.Rel
+// between the two yields a spurious "../../" escape.
+//
+// Unlike ResolveUnderRoot this never errors: if the root cannot be made absolute
+// or its symlinks cannot be evaluated (e.g. it does not exist yet), the
+// best-effort form is returned so callers degrade gracefully rather than
+// aborting.
+func CanonicalRoot(projectRoot string) string {
+	abs, err := filepath.Abs(projectRoot)
+	if err != nil {
+		return projectRoot
+	}
+	eval, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return abs
+	}
+	return eval
+}
+
 // ResolveUnderRoot canonicalises inputPath against projectRoot and verifies
 // it resolves to a location within the project root. Returns the canonical
 // absolute path, a filepath.ToSlash-normalised project-relative path, or a

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -9,42 +10,41 @@ import (
 	"strings"
 
 	"github.com/aitestmanagement/gtms-cli/internal/layout"
+	"github.com/aitestmanagement/gtms-cli/internal/testcase"
 )
 
-// IsBulkFolder checks whether {cases-dir}/{arg}/ exists as a directory,
-// indicating that the argument should be treated as a folder for bulk processing.
+// IsBulkFolder reports whether arg names an existing, in-tree test-case folder
+// (bulk processing). It delegates to the authoritative testcase.ResolveFolder, so
+// an out-of-tree folder symlink is treated as "not a bulk folder" (err != nil)
+// rather than followed via a raw os.Stat (REV-119 CODEX-001).
 func IsBulkFolder(root, arg string) bool {
-	dir := filepath.Join(layout.TestCasesDir(root), arg)
-	info, err := os.Stat(dir)
-	if err != nil {
-		return false
-	}
-	return info.IsDir()
+	_, err := testcase.ResolveFolder(root, arg)
+	return err == nil
 }
 
 // DiscoverTestCases finds all tc-*.md files in {cases-dir}/{folder}/ and returns
 // their TC IDs in alphabetical order. When recursive is false, only the immediate
 // directory is scanned. When recursive is true, subdirectories are included.
 // Returns an error if the folder doesn't exist or contains no tc-*.md files.
+//
+// REV-119 CODEX-001: the scan directory is the CANONICAL, contained path from
+// testcase.ResolveFolder -- never a raw filepath.Join that could follow an
+// out-of-tree symlink. A containment failure is surfaced as an error (no scan).
 func DiscoverTestCases(root, folder string, recursive bool) ([]string, error) {
 	paths := layout.Current()
-	dir := filepath.Join(root, paths.TestCases, folder)
-	info, err := os.Stat(dir)
-	if err != nil {
-		if os.IsNotExist(err) {
+	dir, rerr := testcase.ResolveFolder(root, folder)
+	if rerr != nil {
+		if errors.Is(rerr, testcase.ErrFolderNotFound) {
 			return nil, fmt.Errorf("folder '%s/%s/' does not exist", paths.TestCases, folder)
 		}
-		return nil, fmt.Errorf("checking folder %s/%s/: %w", paths.TestCases, folder, err)
-	}
-	if !info.IsDir() {
-		return nil, fmt.Errorf("%s/%s is not a directory", paths.TestCases, folder)
+		return nil, rerr // containment/safety failure -- do not scan
 	}
 
 	var ids []string
 
 	if recursive {
 		// Walk all subdirectories
-		err = filepath.WalkDir(dir, func(path string, d fs.DirEntry, walkErr error) error {
+		werr := filepath.WalkDir(dir, func(path string, d fs.DirEntry, walkErr error) error {
 			if walkErr != nil {
 				return nil // skip unreadable entries
 			}
@@ -61,8 +61,8 @@ func DiscoverTestCases(root, folder string, recursive bool) ([]string, error) {
 			}
 			return nil
 		})
-		if err != nil {
-			return nil, fmt.Errorf("walking %s/%s/: %w", paths.TestCases, folder, err)
+		if werr != nil {
+			return nil, fmt.Errorf("walking %s/%s/: %w", paths.TestCases, folder, werr)
 		}
 	} else {
 		// Non-recursive: read immediate directory only

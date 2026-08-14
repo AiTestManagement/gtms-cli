@@ -20,6 +20,34 @@ const (
 	IconSkipped    = "\u2298" // circled division slash (⊘) — runtime-skipped test
 )
 
+// ExecuteResultIcon returns the EXECUTE glyph for a terminal test result,
+// folding the orthogonal ENH-130 last-result value (pass/fail/skipped/error)
+// into a single icon. This is the shared derivation used by both
+// `gtms map` (internal/cli/map.go formatExecuteIcon) and the per-TC detail
+// view of `gtms status` (internal/cli/status.go runStatusDetail), so the two
+// surfaces cannot diverge on the pass/fail/skipped rung (BUG-162 Symptom A).
+//
+// It handles ONLY the terminal-result rung. Callers keep their own
+// lifecycle-state front-half (in-progress / pending / lifecycle-error), which
+// legitimately differs per surface: `gtms status` detail renders a lifecycle
+// error as ✗ while `gtms map` renders it as ⚠ (ADR-021; map's ⚠ is pinned by
+// map_phase3d_test.go and out of BUG-162 scope). The defensive "error" case
+// here matches map's historic result=error mapping.
+func ExecuteResultIcon(lastResult string) string {
+	switch lastResult {
+	case "pass":
+		return IconComplete
+	case "fail":
+		return IconError
+	case "skipped":
+		return IconSkipped
+	case "error":
+		return IconWarning
+	default:
+		return "—" // em dash -- none / unrecognised
+	}
+}
+
 // StatusIcon returns the appropriate icon for a given status string.
 func StatusIcon(status string) string {
 	switch status {

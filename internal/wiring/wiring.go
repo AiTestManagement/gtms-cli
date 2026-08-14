@@ -80,6 +80,35 @@ func Path(projectRoot, testCaseID, framework string) (string, error) {
 		fmt.Sprintf("%s--%s%s", testCaseID, framework, FileSuffix)), nil
 }
 
+// ValidateWritable reports whether Write would reject rec, WITHOUT touching the
+// filesystem: the six-field contract plus the filename-component safety checks
+// on testcase and framework. Every check it runs is deterministic, so a caller
+// that plans a write can guarantee the write itself will not fail validation.
+//
+// PlanRefresh uses it so a dry-run preview cannot approve a record the real
+// writer will refuse (REV-129 CODEX-129-001). Before this existed, the
+// filename-safety check ran only inside Write, so a stale record whose
+// framework was not a safe filename component previewed as "Would refresh" and
+// then failed for real.
+func ValidateWritable(projectRoot string, rec *WiringRecord) error {
+	_, err := plannedPath(projectRoot, rec)
+	return err
+}
+
+// plannedPath runs every deterministic check Write performs before it writes,
+// and returns the path Write would write to. It is the single definition of
+// "this record is writable", shared by Write and ValidateWritable so the two
+// can never drift apart.
+func plannedPath(projectRoot string, rec *WiringRecord) (string, error) {
+	if rec == nil {
+		return "", errors.New("wiring record is required")
+	}
+	if err := rec.validate(); err != nil {
+		return "", err
+	}
+	return Path(projectRoot, rec.TestCase, rec.Framework)
+}
+
 // Write serialises rec to gtms/automation/wiring/{tc}--{framework}.wiring.yaml.
 // The output is pure YAML — no "---" fences, no markdown body. The wiring
 // directory is created on demand. Returns the absolute path written.
@@ -90,14 +119,7 @@ func Path(projectRoot, testCaseID, framework string) (string, error) {
 // hashes at write time should return an error to the user rather than
 // write a partial record.
 func Write(projectRoot string, rec *WiringRecord) (string, error) {
-	if rec == nil {
-		return "", errors.New("wiring record is required")
-	}
-	if err := rec.validate(); err != nil {
-		return "", err
-	}
-
-	path, err := Path(projectRoot, rec.TestCase, rec.Framework)
+	path, err := plannedPath(projectRoot, rec)
 	if err != nil {
 		return "", err
 	}
@@ -308,7 +330,74 @@ func ParseFilename(name string) (tc, fw string, ok bool) {
 // {tc}--{framework} shape are still returned with Err set.
 //
 // A missing wiring directory returns (nil, nil).
+//
+// Callers that only care about specific records should use DiscoverForScope so
+// unrelated files are never opened.
 func DiscoverAll(projectRoot string) ([]DiscoveryResult, error) {
+	return discover(projectRoot, nil, "")
+}
+
+// DiscoverForScope is DiscoverAll narrowed to a known set of test case IDs, and
+// optionally to one framework. A file is matched by its FILENAME, before it is
+// opened, so an out-of-scope file is never read or parsed.
+//
+// That matters for more than speed. Refreshing one test case in a project with
+// hundreds of wiring files should not read all of them (REV-129 CLAUDE-003),
+// and an unrelated file that happens to sit in the wiring directory -- huge,
+// corrupt, or not a regular file at all, where a FIFO would block the read
+// indefinitely -- must not be able to affect a command that was never asked
+// about it (REV-129 CODEX-129-002).
+//
+// Matching takes the LONGEST test case ID in scope that the filename starts with
+// (see splitStemForScope), which is what makes it safe for IDs that themselves
+// contain "--". ParseFilename splits on the FIRST "--", so it reads
+// tc-foo--bar--bats.wiring.yaml as testcase "tc-foo", framework "bar--bats" --
+// wrong for the perfectly linkable test case "tc-foo--bar" (IsTestCaseID only
+// requires the "tc-" prefix). Scoping by ParseFilename made a refresh of
+// "tc-foo--bar" report no wiring at all, and made a refresh of a folder
+// containing "tc-foo" report the other record as an identity mismatch
+// (REV-130 CODEX-130-001). Knowing the requested IDs removes the ambiguity.
+//
+// Identity validation is unaffected: the filename/content agreement check needs
+// only the filename, which is known before the read.
+//
+// A filename that matches no ID in scope is skipped, not reported -- telling the
+// caller about files outside the scope it asked for is exactly what scoping is
+// meant to avoid.
+func DiscoverForScope(projectRoot string, tcIDs []string, framework string) ([]DiscoveryResult, error) {
+	scope := make(map[string]bool, len(tcIDs))
+	for _, id := range tcIDs {
+		scope[id] = true
+	}
+	return discover(projectRoot, scope, framework)
+}
+
+// splitStemForScope resolves a {tc}--{framework} filename stem against a known
+// set of test case IDs, preferring the LONGEST ID that matches so an ID
+// containing "--" wins over a shorter ID that happens to be its prefix. Both
+// halves must be non-empty. Returns ok=false when no ID in scope matches.
+func splitStemForScope(stem string, scope map[string]bool) (tc, framework string, ok bool) {
+	best := ""
+	for id := range scope {
+		if len(id) <= len(best) {
+			continue
+		}
+		if strings.HasPrefix(stem, id+"--") && len(stem) > len(id)+2 {
+			best = id
+		}
+	}
+	if best == "" {
+		return "", "", false
+	}
+	return best, stem[len(best)+2:], true
+}
+
+// discover is the shared body of DiscoverAll and DiscoverForScope. A nil scope
+// means "every file", which also restores DiscoverAll's contract of reporting a
+// filename that does not match the {tc}--{framework} shape as a failing result:
+// with no requested IDs to match against there is no scope such a file could be
+// outside of.
+func discover(projectRoot string, scope map[string]bool, framework string) ([]DiscoveryResult, error) {
 	dir := layout.WiringDir(projectRoot)
 	if _, err := os.Stat(dir); os.IsNotExist(err) {
 		return nil, nil
@@ -330,13 +419,26 @@ func DiscoverAll(projectRoot string) ([]DiscoveryResult, error) {
 		}
 		path := filepath.Join(dir, name)
 
-		tc, fw, shapeOK := ParseFilename(name)
-		if !shapeOK {
-			out = append(out, DiscoveryResult{
-				Path: path,
-				Err:  fmt.Errorf("filename %q does not match {tc}--{framework}%s shape", name, FileSuffix),
-			})
-			continue
+		var tc, fw string
+		if scope != nil {
+			var ok bool
+			tc, fw, ok = splitStemForScope(strings.TrimSuffix(name, FileSuffix), scope)
+			if !ok {
+				continue
+			}
+			if framework != "" && fw != framework {
+				continue
+			}
+		} else {
+			var shapeOK bool
+			tc, fw, shapeOK = ParseFilename(name)
+			if !shapeOK {
+				out = append(out, DiscoveryResult{
+					Path: path,
+					Err:  fmt.Errorf("filename %q does not match {tc}--{framework}%s shape", name, FileSuffix),
+				})
+				continue
+			}
 		}
 
 		rec, readErr := Read(path)
@@ -346,7 +448,12 @@ func DiscoverAll(projectRoot string) ([]DiscoveryResult, error) {
 		// B's real record via wiring.Path). Reject it as a per-file error so it is
 		// reported and never exposed as a selectable record.
 		if readErr == nil && rec != nil && (rec.TestCase != tc || rec.Framework != fw) {
-			readErr = fmt.Errorf("wiring identity mismatch: filename %q implies %s--%s but record declares %s--%s",
+			// The two halves are quoted separately. Rendering them as tc--framework
+			// could print the SAME string twice when the disagreement is only about
+			// where the split falls (filename "tc-foo--bar--bats" read as
+			// tc-foo + bar--bats vs. a record declaring tc-foo--bar + bats), which
+			// makes the diagnostic unreadable (REV-130 CODEX-130-001).
+			readErr = fmt.Errorf("wiring identity mismatch: filename %q implies testcase %q framework %q but record declares testcase %q framework %q",
 				name, tc, fw, rec.TestCase, rec.Framework)
 			rec = nil
 		}

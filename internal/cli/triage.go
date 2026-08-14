@@ -92,7 +92,7 @@ Specify exactly one of --automation-wrong, --test-wrong, or --app-wrong.
 	cmd.Flags().BoolVar(&testWrong, "test-wrong", false, "Test case itself is wrong and needs review")
 	cmd.Flags().BoolVar(&appWrong, "app-wrong", false, "Application has a bug (record the decision; link a defect ID with --defect)")
 	cmd.Flags().StringVar(&summary, "summary", "", "Summary of the triage decision")
-	cmd.Flags().StringVar(&defect, "defect", "", "Defect ID to link (used with --app-wrong)")
+	cmd.Flags().StringVar(&defect, "defect", "", "Defect ID to record (used with --app-wrong or --test-wrong)")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Output as JSON")
 	cmd.Flags().StringVar(&frameworkFlag, "framework", "", "Framework to triage (required when multiple frameworks exist for a test case)")
 

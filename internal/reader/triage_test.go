@@ -101,7 +101,7 @@ func TestGetTriageInfo_NoExecutionHistory(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, root, "gtms.config", "project:\n  name: x\n  repo: x\n")
 
-	// CON-023 / ENH-145: wiring record exists but no terminal handoff → triage refuses.
+	// CON-023 / ENH-145: wiring record exists but no terminal handoff -> triage refuses.
 	writeFile(t, root, filepath.Join("gtms/automation", "wiring", "tc-008--playwright.wiring.yaml"),
 		"testcase: tc-008\ntestcase-hash: 0011223344556677\nframework: playwright\nadapter: playwright-runner\nartefact: gtms/automation/specs/tc-008.spec.ts\nartefact-hash: aabbccddeeff0011\n")
 
@@ -164,7 +164,7 @@ func TestRecordTriage_AutomationWrong_QueuesAnotherTaskOnRepeat(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, entries, 1, "first triage queues one task")
 
-	// Second triage queues another task — wiring is still untouched.
+	// Second triage queues another task -- wiring is still untouched.
 	_, err = RecordTriage(root, "tc-007", "automation-wrong", "Second rework", "", "playwright")
 	require.NoError(t, err)
 
@@ -178,6 +178,12 @@ func TestRecordTriage_AutomationWrong_QueuesAnotherTaskOnRepeat(t *testing.T) {
 func TestRecordTriage_TestWrong(t *testing.T) {
 	root := setupTriageProject(t)
 
+	// BUG-180: the spec is read-only on the triage path. Snapshot it so
+	// the assertion is whole-file, not field-by-field.
+	tcPath := filepath.Join(root, "gtms/test/cases", "tc-007-checkout.md")
+	specBefore, err := os.ReadFile(tcPath)
+	require.NoError(t, err)
+
 	result, err := RecordTriage(root, "tc-007", "test-wrong", "Expected result changed with new checkout flow", "", "playwright")
 	require.NoError(t, err)
 	require.NotNil(t, result)
@@ -186,15 +192,25 @@ func TestRecordTriage_TestWrong(t *testing.T) {
 	assert.Equal(t, "test-wrong", result.Category)
 	assert.Empty(t, result.NewTaskID) // no new task for test-wrong
 
-	// CON-023 / ENH-146: triage no longer mutates wiring. test-wrong
-	// updates the TC spec status only.
-	tcPath := filepath.Join(root, "gtms/test/cases", "tc-007-checkout.md")
-	content, err := os.ReadFile(tcPath)
+	// BUG-180: the TC spec must be byte-identical.
+	specAfter, err := os.ReadFile(tcPath)
 	require.NoError(t, err)
-	assert.Contains(t, string(content), "needs-review")
+	assert.Equal(t, specBefore, specAfter, "test-wrong must not write to the TC spec")
+
+	// The decision is durable in the triage history instead.
+	historyBytes, err := os.ReadFile(filepath.Join(root, "gtms", "triage-history", "tc-007.md"))
+	require.NoError(t, err)
+	history := string(historyBytes)
+	assert.Contains(t, history, "test-wrong", "history entry records the category")
+	assert.Contains(t, history, "Framework: playwright", "history entry records the resolved framework")
+	assert.Contains(t, history, "Expected result changed with new checkout flow")
 
 	require.GreaterOrEqual(t, len(result.Actions), 1)
-	assert.Contains(t, result.Actions[0], "needs-review")
+	assert.Contains(t, result.Actions[0], "test-wrong")
+	assert.Contains(t, result.Actions[0], "gtms/triage-history/tc-007.md",
+		"the action must name where the decision went, with forward slashes on every platform")
+	assert.NotContains(t, result.Actions[0], "status -> needs-review",
+		"output must not claim a spec status change that no longer happens")
 }
 
 // --- RecordTriage: app-wrong ---
@@ -256,7 +272,7 @@ func TestRecordTriage_AppWrong(t *testing.T) {
 
 func TestRecordTriage_AppWrong_NoDefect(t *testing.T) {
 	// Phase 3E contract: with neither defect nor summary, app-wrong is a
-	// no-op on disk — no history file is created (avoids empty/noisy
+	// no-op on disk -- no history file is created (avoids empty/noisy
 	// entries) and no automate task is queued.
 	root := setupTriageProject(t)
 
@@ -350,7 +366,7 @@ func TestRecordTriage_NoExecutionHistory(t *testing.T) {
 	writeFile(t, root, "gtms.config", "project:\n  name: x\n  repo: x\n")
 
 	// CON-023 / ENH-145: wiring record exists but no terminal handoff
-	// → triage refuses ("no execution results found").
+	// -> triage refuses ("no execution results found").
 	writeFile(t, root, filepath.Join("gtms/automation", "wiring", "tc-010--playwright.wiring.yaml"),
 		"testcase: tc-010\ntestcase-hash: 0011223344556677\nframework: playwright\nadapter: playwright-runner\nartefact: gtms/automation/specs/tc-010.spec.ts\nartefact-hash: aabbccddeeff0011\n")
 
@@ -484,7 +500,17 @@ func TestResolveTriageCategory(t *testing.T) {
 	}
 }
 
-// --- BUG-011 regression: roundtrip field preservation ---
+// --- BUG-011 regression: frontmatter field preservation ---
+//
+// BUG-011 originally guarded a read-modify-write roundtrip: triage
+// parsed the spec into a closed struct and re-marshalled it, so the
+// risk was that unlisted fields evaporated. BUG-180 removed the write
+// altogether, which supersedes the mechanism -- so this test now
+// asserts whole-file byte equality. That is stronger than the old
+// per-field checks and is also the only correct assertion now: the old
+// test expected `created: "2026-02-21"` quoted, which was an artefact
+// of yaml.Marshal re-emitting the value. With no rewrite, the file
+// keeps the unquoted form the fixture seeded.
 
 func TestBUG011_TriageRoundtripPreservesFields(t *testing.T) {
 	root := t.TempDir()
@@ -513,22 +539,18 @@ created: 2026-02-21
 		"task: task-rt-001\ncommand: execute\ntarget: tc-rt-001\nadapter: bats-runner\nmode: sync\ncreated: \"2026-05-19T10:00:00Z\"\nstatus: complete\nresult: fail\nframework: bats\ncompleted: \"2026-05-19T10:01:00Z\"\n")
 	mkdirAll(t, root, "gtms/tasks")
 
-	// Triage as test-wrong — triggers updateTestCaseStatus() roundtrip
-	_, err := RecordTriage(root, "tc-rt-001", "test-wrong", "Fields should survive", "", "")
+	specPath := filepath.Join(root, "gtms/test/cases", "tc-rt-001.md")
+	specBefore, err := os.ReadFile(specPath)
 	require.NoError(t, err)
 
-	// Read back the file and verify fields survived the roundtrip
-	content, err := os.ReadFile(filepath.Join(root, "gtms/test/cases", "tc-rt-001.md"))
+	// Triage as test-wrong -- the category that used to rewrite the spec.
+	_, err = RecordTriage(root, "tc-rt-001", "test-wrong", "Fields should survive", "", "")
 	require.NoError(t, err)
-	s := string(content)
 
-	assert.Contains(t, s, "test_case_id: tc-rt-001", "test_case_id should survive roundtrip")
-	assert.Contains(t, s, "priority: High", "priority should survive roundtrip")
-	assert.Contains(t, s, "type: Integration", "type should survive roundtrip")
-	assert.Contains(t, s, "created: \"2026-02-21\"", "created should survive roundtrip")
-	assert.Contains(t, s, "needs-review", "status should be updated to needs-review")
-	assert.Contains(t, s, "title: Roundtrip Preservation Test", "title should survive roundtrip")
-	assert.Contains(t, s, "requirement: BUG-011", "requirement should survive roundtrip")
+	specAfter, err := os.ReadFile(specPath)
+	require.NoError(t, err)
+	assert.Equal(t, specBefore, specAfter,
+		"every frontmatter field, its formatting, and the body must survive triage untouched")
 }
 
 // --- ENH-040: Error vs Fail distinction in triage ---
@@ -583,7 +605,7 @@ requirement: REQ-1
 //
 // Setup: TC has two current wiring records (bats + playwright) sharing
 // the same `adapter: shared-runner`. A frameworkless result with the
-// shared adapter must be classified as ambiguous and excluded — even
+// shared adapter must be classified as ambiguous and excluded -- even
 // when triage is invoked for one specific framework.
 //
 // Pre-fix bug: triage built `map{tc: {selectedRec}}` and ran the ladder
@@ -615,7 +637,7 @@ requirement: REQ-A
 
 	_, err := GetTriageInfo(root, "tc-amb01", "bats")
 	require.Error(t, err,
-		"triage must refuse to surface an ambiguously-joined result — the join ladder excludes it")
+		"triage must refuse to surface an ambiguously-joined result -- the join ladder excludes it")
 	assert.Contains(t, err.Error(), "no execution results found",
 		"triage should report no execution results, not silently triage the orphan")
 }

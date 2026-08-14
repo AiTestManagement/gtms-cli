@@ -30,6 +30,26 @@ func TestStatusIcon(t *testing.T) {
 	}
 }
 
+func TestExecuteResultIcon(t *testing.T) {
+	tests := []struct {
+		result string
+		want   string
+	}{
+		{"pass", IconComplete},
+		{"fail", IconError},
+		{"skipped", IconSkipped},
+		{"error", IconWarning},
+		{"none", "—"},
+		{"", "—"},
+		{"weird", "—"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.result, func(t *testing.T) {
+			assert.Equal(t, tt.want, ExecuteResultIcon(tt.result))
+		})
+	}
+}
+
 func TestIsTTY_NonFile(t *testing.T) {
 	// A bytes.Buffer is not a *os.File, so IsTTY should return false.
 	var buf bytes.Buffer

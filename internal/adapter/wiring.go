@@ -31,6 +31,33 @@ import (
 	"github.com/aitestmanagement/gtms-cli/internal/wiring"
 )
 
+// MissingExecuteAdapterError is returned by ResolveCanonicalExecuteAdapter
+// when no configured execute adapter matches the requested framework. It
+// carries the requested framework and the configured execute-adapter
+// inventory so a CLI caller can render command-specific guidance without
+// brittle string matching (BUG-171). The adapter layer stays generic: no
+// command-specific recovery text lives here (this error is shared with
+// gtms link and every other canonical-resolver caller).
+type MissingExecuteAdapterError struct {
+	Framework  string
+	Configured map[string]*config.AdapterConfig
+}
+
+// Error keeps the stable lowercase substring "no execute adapter configured
+// for framework" that lower-level regression tests pin, and uses ASCII "--"
+// (no em-dash) per the repo typography rule.
+func (e *MissingExecuteAdapterError) Error() string {
+	return fmt.Sprintf(
+		"no execute adapter configured for framework %q -- add one in gtms.config under adapters.execute with `framework: %s` (configured: %s)",
+		e.Framework, e.Framework, describeExecuteAdapters(e.Configured))
+}
+
+// ConfiguredAdapters renders the configured execute-adapter inventory
+// ("name(framework=fw), ...") for command-specific CLI presentation.
+func (e *MissingExecuteAdapterError) ConfiguredAdapters() string {
+	return describeExecuteAdapters(e.Configured)
+}
+
 // ResolveCanonicalExecuteAdapter returns the canonical execute adapter name
 // for the given framework, following the algorithm pinned by
 // PRP-ENH-145-146-147 §"Task 4 DECISION":
@@ -98,9 +125,7 @@ func ResolveCanonicalExecuteAdapter(cfg *config.Config, framework string) (strin
 
 	switch len(matches) {
 	case 0:
-		return "", nil, fmt.Errorf(
-			"no execute adapter configured for framework %q — add one in gtms.config under adapters.execute with `framework: %s` (configured: %s)",
-			framework, framework, describeExecuteAdapters(executeAdapters))
+		return "", nil, &MissingExecuteAdapterError{Framework: framework, Configured: executeAdapters}
 	case 1:
 		return matches[0], nil, nil
 	default:

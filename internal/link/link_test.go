@@ -768,6 +768,220 @@ func TestRefreshRecord_MissingSpec_Fails(t *testing.T) {
 	assert.Contains(t, err.Error(), "spec not found")
 }
 
+// --- BUG-146: PlanRefresh / ApplyRefresh plan-model tests ---
+
+// driftSpec appends to every spec under the default test-cases folder so the
+// testcase-hash goes stale. Mirrors the seeding used by the RefreshRecord tests.
+func driftSpec(t *testing.T, root string) {
+	t.Helper()
+	specDir := filepath.Join(root, "gtms", "test", "cases", "test")
+	entries, _ := os.ReadDir(specDir)
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		f, err := os.OpenFile(filepath.Join(specDir, e.Name()), os.O_APPEND|os.O_WRONLY, 0644)
+		require.NoError(t, err)
+		_, _ = f.WriteString("\n## BUG-146 drift\n")
+		_ = f.Close()
+	}
+}
+
+// driftArtefact appends to the linked artefact so the artefact-hash goes stale.
+func driftArtefact(t *testing.T, root, rel string) {
+	t.Helper()
+	f, err := os.OpenFile(filepath.Join(root, filepath.FromSlash(rel)), os.O_APPEND|os.O_WRONLY, 0644)
+	require.NoError(t, err)
+	_, _ = f.WriteString("\n// BUG-146 artefact drift\n")
+	_ = f.Close()
+}
+
+// readWiringBytes returns the raw on-disk wiring file bytes for byte-compare
+// no-mutation assertions.
+func readWiringBytes(t *testing.T, root, tcID, framework string) []byte {
+	t.Helper()
+	path, err := wiring.Path(root, tcID, framework)
+	require.NoError(t, err)
+	b, err := os.ReadFile(path)
+	require.NoError(t, err)
+	return b
+}
+
+func TestPlanRefresh_BothHashDrift(t *testing.T) {
+	root, _ := refreshFixture(t)
+	rec, _, err := wiring.Find(root, "tc-refresh1", "playwright")
+	require.NoError(t, err)
+
+	driftSpec(t, root)
+	driftArtefact(t, root, "tests/tc-refresh1.spec.ts")
+
+	before := readWiringBytes(t, root, "tc-refresh1", "playwright")
+
+	plan, err := PlanRefresh(root, rec)
+	require.NoError(t, err)
+	assert.True(t, plan.TestCaseHashChanged, "testcase-hash should be flagged as changing")
+	assert.True(t, plan.ArtefactHashChanged, "artefact-hash should be flagged as changing")
+	assert.True(t, plan.Changed)
+
+	// PlanRefresh must not write anything.
+	after := readWiringBytes(t, root, "tc-refresh1", "playwright")
+	assert.Equal(t, before, after, "PlanRefresh must be non-mutating")
+}
+
+func TestPlanRefresh_TestcaseOnlyDrift(t *testing.T) {
+	root, _ := refreshFixture(t)
+	rec, _, err := wiring.Find(root, "tc-refresh1", "playwright")
+	require.NoError(t, err)
+
+	driftSpec(t, root) // artefact untouched
+
+	plan, err := PlanRefresh(root, rec)
+	require.NoError(t, err)
+	assert.True(t, plan.TestCaseHashChanged)
+	assert.False(t, plan.ArtefactHashChanged, "artefact-hash should NOT change when the artefact is unchanged")
+	assert.True(t, plan.Changed)
+}
+
+func TestPlanRefresh_NoOp_WhenCurrent(t *testing.T) {
+	root, _ := refreshFixture(t)
+	rec, _, err := wiring.Find(root, "tc-refresh1", "playwright")
+	require.NoError(t, err)
+
+	plan, err := PlanRefresh(root, rec)
+	require.NoError(t, err)
+	assert.False(t, plan.Changed, "an up-to-date record should plan no change")
+	assert.False(t, plan.TestCaseHashChanged)
+	assert.False(t, plan.ArtefactHashChanged)
+}
+
+func TestPlanRefresh_PendingArtefact_TestcaseHashOnly(t *testing.T) {
+	root := t.TempDir()
+	createTCSpecFixture(t, root, "tc-pending1")
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "tests"), 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "tests/tc-pending1.bats"), []byte("# skeleton"), 0644))
+
+	specPath, _ := pipeline.ResolveTestCaseSpec(root, "tc-pending1")
+	oldTCHash, _ := pipeline.HashFile(filepath.Join(root, filepath.FromSlash(specPath)))
+
+	pendingRec := &wiring.WiringRecord{
+		TestCase:     "tc-pending1",
+		TestCaseHash: oldTCHash,
+		Framework:    "bats",
+		Adapter:      "bats-runner",
+		Artefact:     "tests/tc-pending1.bats",
+		ArtefactHash: wiring.PendingArtefactHash,
+	}
+	_, err := wiring.Write(root, pendingRec)
+	require.NoError(t, err)
+
+	driftSpec(t, root)
+
+	plan, err := PlanRefresh(root, pendingRec)
+	require.NoError(t, err)
+	assert.True(t, plan.TestCaseHashChanged, "testcase-hash should change")
+	assert.False(t, plan.ArtefactHashChanged, "a pending artefact-hash must never be flagged as changing")
+
+	// Applying the plan must preserve the pending sentinel.
+	refreshed, err := ApplyRefresh(root, plan)
+	require.NoError(t, err)
+	assert.True(t, refreshed)
+	updated, _, _ := wiring.Find(root, "tc-pending1", "bats")
+	assert.Equal(t, wiring.PendingArtefactHash, updated.ArtefactHash, "artefact-hash must remain 'pending'")
+	assert.NotEqual(t, oldTCHash, updated.TestCaseHash, "testcase-hash should be refreshed")
+}
+
+func TestPlanRefresh_MissingArtefact_Fails(t *testing.T) {
+	root, _ := refreshFixture(t)
+	rec, _, _ := wiring.Find(root, "tc-refresh1", "playwright")
+	require.NoError(t, os.Remove(filepath.Join(root, "tests", "tc-refresh1.spec.ts")))
+
+	_, err := PlanRefresh(root, rec)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "artefact file not found")
+}
+
+func TestPlanRefresh_MissingSpec_Fails(t *testing.T) {
+	root := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "tests"), 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "tests/tc-nospec1.spec.ts"), []byte("test"), 0644))
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "gtms", "test", "cases"), 0755))
+
+	rec := &wiring.WiringRecord{
+		TestCase:     "tc-nospec1",
+		TestCaseHash: "deadbeefdeadbeef",
+		Framework:    "playwright",
+		Adapter:      "playwright-runner",
+		Artefact:     "tests/tc-nospec1.spec.ts",
+		ArtefactHash: "deadbeefdeadbeef",
+	}
+	_, _ = wiring.Write(root, rec)
+
+	_, err := PlanRefresh(root, rec)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "spec not found")
+}
+
+func TestPlanRefresh_UnsafeArtefactPath_Fails(t *testing.T) {
+	root := t.TempDir()
+	createTCSpecFixture(t, root, "tc-unsafe1")
+	tampered := &wiring.WiringRecord{
+		TestCase:     "tc-unsafe1",
+		TestCaseHash: "deadbeefdeadbeef",
+		Framework:    "bats",
+		Adapter:      "bats-runner",
+		Artefact:     "../outside-project/tc-unsafe1.bats",
+		ArtefactHash: "deadbeefdeadbeef",
+	}
+	_, err := wiring.Write(root, tampered)
+	require.NoError(t, err)
+
+	_, err = PlanRefresh(root, tampered)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unsafe artefact path")
+}
+
+func TestApplyRefresh_NoOp_WritesNothing(t *testing.T) {
+	root, _ := refreshFixture(t)
+	rec, _, err := wiring.Find(root, "tc-refresh1", "playwright")
+	require.NoError(t, err)
+
+	before := readWiringBytes(t, root, "tc-refresh1", "playwright")
+	plan, err := PlanRefresh(root, rec) // no drift -> Changed false
+	require.NoError(t, err)
+	refreshed, err := ApplyRefresh(root, plan)
+	require.NoError(t, err)
+	assert.False(t, refreshed)
+	after := readWiringBytes(t, root, "tc-refresh1", "playwright")
+	assert.Equal(t, before, after, "a no-op ApplyRefresh must not rewrite the file")
+}
+
+func TestPlanApply_ParityWithRefreshRecord(t *testing.T) {
+	// The plan predicts exactly the fields RefreshRecord rewrites.
+	root, _ := refreshFixture(t)
+	rec, _, err := wiring.Find(root, "tc-refresh1", "playwright")
+	require.NoError(t, err)
+	oldTC, oldArt := rec.TestCaseHash, rec.ArtefactHash
+
+	driftSpec(t, root)
+	driftArtefact(t, root, "tests/tc-refresh1.spec.ts")
+
+	plan, err := PlanRefresh(root, rec)
+	require.NoError(t, err)
+
+	refreshed, err := RefreshRecord(root, rec)
+	require.NoError(t, err)
+	assert.True(t, refreshed)
+
+	updated, _, _ := wiring.Find(root, "tc-refresh1", "playwright")
+	// Predicted-change set matches the actual diff, field for field.
+	assert.Equal(t, plan.TestCaseHashChanged, updated.TestCaseHash != oldTC)
+	assert.Equal(t, plan.ArtefactHashChanged, updated.ArtefactHash != oldArt)
+	// Identity fields preserved.
+	assert.Equal(t, "playwright", updated.Framework)
+	assert.Equal(t, "playwright-runner", updated.Adapter)
+	assert.Equal(t, "tests/tc-refresh1.spec.ts", updated.Artefact)
+}
+
 // --- ENH-192: RepointRecord tests ---
 
 // repointFixture seeds a wired TC with a real wiring record on disk.
@@ -1130,6 +1344,46 @@ func TestDiscoverScopeSpecs_EscapingSymlinkRejected(t *testing.T) {
 	assert.Contains(t, err.Error(), "outside")
 }
 
+func TestDiscoverScopeSpecs_RecursiveInTreeSymlinkTraversed(t *testing.T) {
+	// BUG-167 (absorbed BUG-168 defect 2): a symlink scope that resolves INSIDE
+	// cases/ must be traversed by the RECURSIVE walk, exactly like the
+	// non-recursive path. Before the fix, filepath.Walk on the unresolved symlink
+	// root followed nothing and collected zero specs.
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation requires elevated privileges on Windows")
+	}
+	root := t.TempDir()
+	createTCSpecAt(t, root, "real", "tc-sym222222")
+	createTCSpecAt(t, root, "real/nested", "tc-sym333333")
+	casesDir := layout.TestCasesDir(root)
+	require.NoError(t, os.Symlink(filepath.Join(casesDir, "real"), filepath.Join(casesDir, "alias")))
+
+	tcIDs, err := discoverScopeSpecs(root, "alias", true)
+	require.NoError(t, err)
+	assert.Contains(t, tcIDs, "tc-sym222222", "recursive walk must follow the resolved symlink root")
+	assert.Contains(t, tcIDs, "tc-sym333333", "recursive walk must recurse into subdirectories under the resolved root")
+}
+
+func TestDiscoverScopeSpecs_RecursiveEscapingSymlinkRejected(t *testing.T) {
+	// BUG-167 (absorbed BUG-168 defect 2 guard): resolving the symlink for the
+	// recursive walk must NOT let an out-of-tree scope through. The recursive form
+	// must stay rejected exactly like the non-recursive one.
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation requires elevated privileges on Windows")
+	}
+	root := t.TempDir()
+	outside := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(outside, "tc-out22222-test.md"),
+		[]byte("---\ntest_case_id: tc-out22222\n---\n"), 0644))
+	casesDir := layout.TestCasesDir(root)
+	require.NoError(t, os.MkdirAll(casesDir, 0755))
+	require.NoError(t, os.Symlink(outside, filepath.Join(casesDir, "alias")))
+
+	_, err := discoverScopeSpecs(root, "alias", true)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "outside")
+}
+
 func TestAmbiguityCheck_WalkErrorAborts(t *testing.T) {
 	// CODEX-004: a traversal error must abort the preflight, not silently shrink the
 	// scan. Exercised via an unreadable subdirectory (POSIX; skipped when perms
@@ -1310,4 +1564,77 @@ func TestRepointSingle_RejectsMode3Adapter(t *testing.T) {
 	root, rec := repointFixture(t)
 	_, err := RepointSingle(root, rec.TestCase, singleOpts("old-runner", "agent-execute-script"))
 	require.Error(t, err)
+}
+
+// TestPlanRefresh_UnwritableFramework_FailsInBothModes pins REV-129
+// CODEX-129-001. wiring.Write validates the testcase and framework as filename
+// components; that check used to run only at write time, so a stale record whose
+// framework is not a safe component previewed as "Would refresh" and then failed
+// for real. PlanRefresh now runs the same deterministic validation, so preview
+// and refresh agree: both refuse, with the same cause.
+func TestPlanRefresh_UnwritableFramework_FailsInBothModes(t *testing.T) {
+	root := t.TempDir()
+	createTCSpecFixture(t, root, "tc-unsafe01")
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "tests"), 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "tests/tc-unsafe01.spec.ts"), []byte("test"), 0644))
+
+	// A record whose framework cannot be a filename component. wiring.Write would
+	// reject it, so it is placed on disk by hand -- exactly how such a record
+	// arrives in practice (a hand edit, a corrupted file, or older tooling).
+	// Hashes are deliberately stale so the plan reports a change and a real
+	// refresh would attempt the write.
+	rec := &wiring.WiringRecord{
+		TestCase:     "tc-unsafe01",
+		TestCaseHash: "deadbeefdeadbeef",
+		Framework:    "bad..fw",
+		Adapter:      "some-runner",
+		Artefact:     "tests/tc-unsafe01.spec.ts",
+		ArtefactHash: "deadbeefdeadbeef",
+	}
+
+	_, planErr := PlanRefresh(root, rec)
+	require.Error(t, planErr, "the preview must not approve a record the writer will refuse")
+	assert.Contains(t, planErr.Error(), "wiring cannot be written")
+
+	refreshed, refreshErr := RefreshRecord(root, rec)
+	require.Error(t, refreshErr, "the real refresh must fail too")
+	assert.False(t, refreshed)
+	assert.Equal(t, planErr.Error(), refreshErr.Error(), "dry and real must report the same cause")
+}
+
+// TestPlanRefresh_UnwritableFramework_CurrentRecordStillReportsNoOp guards the
+// other side of the REV-129 CODEX-129-001 fix: the writability check runs only
+// when a write would actually happen. A record that is already current is never
+// written, so an unsafe name must not turn a no-op into an error -- that would be
+// a behaviour change on the real refresh path (AC4), and it would differ between
+// the two modes for no reason.
+func TestPlanRefresh_UnwritableFramework_CurrentRecordStillReportsNoOp(t *testing.T) {
+	root := t.TempDir()
+	createTCSpecFixture(t, root, "tc-unsafe02")
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "tests"), 0755))
+	artefact := filepath.Join(root, "tests/tc-unsafe02.spec.ts")
+	require.NoError(t, os.WriteFile(artefact, []byte("test"), 0644))
+
+	specPath := filepath.Join(root, "gtms", "test", "cases", "test", "tc-unsafe02-sample.md")
+	specHash, err := pipeline.HashFile(specPath)
+	require.NoError(t, err)
+	artHash, err := pipeline.HashFile(artefact)
+	require.NoError(t, err)
+
+	rec := &wiring.WiringRecord{
+		TestCase:     "tc-unsafe02",
+		TestCaseHash: specHash,
+		Framework:    "bad..fw",
+		Adapter:      "some-runner",
+		Artefact:     "tests/tc-unsafe02.spec.ts",
+		ArtefactHash: artHash,
+	}
+
+	plan, err := PlanRefresh(root, rec)
+	require.NoError(t, err, "a current record is never written, so it must not be rejected")
+	assert.False(t, plan.Changed)
+
+	refreshed, err := RefreshRecord(root, rec)
+	require.NoError(t, err)
+	assert.False(t, refreshed, "no write, no error -- identical to the preview")
 }

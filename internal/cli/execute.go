@@ -8,11 +8,11 @@ import (
 
 	"github.com/aitestmanagement/gtms-cli/internal/adapter"
 	"github.com/aitestmanagement/gtms-cli/internal/config"
-	"github.com/aitestmanagement/gtms-cli/internal/git"
 	"github.com/aitestmanagement/gtms-cli/internal/output"
 	"github.com/aitestmanagement/gtms-cli/internal/pathsafe"
 	"github.com/aitestmanagement/gtms-cli/internal/pipeline"
 	"github.com/aitestmanagement/gtms-cli/internal/result"
+	targetpkg "github.com/aitestmanagement/gtms-cli/internal/target"
 	"github.com/aitestmanagement/gtms-cli/internal/task"
 	"github.com/aitestmanagement/gtms-cli/internal/wiring"
 	"github.com/spf13/cobra"
@@ -65,10 +65,9 @@ Adapter execution:
 			cfg := GetConfig()
 			root := GetProjectRoot()
 
-			// Validate: git repo exists
-			if !git.IsRepo(ctx, root) {
-				output.Errorf("Not a git repository.", "Initialize a git repo with 'git init'.")
-				return output.AsDisplayed(fmt.Errorf("not a git repository"))
+			// Validate: git repo exists and git can be run (ENH-189)
+			if err := requireGitRepo(ctx, root, notARepoHintDefault); err != nil {
+				return err
 			}
 
 			// Validate: folder structure exists
@@ -85,29 +84,42 @@ Adapter execution:
 				return runBulkExecute(cmd, root, "", adapterFlag, environmentFlag, executedBy, frameworkFlag, forceFlag, failFastFlag, recursiveFlag, allowStaleFlag)
 			}
 
-			target := strings.ToLower(args[0])
-			target = normaliseTarget(target)
-
-			// Validate: target is safe (rejects shell metacharacters, path traversal)
-			if err := validateTargetID(target); err != nil {
-				output.Errorf(err.Error(),
-					"Use only letters, numbers, dashes, underscores, dots, and forward slashes.")
+			// BUG-167: shared classifier -- preserves folder case, normalises
+			// separators, and lowercases/strips only confirmed TC IDs.
+			res, err := targetpkg.Classify(root, args[0])
+			if err != nil {
+				// BUG-167 follow-up (BUG-058 compatibility): retain the historical
+				// generic "Invalid test case ID format" message AND surface the
+				// classifier's specific cause (traversal/prefix/invalid chars).
+				msg, hint := invalidTargetFormatError(args[0], err)
+				output.Errorf(msg, hint)
 				return output.AsDisplayed(err)
 			}
 
-			// Disambiguate: folder (bulk mode) vs single test case ID
-			if IsBulkFolder(root, target) {
-				return runBulkExecute(cmd, root, target, adapterFlag, environmentFlag, executedBy, frameworkFlag, forceFlag, failFastFlag, recursiveFlag, allowStaleFlag)
-			}
-
-			// --- Single TC mode (existing behavior) ---
-
-			// Validate: target format (test case ID)
-			if !isTestCaseID(target) {
-				msg := fmt.Sprintf("Invalid test case ID format: '%s'.", target)
+			// Disambiguate: folder (bulk mode) vs single test case ID.
+			// BUG-167 follow-up: enter bulk mode ONLY for an EXISTING folder. A
+			// safe-but-nonexistent folder-shaped arg falls through to the historical
+			// single-TC "Invalid test case ID format" response (frozen tc-13dbade0,
+			// ENH-052 contract). Real mixed-case/backslash folders exist, so
+			// IsBulkFolder is true and they still enter bulk mode correctly.
+			if res.Kind == targetpkg.KindFolder {
+				if IsBulkFolder(root, res.Target) {
+					return runBulkExecute(cmd, root, res.Target, adapterFlag, environmentFlag, executedBy, frameworkFlag, forceFlag, failFastFlag, recursiveFlag, allowStaleFlag)
+				}
+				msg := fmt.Sprintf("Invalid test case ID format: '%s'.", sanitizeForError(res.Target))
 				output.Errorf(msg, "Use format like tc-a1b2c3d4.")
 				return output.AsDisplayed(fmt.Errorf(msg))
 			}
+
+			// BUG-059 (REV-113): a folder-qualified single-TC target must resolve
+			// SCOPED to that folder before any flat wiring op runs.
+			if err := requireScopedSpec(root, res); err != nil {
+				output.Errorf(err.Error(), "Check the folder qualifier, or drop it to match the TC anywhere.")
+				return output.AsDisplayed(err)
+			}
+
+			// --- Single TC mode (existing behavior) -- flat wiring key ---
+			target := res.TCID
 
 			// ENH-150: Post-fill validation gate -- catches frontmatter corruption
 			// before the adapter is invoked.

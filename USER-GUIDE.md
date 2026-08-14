@@ -146,11 +146,17 @@ All three modes use the same core commands: `gtms create`, `gtms prime`, `gtms a
 
 `gtms create` stamps a test case skeleton. After that, the choice is which of two paths to take next.
 
-- **Prime path.** Use `gtms prime` to stamp a result template. You or an AI agent exercise the feature directly and fill the template with `result: pass`, `result: fail`, or `result: skip`. You then run `gtms execute` to lock in the test result. Useful when you are recording a result from direct testing.
+**Creating a test case is a finished piece of work.** It stamps the test case spec and fills it in, and that is the whole job. Neither path below is implied by it: `gtms create` does not run `gtms prime`, `gtms automate`, or `gtms execute`, and an AI agent asked only to create a test case should report the test case ID and file path and stop there. Ask for the next step when you want it.
 
-- **Automate path.** Use `gtms automate` to create a test script and a wiring record. The test script will be your typical automation script (e.g. a Playwright script). You or an AI agent writes the script, then you use `gtms execute` to run it. Useful when you want a repeatable test that lives in the repo.
+- **Prime path.** Use `gtms prime` to stamp a result template. You or an AI agent exercise the feature directly and fill the template with `result: pass`, `result: fail`, or `result: skip`. You then run `gtms execute` to lock in the test result. This records the result of a test you ran yourself; it produces no reusable automation script. Useful when you are recording a result from direct testing.
+
+- **Automate path.** Use `gtms automate` to create a test script and a wiring record. The test script will be your typical automation script (e.g. a Playwright script). You or an AI agent writes the script, then you use `gtms execute` to run it. This produces a reusable script and the wiring that lets it be run again later -- by you, by another agent, or by CI. Useful when you want a repeatable test that lives in the repo.
 
 The two paths are siblings, not stages. The same test case can be primed now and automated later.
+
+If you ask an agent to carry on testing without saying which path you mean, it should explain both options in a sentence each and ask you to pick, rather than choosing for you. Neither path is the default: prime is not implied by being described first, and automate is not implied by the project already having a test framework configured.
+
+Asking once is enough, though. A request that already names the outcome -- "create and automate a test case", or "create a test case, run it manually, and record the result" -- authorises that path, and the agent should get on with it without a second confirmation.
 
 ## Install and verify
 
@@ -338,7 +344,31 @@ The agent then fills in the spec body -- title, requirement reference, type, pri
 
 Downstream commands (`prime`, `automate`, `execute`) re-validate the file and reject frontmatter / filename ID mismatches, missing required frontmatter, or duplicate IDs in the same folder. The gate runs on single-test-case invocations; bulk automate and execute runs skip it.
 
-Both Mode 3 paths -- prime and automate -- start from this point. The next subsection covers the choice between them.
+#### Where an unqualified create request stops
+
+When the request is just "use GTMS to create a test case", the whole job is these three things:
+
+```sh
+gtms create <folder> <name> --adapter agent-create
+# Fill in the stamped test case spec.
+# Report the allocated test case ID and file path, then stop.
+```
+
+The agent does not go on to run `gtms prime`, `gtms automate`, or `gtms execute`. Those are separate requests. Running them unasked creates records the user did not ask for, and on the prime path it can mean exercising the application itself -- so the cost of guessing wrong is real, not just tidiness.
+
+The rule is about what was asked, not about being cautious. When the request already names a broader outcome -- "create and automate a test case", "create a test case, run it manually, and record the result" -- that authorises the path it names, and the agent should carry it out without stopping to confirm something it has already been told.
+
+Both Mode 3 paths -- prime and automate -- start from this point, and both are continuations the user chooses. If the user asks to keep going without saying which, explain the two in a sentence each and ask which they want:
+
+```text
+Created and populated test case tc-XXXXXXXX.
+
+Would you like to continue with:
+
+1. Prime -- exercise it now and record a result, without creating a reusable
+   automation script.
+2. Automate -- create a reusable test script that can be rerun later or in CI.
+```
 
 - **Prime path - create test cases WITHOUT test automation scripts** Where you want to run and record a test result from manual testing. Or where you want an AI agent to run a computer use scenario and then the agent records the test result. The agent exercises the feature, then fills in a result template with `result: pass`, `result: fail`, or `result: skip`. No reusable script is produced and no wiring record (linking a test case to a script) is created. Use this when you or an AI agent need to enter the test result (not when you need to capture the results of executing a deterministic repeatable script).
 - **Automate path - create test cases WITH test automation scripts** Produce a reusable test script and a wiring record so the test can be rerun. In this scenario GTMS will be used to create both the test case file (which the agent then fills in) and the automation script file (which the agent then fills in too). GTMS will also create the wiring file that links the test case to the script. Use this when you have an automated script that runs deterministically and produces a test result.
@@ -423,13 +453,15 @@ This is intentional. The prime path is for the situations where YOU or an AI age
 
 ### When to switch to the automate path
 
-When the situation shifts from AI/human entering the result to automated script, switch from prime to automate. Use the automate path when you want the test to be re-runnable in CI, by another agent, or by a human running the script directly. The next subsection, "Automate path", walks the same lifecycle with `gtms automate` in place of `gtms prime`. It introduces the wiring record, the framework constraint, and the bare `gtms execute <tc-id>` form that the wiring path enables.
+When the situation shifts from AI/human entering the result to automated script, switch from prime to automate. Use the automate path when you want the test to be re-runnable in CI, by another agent, or by a human running the script directly. The next subsection, "Automate path", walks the same lifecycle with `gtms automate` in place of `gtms prime`. It introduces the wiring record, the framework constraint, the runner the automate path needs before it will write anything, and the bare `gtms execute <tc-id>` form that the wiring path enables.
 
 ### Automate path
 
 The automate path is the other side of the post-create fork. Where the prime path records a one-time test result from a test case you run, the automate path produces something the team can replay: a reusable test script and a wiring record that ties the test case to it.
 
 Use the automate path when the value of the test is its repeatability. The agent still writes the test case content, but also creates a script that can be re-run by another agent, a human, or CI, against future builds.
+
+The automate path needs a runner: an execute adapter configured for the framework you ask for. The `manual` preset does not ship one -- it configures the manual execution path only -- so on a manual-preset project `gtms automate <tc-id> --framework bats` stops before writing anything. See "If automate refuses" below.
 
 #### Prime versus automate, in one line
 
@@ -447,6 +479,28 @@ A single test case can take both paths over its lifetime. The fork is a choice a
 - **A wiring record** that links the test case to the script and to the adapter that should run it. The wiring record is what makes `gtms execute <tc-id>` work later without you having to name the adapter again.
 
 The wiring record is the reason the automate path can run bare `gtms execute <tc-id>`: the wiring record names the adapter. The prime path has no wiring record to consult -- it relies on the execute adapter being a prime-path one, either named explicitly (`--adapter agent-execute`) or set as the project default (the manual preset ships `defaults.execute: manual-execute`).
+
+#### If automate refuses
+
+`gtms automate` checks for a runner before it writes anything. If none is configured for the framework you asked for, it stops and names both ways forward:
+
+```text
+✗ No execute adapter configured for framework "bats"
+    Configured execute adapters: agent-execute-script(framework=manual), manual-execute-script(framework=manual).
+    To automate bats test cases, add an execute adapter for framework "bats" under adapters.execute (framework: bats) in gtms.config,
+    or stay on the manual prime path: gtms prime tc-abc12345 --framework manual
+```
+
+Nothing is written for the test case -- no script, no wiring record -- so you can pick either route without cleaning up first:
+
+- **Configure a runner.** Add an execute adapter for the framework under `adapters.execute` in `gtms.config`, then re-run the same automate command. The "Configured execute adapters" line tells you what the project already has, which is usually enough to see what is missing.
+- **Stay on the manual prime path.** Run `gtms prime tc-abc12345 --framework manual`, fill in the result, then `gtms execute`. This is the path the `manual` preset is set up for.
+
+Re-running `gtms init` with a different preset is not a third option: `init` refuses a project that is already initialised, so the preset is a choice you make once, at project creation.
+
+This is a different problem from asking for a framework the built-in automate path does not support at all. A missing runner means "GTMS can stamp this, but nothing is configured to run it" -- adding an adapter fixes it. An unsupported framework means the built-in path has no skeleton to stamp, and adding an adapter will not help; see "Framework choice and the BATS dogfood example" above for what the built-in path covers and how to go beyond it.
+
+Over a folder, the check runs once up front. A batch that cannot be automated reports the problem and stops, rather than failing test case by test case.
 
 #### Framework choice and the BATS dogfood example
 
@@ -886,7 +940,23 @@ Two identity rules to hold in mind:
 - The `test_case_id` in the frontmatter must match the `tc-XXXXXXXX` segment in the filename. The entry validation in `gtms automate`, `gtms prime`, and `gtms execute` catches a mismatch.
 - Every `tc-XXXXXXXX` identifier must be unique across the entire project. GTMS enforces this within a single folder today (at create, prime, and execute validation), but does not check across folders.
 
-If duplicates end up in different folders, GTMS accepts the writes and does not error later either: commands that resolve a test case ID silently use whichever file the directory walk finds first and ignore the other, so results can be recorded against the wrong test case spec. Hold project-wide uniqueness by convention until GTMS checks it end-to-end.
+If duplicates do end up in different folders, GTMS accepts the writes. What happens afterwards depends on how you address the test case.
+
+Name it by its bare ID -- `gtms status tc-abc12345` -- and GTMS still uses whichever file the directory walk finds first and ignores the other, so results can be recorded against the wrong test case spec.
+
+Put a folder in front of it -- `gtms status login/tc-abc12345` -- and GTMS checks first. If that ID exists under more than one folder, the command stops before doing anything and names every conflicting spec:
+
+```text
+$ gtms delete login/tc-abc12345
+✗ test case ID 'tc-abc12345' is ambiguous -- it exists in 2 places:
+    gtms/test/cases/checkout/tc-abc12345-sample.md
+    gtms/test/cases/login/tc-abc12345-sample.md
+    Resolve the duplicate IDs (or use a form that targets a single spec) before targeting 'login/tc-abc12345'.
+```
+
+`automate`, `execute`, `delete`, `reset`, `link`, `status`, and `map` all make this check. It is a safety net at one boundary, not project-wide enforcement -- GTMS still does not stop you writing the duplicate in the first place. Hold project-wide uniqueness by convention until GTMS checks it end-to-end.
+
+One related rule to know when you type a target: a trailing `/` or `\` always means "folder". `gtms delete tc-abc12345/` targets a folder named `tc-abc12345/`, which probably does not exist -- it does not delete the test case `tc-abc12345`. Drop the trailing separator to address the test case.
 
 #### Reorganising test cases
 
@@ -1078,7 +1148,7 @@ Files move between the state subdirectories as the task progresses. The status s
 
 The file has three main surfaces:
 
-- `project`: identifying metadata -- `name` and `repo` (a path like `org/repo`). Both are required; GTMS ignores any other keys you add here.
+- `project`: identifying metadata -- `name` and `repo` (a path like `org/repo`). Both are required; GTMS ignores any other keys you add here. When `gtms init` cannot work out a repository path, it writes the reserved value `no-origin-remote` into `repo` rather than inventing one -- see `gtms init` in the Command Reference.
 - `adapters`: configured adapters, keyed by command (`create`, `automate`, `prime`, `execute`) and then by adapter name. The shipped presets register script-tier alternatives here as opt-in slots; Mode 2 configured adapters also live here.
 - `defaults`: per-command default adapter names. `defaults.prime`, `defaults.create`, `defaults.automate`, and `defaults.execute` are supported.
 
@@ -1301,8 +1371,8 @@ Scaffolds the GTMS layout in a git-initialised project.
 
 - `--preset <name>` selects a workflow preset. Available presets: `manual` (the default for a plain `gtms init` in an empty repository), `bats`, `playwright`.
 - `--presets` lists the available presets and exits without scaffolding.
-- `--name <name>` overrides the inferred project name.
-- `--repo <org/repo>` records a repository path in the scaffolded `gtms.config` (default: inferred from the git remote).
+- `--name <name>` overrides the project name, which otherwise defaults to the name of the directory you run `gtms init` in. It is independent of `--repo`.
+- `--repo <org/repo>` records a repository path in the scaffolded `gtms.config`. Without it, GTMS reads the remote named `origin` and uses what it finds there.
 - `--force` (combined with `--preset` or `--demo`) overwrites an existing `gtms.config` or initialises inside an ancestor GTMS project. A bare `gtms init --force` behaves the same as plain `gtms init`.
 - `--demo` seeds demo content for learning the pipeline. Mutually exclusive with `--preset`.
 - `--guidance-off` / `--guidance-on` control the guidance-messages surface (see Files, Configuration, and Troubleshooting).
@@ -1310,6 +1380,35 @@ Scaffolds the GTMS layout in a git-initialised project.
 `gtms init` warns when run outside the git root and refuses to initialise inside an ancestor GTMS project unless `--force` is passed. In an already-initialised project, a plain `gtms init` lists the presets and changes nothing.
 
 `init` has no `--adapter` flag. The preset selector is `--preset`; `--adapter` belongs to the action commands, where it selects the adapter to invoke at run time.
+
+#### When there is no `origin` remote
+
+A repository you have just `git init`-ed has no `origin` yet, so there is nothing for GTMS to read a repository path from. Rather than invent a plausible-looking one, GTMS writes the reserved value `no-origin-remote`:
+
+```yaml
+project:
+  name: "my-project"
+  repo: "no-origin-remote"
+```
+
+It says so once, at the end of init:
+
+```text
+Project: my-project (no origin remote configured)
+Set project.repo to org/repo after configuring an origin remote.
+```
+
+Those are two different strings and it is worth keeping them apart. `no-origin-remote` is the literal value stored in `gtms.config`, and it is what adapters receive in `{repo}` and `GTMS_REPO`. `(no origin remote configured)` is only how GTMS phrases it when printing the project name to you. Later `--verbose` runs keep showing the friendly parenthetical, but they do not repeat the setup line -- that is a one-time message from `gtms init`.
+
+To fix it, either configure an `origin` remote and edit `project.repo` in `gtms.config`, or set the value you want directly. You can also skip the whole situation by passing the identity up front:
+
+```bash
+gtms init --repo acme/my-project
+```
+
+GTMS never adds or changes a git remote for you. It only reads `origin`.
+
+If you have an older project whose `gtms.config` says `repo: "org/repo-name"`, that is a placeholder from an earlier release. GTMS does not rewrite existing configs, so edit it by hand -- to the real repository path, or to `no-origin-remote` if the project genuinely has no `origin` yet.
 
 ### `gtms create`
 
@@ -1396,12 +1495,12 @@ Flags:
 - `--adapter <name>` repoints the wiring record to a different execute adapter. GTMS rewrites only the adapter field: the artefact path and both hashes are preserved, so nothing goes stale and a pending first-execute stays pending. A missing artefact file warns and proceeds -- repoint fixes who runs the test, not what it runs. The old adapter does not need to exist in `gtms.config`.
 - `--from-adapter <name>` narrows a repoint to records whose stored adapter is exactly this value. Optional for a single test case; required for folder, recursive, and `--all` repoints, so a bulk repoint can never touch wiring you did not mean to change.
 - `--all` repoints across the whole project (requires `--from-adapter`; takes no positional and no `-r`).
-- `--dry-run` is honoured in repoint mode only: it previews exactly which records would change, old adapter to new, and writes nothing. Works in both positions: `gtms link ... --dry-run` and `gtms --dry-run link ...`.
+- `--dry-run` is honoured in repoint mode and in `--refresh` mode: it previews exactly which records would change and writes nothing. Write mode and `--check` reject it. Works in both positions: `gtms link ... --dry-run` and `gtms --dry-run link ...`.
 - `--force` overwrites an existing wiring record in write mode. Not valid with `--adapter`.
 - `--strict` rejects a link or check whose target test case ID has no test case spec under `gtms/test/cases/`. In write mode the spec is required regardless (the `testcase-hash` is computed from it), so `--strict` mainly sharpens `--check`.
 - `-r` / `--recursive` includes subdirectories when `--refresh` or a folder repoint targets a folder.
 
-Repoint stops before writing anything when the request is unsafe: the four built-in prime-path execute adapters (`manual-execute`, `agent-execute`, and their `-script` variants) are rejected as targets, because `gtms execute` selects those by name before it consults wiring -- a record repointed to one would never drive a run. A folder or recursive repoint also aborts if any targeted test case ID has more than one test case spec anywhere in the project (single-TC and `--all` repoints do not run this scan), and any repoint aborts if the new adapter's framework does not match the wiring's. After a bulk repoint, the summary reports how many records were repointed, skipped, warned, or errored; re-running the same command is safe -- zero remaining matches reports success.
+Repoint stops before writing anything when the request is unsafe: the four built-in prime-path execute adapters (`manual-execute`, `agent-execute`, and their `-script` variants) are rejected as targets, because `gtms execute` selects those by name before it consults wiring -- a record repointed to one would never drive a run. A repoint also aborts if a targeted test case ID has more than one test case spec anywhere in the project. Folder and recursive repoints scan for that across every test case they touch; a single-TC repoint checks it when you write the target with a folder in front of it (`gtms link login/tc-a1b2c3d4 --adapter ...`). A bare single-TC target and `--all` do not run the scan. Any repoint aborts if the new adapter's framework does not match the wiring's. After a bulk repoint, the summary reports how many records were repointed, skipped, warned, or errored; re-running the same command is safe -- zero remaining matches reports success.
 
 The common repoint scenario is a decommissioned runner machine. Its adapter entry is deleted from `gtms.config`, a replacement is configured, and one command moves the whole tranche:
 
@@ -1412,7 +1511,61 @@ gtms link my-suite -r --from-adapter old-machine --adapter new-machine          
 
 Repoint changes the stored default permanently; `gtms execute --adapter <name>` overrides the runner for one invocation without touching the record. `gtms status` shows both sides -- the wired default and the runner that produced the latest result.
 
-Two current limitations, both tracked and both failing safely: repoint targets take bare test case IDs only (a folder-qualified form like `feature/tc-a1b2c3d4` is rejected in repoint mode), and mixed-case folder names fail on case-sensitive filesystems for every folder-aware command.
+#### Previewing a refresh
+
+`--refresh` rewrites hashes on records you may not have looked at recently, and a folder or recursive refresh can touch a lot of them at once, so refresh mode honours `--dry-run`. Add it to see the scope first -- nothing is written:
+
+```text
+$ gtms link checkout --refresh --dry-run
+  ✓ [dry-run] Would refresh: tc-00000001 (bats) -- testcase-hash
+  ⊘ [dry-run] Current: tc-00000002 (bats)
+
+  [dry-run] 1 would refresh, 1 current, 0 failed
+```
+
+Then run the same command without the flag:
+
+```text
+$ gtms link checkout --refresh
+  ✓ Refreshed: tc-00000001 (bats)
+  ⊘ Current: tc-00000002 (bats)
+
+  1 refreshed, 1 current, 0 failed
+```
+
+The preview is the real refresh with the writes switched off. It selects records the same way and validates them the same way, including the check that the writer would accept each record -- so on unchanged inputs a clean preview predicts a clean refresh: the records it lists are the records the refresh acts on, and the failures it reports are the failures the refresh reports. That is what makes it worth reading rather than just running the refresh twice.
+
+What the preview cannot promise is the write itself. It stops before touching the filesystem, so anything that only goes wrong at write time -- a read-only file, a full disk, or someone editing the same records in between -- can still fail a refresh that previewed clean. Read a clean preview as "nothing here is stale or malformed", not as a guarantee the run will exit zero.
+
+The `[dry-run]` label marks the preview's outcome lines -- the per-record results and the summary -- and it is on failures as well as successes. Two kinds of line do not carry it. The first is anything GTMS turns down before it starts refreshing at all: a missing or malformed positional target, a malformed `--framework` value, or a flag-compatibility rejection (`--check`, `--force`, or `--strict` combined with `--refresh`). Those read identically whether or not you asked for a preview, so there is no real-refresh output to confuse them with. The second is the indented remediation hint printed underneath an error, which stays unlabelled even when the error line above it is labelled. So the rule works in one direction only: an unlabelled *outcome* line means a real refresh ran. Do not read an unlabelled line as proof of that on its own.
+
+A malformed framework and an unknown one are not the same thing. `--framework bad/fw` is rejected outright, because that is not a valid framework name. `--framework cypress` is accepted even when nothing in the project is wired for cypress -- and from there, what you see depends on whether you named a folder or a single test case.
+
+On a folder, refresh honours the flag as usual: the preview runs, matches nothing, and succeeds.
+
+```text
+$ gtms link checkout --refresh --framework cypress --dry-run
+
+  [dry-run] No wiring records in scope.
+
+  [dry-run] 0 would refresh, 0 current, 0 failed
+```
+
+That exits zero, so a typo in a framework name reads as "nothing to do" rather than as a failure. When you filter a folder by framework, check the summary counts and not just the exit code.
+
+On a single test case the flag is honoured too, but the same typo is an error rather than an empty result, and there is no summary line at all:
+
+```text
+$ gtms link tc-00000001 --refresh --framework cypress --dry-run
+✗ [dry-run] No wiring record found for 'tc-00000001' (framework: cypress).
+    Run 'gtms link tc-00000001 --framework cypress --artefact <path>' to create it.
+```
+
+That exits non-zero. So an unmatched framework filter is an empty success on a folder and a failure on a single test case -- worth knowing if you script the same filter across both.
+
+Two summary lines are worth telling apart. `[dry-run] Nothing to refresh -- all wiring is current.` means the records exist and are up to date. `[dry-run] No wiring records in scope.` means there are none to refresh at all -- the fix there is `gtms link <target> --framework <name> --artefact <path>` to create them, not a refresh.
+
+A validation failure shows up in the preview and sets a non-zero exit code, so a preview in a script fails the same way the refresh would. A record whose `artefact-hash` still reads `pending` previews only `testcase-hash`, because that is all a real refresh would change.
 
 `gtms automate` writes wiring records automatically. Reach for `gtms link` only when you need to author or repair one outside the automate flow: `--artefact` to change what a record runs, `--refresh` to acknowledge an edit, `--adapter` to change who runs it.
 
@@ -1440,7 +1593,30 @@ onboarding   3  ✓       ○ 0/3     ○ 0/3    —
 platform     5  ✓       ✓         ⊘ 3/5    ⊘ 2
 ```
 
-A folder scope (`gtms status login`) drops into a per-test-case table with a `LAST RESULT` column showing the recorded result and its framework annotation. A test case ID (`gtms status tc-a3f72b10`) shows a detail card instead: one line each for CREATE, AUTOMATE, and EXECUTE, with the recorded result on the EXECUTE line, plus paths to the automation script and last run. For a wired test case with a result, the detail card also shows a `Runner:` line naming the adapter that produced that result; whenever that differs from the adapter the wiring currently names, the wired default appears in parentheses beside it -- after a one-run `gtms execute --adapter` override, or right after a repoint until the next run. The JSON carries the same pair on each `frameworks[]` entry as `wired_adapter` and `last_run_adapter`.
+A folder scope (`gtms status login`) drops into a per-test-case table with a `LAST RESULT` column showing the recorded result and its framework annotation. A test case ID (`gtms status tc-a3f72b10`) shows a detail card instead: one line each for CREATE, AUTOMATE, and EXECUTE, with the recorded result on the EXECUTE line, plus paths to the automation script and last run.
+
+The two views ask different questions of the EXECUTE column, so the same failing test shows a different icon on each. That is deliberate, and worth knowing before it surprises you.
+
+In the table, the EXECUTE icon answers **did the stage run?** A test that ran to completion gets `✓` even when it failed, because the run itself finished; the failure is reported next to it in `LAST RESULT`:
+
+```text
+TEST CASE            CREATE  AUTOMATE  EXECUTE  LAST RESULT
+-------------------  ------  --------  -------  -----------
+tc-00000001  sample  ✓       ✓         ✓        pass [bats]
+tc-00000002  sample  ✓       ✓         ✓        fail [bats]
+```
+
+In the detail card, the EXECUTE icon answers **what was the result?** The same failing test reads `✗`, on the same line as the word that says so:
+
+```text
+tc-00000002  sample: Sample tc-00000002
+───────────────────────────────────────
+CREATE:     ✓ (REQ-1)
+AUTOMATE:   ✓ (bats, 2026-08-11)
+EXECUTE:    ✗ (Fail, 2026-08-11 17:34 UTC [bats])
+```
+
+A skipped test shows `⊘` on the detail card, and a run that errored shows `✗`. So pick the view that answers your question: the table to see how far the pipeline has got, the detail card to see how one test actually did. For a wired test case with a result, the detail card also shows a `Runner:` line naming the adapter that produced that result; whenever that differs from the adapter the wiring currently names, the wired default appears in parentheses beside it -- after a one-run `gtms execute --adapter` override, or right after a repoint until the next run. The JSON carries the same pair on each `frameworks[]` entry as `wired_adapter` and `last_run_adapter`.
 
 ### `gtms gaps`
 
@@ -1545,14 +1721,19 @@ Reach for them when a run has not shown up on `gtms status` and you want to know
 
 ### `gtms delete`
 
-Deletes all pipeline artefacts for a test case or a folder of test cases.
+Deletes the pipeline state GTMS owns for a test case or a folder of test cases. Your test scripts are kept unless you ask for them to go.
 
-- Positional argument: `<test-case-id | folder>` (exactly one). A test case ID deletes that test case's artefacts; a folder name deletes every test case under `gtms/test/cases/<folder>/`.
-- `--keep-spec` preserves test case specs and deletes only the pipeline artefacts.
+- Positional argument: `<test-case-id | folder>` (exactly one). A test case ID deletes that test case's records; a folder name deletes every test case under `gtms/test/cases/<folder>/`.
+- `--keep-spec` preserves test case specs and deletes only the pipeline records.
 - `-r` / `--recursive` includes test cases from subdirectories in folder mode.
 - `--dry-run` lists what would be deleted without removing anything.
+- `--force-artefact-deletion` also deletes the test scripts the records point at. Without this flag those files stay on disk.
 
-Artefact types removed: test case specs, wiring records, manual records, test artefacts and result files discovered from the records' `artefact:` and `executed_artefact:` fields, task files, and result contracts.
+Removed: test case specs (unless you pass `--keep-spec`), wiring records, manual result records, result files, task files, and result contracts.
+
+Kept by default: the test scripts themselves -- the `.bats`, `.spec.ts`, or other files named by the records' `artefact:` and `executed_artefact:` fields. A wiring record pointing at a file is not a claim to own it, so `gtms delete` leaves those files alone and names them in its summary. Pass `--force-artefact-deletion` when you do want them removed.
+
+One caution about folder deletes. GTMS matches test cases by ID alone, so if the same ID exists in two folders, deleting one folder also deletes the other folder's spec -- with or without `--force-artefact-deletion`. With the flag, a shared script can go too. Check for duplicate IDs first if you are not sure.
 
 `delete` removes files from the repo only. Reader commands like `gtms status` re-derive pipeline state on their next run, so no separate cleanup step is needed. If a record-declared artefact path resolves outside the project root, delete refuses with a non-zero exit before removing anything for that test case; fix the offending path in the automation record first. In folder mode the check runs per test case, so test cases processed before the offending one are already deleted when the run stops.
 
@@ -1572,12 +1753,16 @@ Records a triage decision against a test case and triggers the matching follow-o
 
 - Positional argument: `<test-case-id>` (exactly one).
 - Required: exactly one of `--automation-wrong`, `--test-wrong`, `--app-wrong`.
-- `--defect <id>` records a defect identifier; only meaningful with `--app-wrong`.
+- `--defect <id>` records a defect identifier in the triage history entry. Both `--app-wrong` and `--test-wrong` persist it. `--automation-wrong` still reports it in `--json` output, but writes a queued automate task rather than a history entry, so the identifier is not stored anywhere -- don't rely on it there.
 - `--framework <name>` selects which framework's wiring to triage; required when a test case is wired for more than one framework.
 - `--summary <text>` records a summary of the triage decision.
 - `--json` prints the triage result as JSON.
 
-Each category names which side of the failure is at fault and acts on it: `--automation-wrong` queues a re-automate task for the automation script, `--test-wrong` sets the test case spec's status to `needs-review` (the file stays where it is), and `--app-wrong` records the decision against the application under test, appending a triage-history entry (`gtms/triage-history/<tc-id>.md`) when a summary or defect link is supplied.
+Each category names which side of the failure is at fault and acts on it: `--automation-wrong` queues a re-automate task for the automation script, `--test-wrong` records the decision against the test case spec, and `--app-wrong` records it against the application under test. The last two both append an entry to the test case's triage history (`gtms/triage-history/<tc-id>.md`), which is the durable record of the decision.
+
+The two differ in when they write. `--test-wrong` always appends: the category, the timestamp, and the framework the decision applied to are the decision, so `--summary` is optional enrichment. `--app-wrong` only appends when you give it a summary or a `--defect` link, since without either there would be nothing to read back.
+
+Neither category edits the test case spec. `--test-wrong` used to set the spec's `status` to `needs-review`; it no longer does, because rewriting the file discarded any frontmatter fields GTMS does not model and changed the spec's hash, which made every wiring record for that test case look out of date. After a `--test-wrong` triage the spec is byte-for-byte unchanged -- so updating it is your call, and your edit is the thing that legitimately marks it as drifted.
 
 `triage` needs an executed test case: it errors if the test case has no wiring record or no execution results yet.
 
@@ -1593,9 +1778,9 @@ Both forms print a single line: `gtms <version>`. Use the subcommand in scripts 
 ### Global flags
 
 - `-v` / `--verbose` works on every command and increases output detail. It is the only global flag shown in help.
-- `--dry-run` is honoured in three places: `gtms delete`, `gtms reset`, and `gtms link` in repoint mode. It previews what would be deleted, cleared, or repointed without touching any files.
+- `--dry-run` is honoured in four places: `gtms delete`, `gtms reset`, `gtms link` in repoint mode, and `gtms link --refresh`. It previews what would be deleted, cleared, repointed, or refreshed without touching any files.
 
-On the other commands, `--dry-run` parses but does nothing: the adapter still runs and artefacts are still written. The exception is non-repoint `gtms link` (write, check, and refresh modes), which rejects the flag outright rather than ignoring it. Do not rely on `--dry-run` outside `delete`, `reset`, and link repoint.
+On the other commands, `--dry-run` parses but does nothing: the adapter still runs and artefacts are still written. The exception is `gtms link` in write mode or `--check` mode, which rejects the flag outright rather than ignoring it. Do not rely on `--dry-run` outside `delete`, `reset`, link repoint, and link refresh.
 
 ### Commands deferred from this guide
 
@@ -1637,7 +1822,7 @@ Check the same chain in reverse. Likely causes:
 When a sequence of partial or wrong runs has left the dashboard misleading, the safest move is to clear the run history and rerun:
 
 - `gtms reset <tc-id>` (or `gtms reset <folder>`, or `gtms reset -r` for everything) clears the local handoff history and finished execute task files for the matched test cases; wiring is untouched, so the next `gtms execute` populates a fresh view. Bare `gtms reset` only covers test cases at the root of `gtms/test/cases/`. Add `--dry-run` to preview.
-- If a wiring record is wrong (wrong artefact path, wrong adapter), overwrite it with `gtms link <tc-id> --framework <name> --artefact <path> --force`, or re-run `gtms automate` with `--force`. Reach for `gtms delete <tc-id>` only when you want to remove the whole test case -- it deletes the spec, all wiring records, the test script artefacts the wiring points at, the manual result record, task files, and handoffs (preview with `--dry-run`).
+- If a wiring record is wrong (wrong artefact path, wrong adapter), overwrite it with `gtms link <tc-id> --framework <name> --artefact <path> --force`, or re-run `gtms automate` with `--force`. Reach for `gtms delete <tc-id>` only when you want to remove the whole test case -- it deletes the spec, all wiring records, the manual result record, task files, and handoffs, and keeps the test script itself unless you add `--force-artefact-deletion` (preview with `--dry-run`).
 
 ### Investigate before re-running
 

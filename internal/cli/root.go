@@ -8,6 +8,7 @@ import (
 	"os"
 
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 	"github.com/aitestmanagement/gtms-cli/internal/config"
 	"github.com/aitestmanagement/gtms-cli/internal/layout"
 	"github.com/aitestmanagement/gtms-cli/internal/layoutmigration"
@@ -227,7 +228,9 @@ var rootCmd = &cobra.Command{
 
 		if verbose {
 			fmt.Fprintf(os.Stderr, "Project root: %s\n", projectRoot)
-			fmt.Fprintf(os.Stderr, "Project: %s (%s)\n", cfg.Project.Name, cfg.Project.Repo)
+			// ENH-190: translate the reserved no-origin sentinel to friendly prose.
+			// The one-time init guidance is deliberately NOT repeated here.
+			fmt.Fprintf(os.Stderr, "Project: %s (%s)\n", cfg.Project.Name, repoBannerLabel(cfg.Project.Repo))
 		}
 
 		return nil
@@ -285,7 +288,55 @@ func init() {
 // ExecuteContext runs the root command with the given context.
 // Subcommands receive the context via cmd.Context().
 func ExecuteContext(ctx context.Context) error {
+	// BUG-146 CODEX-128-001 / AC8: clear ALL parsed flag state before each run.
+	// Cobra keeps every parsed flag on the singleton command tree and does NOT
+	// reset it between Execute calls. --dry-run is not the only offender: a prior
+	// `gtms --dry-run link --refresh -r --framework bats` leaves recursiveFlag=true
+	// and a retained framework bound to their closure variables, so a later
+	// `gtms link folder --refresh` in the SAME process would silently recurse and
+	// stay framework-filtered -- mutating out of the requested scope. Resetting
+	// every changed flag (local and persistent, across the whole tree) back to its
+	// declared default makes repeated in-process executions execution-scoped.
+	// Production calls Execute once per process, so this is a no-op there.
+	resetParsedFlagState()
 	return rootCmd.ExecuteContext(ctx)
+}
+
+// resetParsedFlagState restores every flag on the command tree that was changed
+// by a prior parse back to its declared default, across the root command and all
+// descendants, covering both local and persistent flags. It writes through the
+// bound variable via Value.Set(DefValue) -- not merely the Cobra metadata -- so
+// variables bound with BoolVar/StringVar/etc. return to their defaults, then
+// clears the Changed marker. A DefValue that fails to parse (a programming error,
+// not a runtime condition) is skipped rather than panicking.
+//
+// Every gtms flag today is a bool or a string, for which Set replaces the value.
+// If a repeatable flag is ever added (StringSlice/StringArray/Count), Set APPENDS
+// to those rather than replacing, so this reset would grow the slice instead of
+// emptying it -- such a flag needs the pflag SliceValue.Replace path here.
+func resetParsedFlagState() {
+	reset := func(f *pflag.Flag) {
+		if f == nil || !f.Changed {
+			return
+		}
+		if err := f.Value.Set(f.DefValue); err != nil {
+			// Defensive: leave this flag untouched rather than crash the process.
+			return
+		}
+		f.Changed = false
+	}
+	var walk func(c *cobra.Command)
+	walk = func(c *cobra.Command) {
+		// Flags() includes merged persistent flags; PersistentFlags() is visited
+		// too so a persistent flag defined on this command is never missed. Double
+		// visits are harmless -- the second pass sees Changed already cleared.
+		c.Flags().VisitAll(reset)
+		c.PersistentFlags().VisitAll(reset)
+		for _, sub := range c.Commands() {
+			walk(sub)
+		}
+	}
+	walk(rootCmd)
 }
 
 // Execute runs the root command. Called from main.go.

@@ -218,9 +218,10 @@ func BuiltinAutomate(ctx *AdapterContext, cfg *config.Config) (*InvocationResult
 	// values; it delegates to the registered FrameworkSupport implementation.
 	support := LookupFrameworkSupport(framework)
 	if support == nil {
-		return nil, fmt.Errorf(
-			"no automate support found for framework %q",
-			framework)
+		// BUG-171 / REV-125: typed so the bulk CLI preflight
+		// (CheckTier0AutomatePrereqs) can surface the SAME diagnostic. The
+		// message is unchanged.
+		return nil, &UnsupportedAutomateFrameworkError{Framework: framework}
 	}
 
 	// Compute output path using framework support.

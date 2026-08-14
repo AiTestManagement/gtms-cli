@@ -90,7 +90,7 @@ func TestDeleteSingleTC(t *testing.T) {
 	root := t.TempDir()
 	writeDeleteFixture(t, root, "tc-aaa11110", "myfolder")
 
-	result, err := DeleteArtifacts(root, nil, "tc-aaa11110", false, false)
+	result, err := DeleteArtifacts(root, nil, "tc-aaa11110", false, true, false)
 	require.NoError(t, err)
 
 	assert.Equal(t, 1, result.TestCasesProcessed)
@@ -123,7 +123,7 @@ func TestDeleteSingleTC_KeepSpec(t *testing.T) {
 	root := t.TempDir()
 	writeDeleteFixture(t, root, "tc-bbb22220", "myfolder")
 
-	result, err := DeleteArtifacts(root, nil, "tc-bbb22220", true, false)
+	result, err := DeleteArtifacts(root, nil, "tc-bbb22220", true, true, false)
 	require.NoError(t, err)
 
 	assert.Equal(t, 1, result.TestCasesProcessed)
@@ -157,7 +157,7 @@ func TestDeleteFolder(t *testing.T) {
 		Recursive: false,
 	}
 
-	result, err := DeleteArtifacts(root, scope, "", false, false)
+	result, err := DeleteArtifacts(root, scope, "", false, true, false)
 	require.NoError(t, err)
 
 	assert.Equal(t, 2, result.TestCasesProcessed)
@@ -179,7 +179,7 @@ func TestDeleteFolder_KeepSpec(t *testing.T) {
 		Recursive: false,
 	}
 
-	result, err := DeleteArtifacts(root, scope, "", true, false)
+	result, err := DeleteArtifacts(root, scope, "", true, false, false)
 	require.NoError(t, err)
 
 	assert.Equal(t, 2, result.TestCasesProcessed)
@@ -196,7 +196,7 @@ func TestDelete_DryRun(t *testing.T) {
 	root := t.TempDir()
 	writeDeleteFixture(t, root, "tc-ggg77770", "dryfolder")
 
-	result, err := DeleteArtifacts(root, nil, "tc-ggg77770", false, true)
+	result, err := DeleteArtifacts(root, nil, "tc-ggg77770", false, true, true)
 	require.NoError(t, err)
 
 	assert.Equal(t, 1, result.TestCasesProcessed)
@@ -233,7 +233,7 @@ func TestDelete_MissingArtifacts(t *testing.T) {
 	tcContent := "---\ntest_case_id: tc-hhh88880\ntitle: Partial\nrequirement: REQ-001\n---\n"
 	require.NoError(t, os.WriteFile(filepath.Join(tcDir, "tc-hhh88880-partial.md"), []byte(tcContent), 0644))
 
-	result, err := DeleteArtifacts(root, nil, "tc-hhh88880", false, false)
+	result, err := DeleteArtifacts(root, nil, "tc-hhh88880", false, false, false)
 	require.NoError(t, err)
 
 	assert.Equal(t, 1, result.TestCasesProcessed)
@@ -249,7 +249,7 @@ func TestDelete_NonexistentTC(t *testing.T) {
 	// Create empty cases dir so the walk doesn't fail
 	require.NoError(t, os.MkdirAll(filepath.Join(root, "gtms/test/cases"), 0755))
 
-	result, err := DeleteArtifacts(root, nil, "tc-nonexist0", false, false)
+	result, err := DeleteArtifacts(root, nil, "tc-nonexist0", false, false, false)
 	require.NoError(t, err)
 
 	assert.Equal(t, 1, result.TestCasesProcessed)
@@ -292,7 +292,7 @@ func TestDelete_MultipleAutomationRecords(t *testing.T) {
 		require.NoError(t, os.WriteFile(filepath.Join(wiringDir, tcID+"--"+fw+".wiring.yaml"), []byte(content), 0644))
 	}
 
-	result, err := DeleteArtifacts(root, nil, tcID, false, false)
+	result, err := DeleteArtifacts(root, nil, tcID, false, true, false)
 	require.NoError(t, err)
 
 	assert.Equal(t, 2, result.AutomationRecords, "should delete both framework wiring records")
@@ -320,7 +320,7 @@ func TestDelete_AllTaskStatuses(t *testing.T) {
 		writeTaskFile(t, root, tcID, status, "execute", taskID)
 	}
 
-	result, err := DeleteArtifacts(root, nil, tcID, false, false)
+	result, err := DeleteArtifacts(root, nil, tcID, false, false, false)
 	require.NoError(t, err)
 
 	assert.Equal(t, 5, result.TaskFiles, "should find tasks in all 5 status directories")
@@ -347,7 +347,7 @@ func TestDelete_AllTaskTypes(t *testing.T) {
 	writeTaskFile(t, root, tcID, "complete", "automate", "task-00000002")
 	writeTaskFile(t, root, tcID, "complete", "execute", "task-00000003")
 
-	result, err := DeleteArtifacts(root, nil, tcID, false, false)
+	result, err := DeleteArtifacts(root, nil, tcID, false, false, false)
 	require.NoError(t, err)
 
 	assert.Equal(t, 3, result.TaskFiles, "should find all 3 command-type task files")
@@ -398,7 +398,7 @@ func TestDelete_RecordDrivenResultFiles(t *testing.T) {
 		filepath.Join(manualDir, tcID+"--manual.result.yaml"),
 		[]byte(manualContent), 0644))
 
-	result, err := DeleteArtifacts(root, nil, tcID, false, false)
+	result, err := DeleteArtifacts(root, nil, tcID, false, false, false)
 	require.NoError(t, err)
 
 	assert.Equal(t, 1, result.ResultFiles, "should find result file from manual record executed_artefact field")
@@ -417,7 +417,7 @@ func TestDelete_NoSlugFilename(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(tcDir, tcID+".md"),
 		[]byte("---\ntest_case_id: "+tcID+"\ntitle: No Slug\nrequirement: REQ-001\n---\n"), 0644))
 
-	result, err := DeleteArtifacts(root, nil, tcID, false, false)
+	result, err := DeleteArtifacts(root, nil, tcID, false, false, false)
 	require.NoError(t, err)
 
 	assert.Equal(t, 1, result.TestCaseSpecsRemoved, "should match no-slug filename")
@@ -453,7 +453,7 @@ func TestDelete_ResultContracts_MultipleCommands(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(resultsDir, "task-99999999.handoff.yaml"),
 		[]byte("task: task-99999999\ncommand: execute\ntarget: test/acceptance/other/tc-zzz99990-other.bats\nstatus: complete\n"), 0644))
 
-	result, err := DeleteArtifacts(root, nil, tcID, false, false)
+	result, err := DeleteArtifacts(root, nil, tcID, false, false, false)
 	require.NoError(t, err)
 
 	assert.Equal(t, 3, result.ResultContracts, "should delete all 3 contracts referencing this TC")
@@ -468,7 +468,7 @@ func TestDelete_ResultContracts_MissingDir(t *testing.T) {
 	root := t.TempDir()
 
 	// No .gtms/results/ directory at all
-	result, err := DeleteArtifacts(root, nil, "tc-ooo55550", false, false)
+	result, err := DeleteArtifacts(root, nil, "tc-ooo55550", false, false, false)
 	require.NoError(t, err)
 
 	assert.Equal(t, 0, result.ResultContracts, "should handle missing .gtms/results/ gracefully")
@@ -496,7 +496,7 @@ func TestDelete_ResultContracts_MalformedYAML(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(resultsDir, "task-goodone1.handoff.yaml"),
 		[]byte("task: task-goodone1\ncommand: execute\ntarget: test/acceptance/"+tcID+"-bad.bats\nstatus: complete\n"), 0644))
 
-	result, err := DeleteArtifacts(root, nil, tcID, false, false)
+	result, err := DeleteArtifacts(root, nil, tcID, false, false, false)
 	require.NoError(t, err)
 
 	assert.Equal(t, 1, result.ResultContracts, "should skip malformed YAML and still find valid contract")
@@ -540,7 +540,7 @@ func TestDelete_PathSafety_ParentTraversal(t *testing.T) {
 		"\nartefact-hash: aabbccddeeff0011\n"
 	require.NoError(t, os.WriteFile(recordPath, []byte(recordContent), 0644))
 
-	_, err := DeleteArtifacts(root, nil, tcID, false, false)
+	_, err := DeleteArtifacts(root, nil, tcID, false, false, false)
 	require.Error(t, err, "unsafe artefact path must produce an error, not silent success")
 	assert.True(t, IsPathSafetyError(err), "error should be a *PathSafetyError")
 	assert.Contains(t, err.Error(), "../../etc/passwd",
@@ -585,7 +585,7 @@ func TestDelete_PathSafety_AbsolutePathOutside(t *testing.T) {
 		"\nartefact-hash: aabbccddeeff0011\n"
 	require.NoError(t, os.WriteFile(recordPath, []byte(recordContent), 0644))
 
-	_, err := DeleteArtifacts(root, nil, tcID, false, false)
+	_, err := DeleteArtifacts(root, nil, tcID, false, false, false)
 	require.Error(t, err, "absolute path outside root must be refused")
 	assert.True(t, IsPathSafetyError(err), "error should be a *PathSafetyError")
 
@@ -634,7 +634,7 @@ func TestDelete_PathSafety_AtomicAbort_MixedSafeUnsafe(t *testing.T) {
 		"\nresult: pass\n"
 	require.NoError(t, os.WriteFile(recordPath, []byte(recordContent), 0644))
 
-	_, err := DeleteArtifacts(root, nil, tcID, false, false)
+	_, err := DeleteArtifacts(root, nil, tcID, false, false, false)
 	require.Error(t, err, "mixed safe+unsafe record must be refused, not partially executed")
 	assert.True(t, IsPathSafetyError(err), "error should be a *PathSafetyError")
 
@@ -677,7 +677,7 @@ func TestDelete_Deduplication(t *testing.T) {
 		require.NoError(t, os.WriteFile(filepath.Join(wiringDir, tcID+"--"+fw+".wiring.yaml"), []byte(content), 0644))
 	}
 
-	result, err := DeleteArtifacts(root, nil, tcID, false, false)
+	result, err := DeleteArtifacts(root, nil, tcID, false, true, false)
 	require.NoError(t, err)
 
 	assert.Equal(t, 1, result.TestScripts, "duplicate paths should be deduplicated — only delete once")
@@ -719,7 +719,7 @@ func TestDelete_DedupesArtefactAndExecutedArtefactSamePath(t *testing.T) {
 		filepath.Join(manualDir, tcID+"--manual.result.yaml"),
 		[]byte(recordContent), 0644))
 
-	result, err := DeleteArtifacts(root, nil, tcID, false, false)
+	result, err := DeleteArtifacts(root, nil, tcID, false, true, false)
 	require.NoError(t, err, "delete must not fail on cross-field duplicate")
 
 	assert.Equal(t, 1, result.TestScripts, "cross-field duplicate: scripts wins priority, counted once")
@@ -754,7 +754,7 @@ func TestDelete_MissingArtefactFile(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(wiringDir, tcID+"--bats.wiring.yaml"), []byte(recordContent), 0644))
 
 	// The artefact file does NOT exist — delete should not error
-	result, err := DeleteArtifacts(root, nil, tcID, false, false)
+	result, err := DeleteArtifacts(root, nil, tcID, false, false, false)
 	require.NoError(t, err)
 
 	assert.Equal(t, 0, result.TestScripts, "missing artefact file should be silently skipped")
@@ -771,7 +771,7 @@ func TestDelete_NoRecords_CleanState(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(tcDir, tcID+"-clean.md"),
 		[]byte("---\ntest_case_id: "+tcID+"\ntitle: Clean\nrequirement: REQ-001\n---\n"), 0644))
 
-	result, err := DeleteArtifacts(root, nil, tcID, false, false)
+	result, err := DeleteArtifacts(root, nil, tcID, false, false, false)
 	require.NoError(t, err)
 
 	assert.Equal(t, 1, result.TestCasesProcessed)

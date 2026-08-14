@@ -4,7 +4,7 @@
 // gtms/automation/wiring/*.wiring.yaml instead of the legacy automation
 // record. The wiring `adapter:` field is the canonical EXECUTE adapter for
 // the framework (e.g. `bats-runner`), NOT the historical `manual-link`
-// provenance marker — wiring carries identity, not provenance (CON-023 Q#2).
+// provenance marker -- wiring carries identity, not provenance (CON-023 Q#2).
 //
 // ENH-111: link is a manual operation -- the user asserts the convention is
 // satisfied. GTMS checks artefact existence (filesystem only) and writes the
@@ -41,8 +41,8 @@ type CheckResult struct {
 	// ArtefactExists is true if the artefact file was found on disk.
 	ArtefactExists bool
 
-	// RecordExists is true if a wiring record already exists for this TC ×
-	// framework. (Field name preserved for CLI compatibility — the meaning
+	// RecordExists is true if a wiring record already exists for this TC x
+	// framework. (Field name preserved for CLI compatibility -- the meaning
 	// now refers to the wiring record, not the legacy automation record.)
 	RecordExists bool
 }
@@ -176,28 +176,50 @@ func LinkRecord(projectRoot string, cfg *config.Config, tcID, framework, artefac
 	return executeAdapter, warnings, nil
 }
 
-// RefreshRecord recomputes stale hashes in an existing wiring record without
-// requiring the user to supply --framework or --artefact. The identity fields
-// (testcase, framework, adapter, artefact) are preserved verbatim; only the
-// hash fields are updated.
+// RefreshPlan is the computed, non-mutating result of comparing a wiring record
+// against current spec/artefact content. It is produced by PlanRefresh and
+// consumed by ApplyRefresh; the dry-run preview renders it directly while the
+// real refresh applies it. Extracting the plan means the drift/comparison logic
+// is computed in ONE place and never duplicated between preview and mutation
+// (BUG-146).
+//
+// TestCaseHashChanged / ArtefactHashChanged describe exactly which hash fields
+// the real refresh would rewrite. ArtefactHashChanged is always false when the
+// stored artefact-hash is the pending sentinel (the real refresh preserves it),
+// so the preview never claims a pending record's artefact-hash will change.
+type RefreshPlan struct {
+	TestCase            string
+	Framework           string
+	TestCaseHashChanged bool
+	ArtefactHashChanged bool
+	// Changed is true when either hash field would be rewritten.
+	Changed bool
+	// updated is the record ApplyRefresh writes. It is unexported because callers
+	// interact with the plan through the changed-field booleans, not the raw
+	// record; ApplyRefresh is the only consumer of this field.
+	updated *wiring.WiringRecord
+}
+
+// PlanRefresh validates a wiring record and computes which hash fields a refresh
+// would rewrite, WITHOUT writing anything. It performs the same validation as
+// the real refresh (path-safety, artefact existence, spec resolution + hashing),
+// so a preview surfaces exactly the errors the real refresh would.
 //
 // Validation mirrors LinkRecord:
 //  1. Path-safety containment check on the stored artefact path.
 //  2. Artefact file exists on disk.
 //  3. Test case spec exists and is hashable.
 //
-// ENH-151 pending sentinel: when artefact-hash is PendingArtefactHash,
-// refresh updates testcase-hash only and leaves artefact-hash as "pending".
-// The record remains first-executeable through the ENH-151 bootstrap path.
-//
-// Returns (true, nil) when the record was rewritten with updated hashes,
-// (false, nil) when both hashes already match current content (no-op),
-// or (false, error) on validation failure.
-func RefreshRecord(projectRoot string, rec *wiring.WiringRecord) (bool, error) {
+// ENH-151 pending sentinel: when artefact-hash is PendingArtefactHash, the plan
+// marks artefact-hash as unchanged (the real refresh leaves it "pending") and
+// only testcase-hash can drift.
+func PlanRefresh(projectRoot string, rec *wiring.WiringRecord) (RefreshPlan, error) {
+	plan := RefreshPlan{TestCase: rec.TestCase, Framework: rec.Framework}
+
 	// Path-safety check on the stored artefact path.
 	artefactAbs, _, safeErr := pathsafe.ResolveUnderRoot(projectRoot, rec.Artefact)
 	if safeErr != nil {
-		return false, fmt.Errorf("unsafe artefact path for wiring: %w", safeErr)
+		return RefreshPlan{}, fmt.Errorf("unsafe artefact path for wiring: %w", safeErr)
 	}
 
 	// Artefact must exist on disk. The pending sentinel only controls whether
@@ -205,19 +227,19 @@ func RefreshRecord(projectRoot string, rec *wiring.WiringRecord) (bool, error) {
 	// record from artefact-existence validation. A pending record whose
 	// artefact has been deleted is unrecoverable: refresh must surface that.
 	if _, err := os.Stat(artefactAbs); os.IsNotExist(err) {
-		return false, fmt.Errorf("artefact file not found: %s", rec.Artefact)
+		return RefreshPlan{}, fmt.Errorf("artefact file not found: %s", rec.Artefact)
 	} else if err != nil {
-		return false, fmt.Errorf("checking artefact file: %w", err)
+		return RefreshPlan{}, fmt.Errorf("checking artefact file: %w", err)
 	}
 
 	// Resolve and hash the test case spec.
 	specPath, err := pipeline.ResolveTestCaseSpec(projectRoot, rec.TestCase)
 	if err != nil {
-		return false, fmt.Errorf("spec not found for %s: %w", rec.TestCase, err)
+		return RefreshPlan{}, fmt.Errorf("spec not found for %s: %w", rec.TestCase, err)
 	}
 	newTestCaseHash, err := pipeline.HashFile(filepath.Join(projectRoot, filepath.FromSlash(specPath)))
 	if err != nil {
-		return false, fmt.Errorf("hashing test case spec: %w", err)
+		return RefreshPlan{}, fmt.Errorf("hashing test case spec: %w", err)
 	}
 
 	// Compute new artefact-hash unless the sentinel is pending.
@@ -225,18 +247,17 @@ func RefreshRecord(projectRoot string, rec *wiring.WiringRecord) (bool, error) {
 	if !wiring.IsPendingArtefactHash(rec.ArtefactHash) {
 		h, err := pipeline.HashFile(artefactAbs)
 		if err != nil {
-			return false, fmt.Errorf("hashing artefact: %w", err)
+			return RefreshPlan{}, fmt.Errorf("hashing artefact: %w", err)
 		}
 		newArtefactHash = h
 	}
 
-	// No-op when both hashes already match.
-	if newTestCaseHash == rec.TestCaseHash && newArtefactHash == rec.ArtefactHash {
-		return false, nil
-	}
+	plan.TestCaseHashChanged = newTestCaseHash != rec.TestCaseHash
+	plan.ArtefactHashChanged = newArtefactHash != rec.ArtefactHash
+	plan.Changed = plan.TestCaseHashChanged || plan.ArtefactHashChanged
 
-	// Write updated record preserving identity fields.
-	updated := &wiring.WiringRecord{
+	// The record to write preserves identity fields; only hashes are updated.
+	plan.updated = &wiring.WiringRecord{
 		TestCase:     rec.TestCase,
 		TestCaseHash: newTestCaseHash,
 		Framework:    rec.Framework,
@@ -244,10 +265,59 @@ func RefreshRecord(projectRoot string, rec *wiring.WiringRecord) (bool, error) {
 		Artefact:     rec.Artefact,
 		ArtefactHash: newArtefactHash,
 	}
-	if _, err := wiring.Write(projectRoot, updated); err != nil {
+
+	// REV-129 CODEX-129-001: a preview must not approve a record the real writer
+	// will refuse. wiring.Write validates the testcase and framework as filename
+	// components, and that check used to run only at write time -- so a stale
+	// record whose framework is not a safe component (say a file named
+	// tc-a--bad..fw.wiring.yaml declaring the same identity) previewed as "Would
+	// refresh" and then failed for real, breaking the prediction and error parity
+	// AC5/AC6 promise.
+	//
+	// Only a plan that would actually write is checked. ApplyRefresh skips the
+	// write for an unchanged record, so an unsafely-named record whose hashes are
+	// already current keeps reporting "Current" and exiting 0 -- identical in both
+	// modes, and no change to the real refresh path (AC4).
+	if plan.Changed {
+		if err := wiring.ValidateWritable(projectRoot, plan.updated); err != nil {
+			return RefreshPlan{}, fmt.Errorf("wiring cannot be written: %w", err)
+		}
+	}
+	return plan, nil
+}
+
+// ApplyRefresh writes the planned wiring record when the plan reports a change.
+// It performs ONLY the write step; all validation and comparison already
+// happened in PlanRefresh. Returns (true, nil) when the record was rewritten,
+// (false, nil) when the plan was a no-op, or (false, error) on write failure.
+func ApplyRefresh(projectRoot string, plan RefreshPlan) (bool, error) {
+	if !plan.Changed {
+		return false, nil
+	}
+	if _, err := wiring.Write(projectRoot, plan.updated); err != nil {
 		return false, fmt.Errorf("writing refreshed wiring: %w", err)
 	}
 	return true, nil
+}
+
+// RefreshRecord recomputes stale hashes in an existing wiring record without
+// requiring the user to supply --framework or --artefact. The identity fields
+// (testcase, framework, adapter, artefact) are preserved verbatim; only the
+// hash fields are updated.
+//
+// It is the composition of PlanRefresh (validate + compare) and ApplyRefresh
+// (write). The dry-run preview calls PlanRefresh alone; the real refresh calls
+// both -- so the drift logic is shared, never duplicated (BUG-146).
+//
+// Returns (true, nil) when the record was rewritten with updated hashes,
+// (false, nil) when both hashes already match current content (no-op),
+// or (false, error) on validation failure.
+func RefreshRecord(projectRoot string, rec *wiring.WiringRecord) (bool, error) {
+	plan, err := PlanRefresh(projectRoot, rec)
+	if err != nil {
+		return false, err
+	}
+	return ApplyRefresh(projectRoot, plan)
 }
 
 // CheckLink validates inputs and reports link health without writing anything.
@@ -596,7 +666,10 @@ func discoverScopeSpecs(projectRoot, scopeFolder string, recursive bool) (map[st
 	// CODEX-015: the scope must resolve to a location BENEATH the cases directory.
 	// An escaping symlink (or any out-of-tree scope) is rejected before discovery,
 	// so a colliding in-tree TC ID can never be mutated via an out-of-tree alias.
-	if _, _, err := pathsafe.ResolveUnderRoot(casesDir, scopeFolder); err != nil {
+	// BUG-167 (absorbed BUG-168 defect 2): keep the resolved real path -- the
+	// recursive walk below must traverse it, not the unresolved symlink.
+	absScope, _, err := pathsafe.ResolveUnderRoot(casesDir, scopeFolder)
+	if err != nil {
 		return nil, fmt.Errorf("folder '%s/' resolves outside the test cases directory -- refusing an out-of-tree scope: %w", scopeFolder, err)
 	}
 
@@ -610,7 +683,11 @@ func discoverScopeSpecs(projectRoot, scopeFolder string, recursive bool) (map[st
 	}
 
 	if recursive {
-		walkErr := filepath.Walk(scopeDir, func(path string, fi os.FileInfo, werr error) error {
+		// BUG-167 (absorbed BUG-168 defect 2): walk the pathsafe-resolved real
+		// directory. filepath.Walk does not follow a symlink ROOT, so walking the
+		// unresolved scopeDir would collect zero specs for an allowed in-tree
+		// symlink scope. os.Stat/os.ReadDir below already follow symlinks.
+		walkErr := filepath.Walk(absScope, func(path string, fi os.FileInfo, werr error) error {
 			if werr != nil {
 				return werr
 			}

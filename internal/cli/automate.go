@@ -1,17 +1,17 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/aitestmanagement/gtms-cli/internal/adapter"
 	"github.com/aitestmanagement/gtms-cli/internal/config"
-	"github.com/aitestmanagement/gtms-cli/internal/git"
 	"github.com/aitestmanagement/gtms-cli/internal/layout"
 	"github.com/aitestmanagement/gtms-cli/internal/output"
 	"github.com/aitestmanagement/gtms-cli/internal/pipeline"
+	targetpkg "github.com/aitestmanagement/gtms-cli/internal/target"
 	"github.com/aitestmanagement/gtms-cli/internal/task"
 	"github.com/aitestmanagement/gtms-cli/internal/testcase"
 	"github.com/aitestmanagement/gtms-cli/internal/wiring"
@@ -61,10 +61,9 @@ Adapter execution:
 			cfg := GetConfig()
 			root := GetProjectRoot()
 
-			// Validate: git repo exists
-			if !git.IsRepo(ctx, root) {
-				output.Errorf("Not a git repository.", "Initialize a git repo with 'git init'.")
-				return output.AsDisplayed(fmt.Errorf("not a git repository"))
+			// Validate: git repo exists and git can be run (ENH-189)
+			if err := requireGitRepo(ctx, root, notARepoHintDefault); err != nil {
+				return err
 			}
 
 			// Validate: folder structure exists
@@ -109,36 +108,51 @@ Adapter execution:
 				return runBulkAutomate(cmd, root, "", adapterFlag, frameworkFlag, environmentFlag, executedBy, forceFlag, failFastFlag, recursiveFlag, absContextPath, contextContent)
 			}
 
-			target := strings.ToLower(args[0])
-			target = normaliseTarget(target)
-
-			// Validate: target is safe (rejects shell metacharacters, path traversal)
-			if err := validateTargetID(target); err != nil {
-				output.Errorf(err.Error(),
-					"Use only letters, numbers, dashes, underscores, dots, and forward slashes.")
+			// BUG-167: shared classifier -- preserves folder case, normalises
+			// separators, and lowercases/strips only confirmed TC IDs.
+			res, err := targetpkg.Classify(root, args[0])
+			if err != nil {
+				// BUG-167 follow-up (BUG-058 compatibility): retain the historical
+				// generic "Invalid test case ID format" message AND surface the
+				// classifier's specific cause (traversal/prefix/invalid chars).
+				msg, hint := invalidTargetFormatError(args[0], err)
+				output.Errorf(msg, hint)
 				return output.AsDisplayed(err)
 			}
 
-			// Disambiguate: folder (bulk mode) vs single test case ID
-			if IsBulkFolder(root, target) {
-				return runBulkAutomate(cmd, root, target, adapterFlag, frameworkFlag, environmentFlag, executedBy, forceFlag, failFastFlag, recursiveFlag, absContextPath, contextContent)
-			}
-
-			// --- Single TC mode (existing behavior) ---
-
-			// Validate: target format (test case ID, e.g. tc-007)
-			if !isTestCaseID(target) {
-				msg := fmt.Sprintf("Invalid test case ID format: '%s'.", target)
+			// Disambiguate: folder (bulk mode) vs single test case ID.
+			// BUG-167 follow-up: enter bulk mode ONLY for an EXISTING folder. A
+			// safe-but-nonexistent folder-shaped arg falls through to the historical
+			// single-TC "Invalid test case ID format" response (frozen tc-13dbade0,
+			// ENH-052 contract). Real mixed-case/backslash folders exist, so
+			// IsBulkFolder is true and they still enter bulk mode correctly.
+			if res.Kind == targetpkg.KindFolder {
+				if IsBulkFolder(root, res.Target) {
+					return runBulkAutomate(cmd, root, res.Target, adapterFlag, frameworkFlag, environmentFlag, executedBy, forceFlag, failFastFlag, recursiveFlag, absContextPath, contextContent)
+				}
+				msg := fmt.Sprintf("Invalid test case ID format: '%s'.", sanitizeForError(res.Target))
 				output.Errorf(msg, "Use format like tc-a1b2c3d4.")
 				return output.AsDisplayed(fmt.Errorf(msg))
 			}
 
-			// BUG-059: use shared testcase.Exists helper (replaces private testCaseExists).
-			if !testcase.Exists(root, target) {
-				msg := fmt.Sprintf("Test case '%s' not found in gtms/test/cases/", target)
+			// --- Single TC mode (existing behavior) ---
+			// BUG-059 (REV-113) + REV-120: route the QUALIFIED-target scope +
+			// project-wide ambiguity guard through the shared requireScopedSpec so a
+			// wrong-folder or cross-folder-duplicate qualified target is rejected
+			// before automate wires the flat bare ID. (requireScopedSpec skips bare
+			// targets, so the existence check below still covers them.)
+			if err := requireScopedSpec(root, res); err != nil {
+				output.Errorf(err.Error(), "Check the folder qualifier, resolve any duplicate IDs, or drop the qualifier.")
+				return output.AsDisplayed(err)
+			}
+			if !testcase.Exists(root, res.Target) {
+				msg := fmt.Sprintf("Test case '%s' not found in gtms/test/cases/", res.Target)
 				output.Errorf(msg, "Create the test case first with 'gtms create'.")
 				return output.AsDisplayed(fmt.Errorf(msg))
 			}
+
+			// Flat wiring/task/invoke key (bare ID) for the rest of the path.
+			target := res.TCID
 
 			// ENH-150: Post-fill validation gate -- catches frontmatter corruption
 			// before the adapter is invoked.
@@ -183,9 +197,21 @@ Adapter execution:
 				Force:       forceFlag,
 			}
 
+			// BUG-171 / REV-125: when the built-in automate path will fail its
+			// pre-run prerequisites (unsupported framework, or supported but no
+			// configured runner), the invocation fails fast with a `✗`
+			// diagnostic. Suppress the progress spinner in that case so its
+			// static non-TTY line does not precede the headline on stderr. This
+			// reuses the SAME adapter-layer predicate as the bulk preflight -- it
+			// only decides whether to show the spinner and adds no diagnostic
+			// semantics. All tier/support/runner knowledge stays behind
+			// CheckTier0AutomatePrereqs; the CLI never branches on tier.
+			fw := adapter.ResolveFramework(resolved, frameworkFlag)
+			prereqFails := adapter.CheckTier0AutomatePrereqs(cfg, resolved, fw) != nil
+
 			// Start spinner for sync adapters
 			var spinner *output.Spinner
-			if resolved.Mode == "sync" {
+			if resolved.Mode == "sync" && !prereqFails {
 				spinner = output.NewSpinner(os.Stderr, fmt.Sprintf("Running %s...", resolved.Name))
 				spinner.Start()
 			}
@@ -198,6 +224,16 @@ Adapter execution:
 			}
 
 			if err != nil {
+				// BUG-171: render command-specific guidance when the framework
+				// has no configured execute adapter, instead of leaking the raw
+				// internal invocation chain to Cobra. The error task + result
+				// contract are already produced by the invoker (error lifecycle
+				// preserved); we only own the presentation here.
+				var mae *adapter.MissingExecuteAdapterError
+				if errors.As(err, &mae) {
+					renderMissingExecuteAdapter(mae, target)
+					return output.AsDisplayed(err)
+				}
 				return err
 			}
 
@@ -249,6 +285,32 @@ func runBulkAutomate(cmd *cobra.Command, root string, folder string, adapterFlag
 
 	// Resolve framework from adapter config using precedence chain
 	framework := adapter.ResolveFramework(resolved, frameworkFlag)
+
+	// BUG-171 / REV-125 (settled contract): for the Tier 0 built-in automate
+	// path, a failed pre-run prerequisite is a batch-wide failure, so we
+	// validate ONCE before the loop, emit one diagnostic, and create no per-TC
+	// task/result/artefact/wiring state. CheckTier0AutomatePrereqs centralises
+	// the ordering (framework support FIRST, then canonical runner) and the
+	// tier gate, so the CLI never branches on tier and never diverges from what
+	// the single-TC invoke would report:
+	//   - unsupported framework (e.g. cypress) -> the established
+	//     unsupported-framework diagnostic (adding a runner cannot help);
+	//   - supported framework with no runner   -> BUG-171's missing-runner
+	//     guidance (renderMissingExecuteAdapter).
+	// Not applicable for Tier 1/2 adapters or for framework ""/"manual" (the
+	// helper returns nil), so a Tier 1 bulk run still iterates.
+	if prereqErr := adapter.CheckTier0AutomatePrereqs(cfg, resolved, framework); prereqErr != nil {
+		var unsupported *adapter.UnsupportedAutomateFrameworkError
+		var mae *adapter.MissingExecuteAdapterError
+		switch {
+		case errors.As(prereqErr, &unsupported):
+			output.Errorf(prereqErr.Error(), "")
+			return output.AsDisplayed(prereqErr)
+		case errors.As(prereqErr, &mae):
+			renderMissingExecuteAdapter(mae, "<tc-id>")
+			return output.AsDisplayed(prereqErr)
+		}
+	}
 
 	total := len(tcIDs)
 	recursiveLabel := ""
@@ -362,27 +424,28 @@ func shouldSkipAutomate(root, tcID, framework string) string {
 // validateAutomateFolderStructure checks that the required directories for automate exist.
 func validateAutomateFolderStructure(root string) error {
 	paths := layout.Current()
-	required := []string{paths.Tasks, paths.TestCases, paths.Automation}
+	// BUG-170: gtms/tasks/ is disposable, regenerable derived state (ADR-011).
+	// The task layer creates the status directory it writes into, so we must not
+	// require gtms/tasks/ to pre-exist. Only committed source dirs are required.
+	// This validator also serves execute (execute.go calls it), so execute
+	// inherits the same tolerance and the same gtms/automation/ requirement.
+	required := []string{paths.TestCases, paths.Automation}
 	for _, dir := range required {
 		path := filepath.Join(root, dir)
 		if _, err := os.Stat(path); os.IsNotExist(err) {
 			msg := fmt.Sprintf("Required directory '%s' not found.", dir)
-			output.Errorf(msg, fmt.Sprintf("Create the GTMS folder structure: %s/, %s/, %s/", paths.Tasks, paths.TestCases, paths.Automation))
+			output.Errorf(msg, fmt.Sprintf("Create the GTMS folder structure: %s/, %s/", paths.TestCases, paths.Automation))
 			return output.AsDisplayed(fmt.Errorf(msg))
 		}
 	}
 	return nil
 }
 
-// isTestCaseID validates that the target looks like a test case ID (e.g. tc-a1b2c3d4).
-// Requires the "tc-" prefix. For subfolder-scoped targets like "cwd-scoping/tc-abc123",
-// the base name after the last "/" is checked.
-func isTestCaseID(target string) bool {
-	base := target
-	if idx := strings.LastIndex(target, "/"); idx >= 0 {
-		base = target[idx+1:]
-	}
-	return strings.HasPrefix(base, "tc-") && len(base) > 3
+// isTestCaseID delegates to target.IsTestCaseID (BUG-167). Retained as an
+// unexported cli wrapper for the control commands (gaps) and link's internal
+// TC-vs-folder branches that still call it directly.
+func isTestCaseID(id string) bool {
+	return targetpkg.IsTestCaseID(id)
 }
 
 // truncateReason shortens a reason string for display in progress output.
@@ -391,6 +454,24 @@ func truncateReason(reason string, maxLen int) string {
 		return reason
 	}
 	return reason[:maxLen-3] + "..."
+}
+
+// renderMissingExecuteAdapter prints BUG-171's command-specific automate
+// guidance in the repo `✗ {what} / {what-to-do}` format. The capitalized
+// headline is built from the typed error's Framework field (never echoing the
+// raw lowercase adapter message), and the hint names BOTH valid recoveries for
+// an already-initialised project -- configure an adapters.execute runner, or
+// stay on the manual prime path -- while keeping the configured-adapter
+// inventory. primeTarget is the TC ID in single mode, or a "<tc-id>"
+// placeholder in bulk mode where no single target applies.
+func renderMissingExecuteAdapter(mae *adapter.MissingExecuteAdapterError, primeTarget string) {
+	headline := fmt.Sprintf("No execute adapter configured for framework %q", mae.Framework)
+	hint := fmt.Sprintf(
+		"Configured execute adapters: %s.\n"+
+			"    To automate %s test cases, add an execute adapter for framework %q under adapters.execute (framework: %s) in gtms.config,\n"+
+			"    or stay on the manual prime path: gtms prime %s --framework manual",
+		mae.ConfiguredAdapters(), mae.Framework, mae.Framework, mae.Framework, primeTarget)
+	output.Errorf(headline, hint)
 }
 
 // formatAutomateOutput prints the result of an automate command.

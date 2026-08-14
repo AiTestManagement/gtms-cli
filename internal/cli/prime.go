@@ -9,7 +9,6 @@ import (
 
 	"github.com/aitestmanagement/gtms-cli/internal/adapter"
 	"github.com/aitestmanagement/gtms-cli/internal/config"
-	"github.com/aitestmanagement/gtms-cli/internal/git"
 	"github.com/aitestmanagement/gtms-cli/internal/layout"
 	"github.com/aitestmanagement/gtms-cli/internal/output"
 	"github.com/aitestmanagement/gtms-cli/internal/pipeline"
@@ -67,10 +66,9 @@ Adapter execution:
 			cfg := GetConfig()
 			root := GetProjectRoot()
 
-			// Validate: git repo exists
-			if !git.IsRepo(ctx, root) {
-				output.Errorf("Not a git repository.", "Initialize a git repo with 'git init'.")
-				return output.AsDisplayed(fmt.Errorf("not a git repository"))
+			// Validate: git repo exists and git can be run (ENH-189)
+			if err := requireGitRepo(ctx, root, notARepoHintDefault); err != nil {
+				return err
 			}
 
 			// Validate: folder structure exists
@@ -283,7 +281,10 @@ func formatPrimeOutput(res *adapter.InvokeResult) {
 // validatePrimeFolderStructure checks that the required directories for prime exist.
 func validatePrimeFolderStructure(root string) error {
 	paths := layout.Current()
-	required := []string{paths.Tasks, paths.TestCases}
+	// BUG-170: gtms/tasks/ is disposable, regenerable derived state (ADR-011).
+	// The task layer creates the status directory it writes into, so we must not
+	// require gtms/tasks/ to pre-exist. Only committed source dirs are required.
+	required := []string{paths.TestCases}
 	for _, dir := range required {
 		path := filepath.Join(root, dir)
 		if _, err := os.Stat(path); os.IsNotExist(err) {

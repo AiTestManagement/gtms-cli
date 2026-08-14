@@ -4,11 +4,11 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"strings"
 
 	"github.com/spf13/cobra"
 	"github.com/aitestmanagement/gtms-cli/internal/output"
 	"github.com/aitestmanagement/gtms-cli/internal/reader"
+	targetpkg "github.com/aitestmanagement/gtms-cli/internal/target"
 )
 
 func newResetCmd() *cobra.Command {
@@ -37,21 +37,35 @@ task files. Wiring records and test case specs are untouched.
 			dry := IsDryRun() || localDryRun
 
 			if len(args) > 0 {
-				arg := strings.ToLower(args[0])
-				arg = normaliseTarget(arg)
-				if isTestCaseID(arg) {
-					return runReset(os.Stdout, root, nil, arg, dry)
-				}
-				folder, err := validateFolderArg(arg)
+				// BUG-167: shared classifier -- folder case preserved (existence
+				// first), only confirmed TC IDs lowercased/stripped.
+				res, err := targetpkg.Classify(root, args[0])
 				if err != nil {
 					output.Errorf(err.Error(), "")
 					return output.AsDisplayed(err)
 				}
-				scope := buildScopeFromArg(root, folder, recursive)
+				if res.Kind == targetpkg.KindTCID {
+					// BUG-059 (REV-113): a folder-qualified TC must resolve scoped
+					// before this mutating command clears state for the bare ID.
+					if err := requireScopedSpec(root, res); err != nil {
+						output.Errorf(err.Error(), "")
+						return output.AsDisplayed(err)
+					}
+					return runReset(os.Stdout, root, nil, res.TCID, dry)
+				}
+				scope, serr := buildScopeFromArg(root, res.Target, recursive)
+				if serr != nil {
+					output.Errorf(serr.Error(), "")
+					return output.AsDisplayed(serr)
+				}
 				return runReset(os.Stdout, root, scope, "", dry)
 			}
 
-			scope := buildScopeFromArg(root, "", recursive)
+			scope, serr := buildScopeFromArg(root, "", recursive)
+			if serr != nil {
+				output.Errorf(serr.Error(), "")
+				return output.AsDisplayed(serr)
+			}
 			return runReset(os.Stdout, root, scope, "", dry)
 		},
 	}

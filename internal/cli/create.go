@@ -9,7 +9,6 @@ import (
 
 	"github.com/adrg/frontmatter"
 	"github.com/aitestmanagement/gtms-cli/internal/adapter"
-	"github.com/aitestmanagement/gtms-cli/internal/git"
 	"github.com/aitestmanagement/gtms-cli/internal/layout"
 	"github.com/aitestmanagement/gtms-cli/internal/output"
 	"github.com/spf13/cobra"
@@ -57,10 +56,9 @@ Adapter execution:
 				return output.AsDisplayed(err)
 			}
 
-			// Validate: git repo exists
-			if !git.IsRepo(ctx, root) {
-				output.Errorf("Not a git repository.", "Initialize a git repo with 'git init'.")
-				return output.AsDisplayed(fmt.Errorf("not a git repository"))
+			// Validate: git repo exists and git can be run (ENH-189)
+			if err := requireGitRepo(ctx, root, notARepoHintDefault); err != nil {
+				return err
 			}
 
 			// Validate: folder structure exists
@@ -189,12 +187,15 @@ Adapter execution:
 // validateFolderStructure checks that the required GTMS directories exist.
 func validateFolderStructure(root string) error {
 	paths := layout.Current()
-	required := []string{paths.Tasks, paths.TestCases}
+	// BUG-170: gtms/tasks/ is disposable, regenerable derived state (ADR-011).
+	// The task layer creates the status directory it writes into, so we must not
+	// require gtms/tasks/ to pre-exist. Only committed source dirs are required.
+	required := []string{paths.TestCases}
 	for _, dir := range required {
 		path := filepath.Join(root, dir)
 		if _, err := os.Stat(path); os.IsNotExist(err) {
 			msg := fmt.Sprintf("Required directory '%s' not found.", dir)
-			output.Errorf(msg, fmt.Sprintf("Create the GTMS folder structure: %s/, %s/, %s/", paths.Tasks, paths.TestCases, paths.Automation))
+			output.Errorf(msg, fmt.Sprintf("Create the GTMS folder structure: %s/", paths.TestCases))
 			return output.AsDisplayed(fmt.Errorf(msg))
 		}
 	}

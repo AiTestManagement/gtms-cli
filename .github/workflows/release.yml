@@ -12,6 +12,13 @@ jobs:
   release:
     runs-on: ubuntu-latest
     strategy:
+      # Serialise the matrix. Every job's action-gh-release create-or-updates the
+      # SAME release, so running them in parallel races: on v0.3.1 this produced a
+      # duplicate draft release plus "Too many retries" on upload, and fail-fast then
+      # cancelled the surviving jobs (only 3 of 6 assets uploaded). One job at a time
+      # removes the contention; fail-fast: false stops one flaky job cancelling the rest.
+      fail-fast: false
+      max-parallel: 1
       matrix:
         include:
           - goos: linux

@@ -1,15 +1,18 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
 
+	"github.com/aitestmanagement/gtms-cli/internal/adapter"
 	"github.com/aitestmanagement/gtms-cli/internal/config"
 	"github.com/aitestmanagement/gtms-cli/internal/link"
 	"github.com/aitestmanagement/gtms-cli/internal/output"
+	targetpkg "github.com/aitestmanagement/gtms-cli/internal/target"
 	"github.com/aitestmanagement/gtms-cli/internal/wiring"
 )
 
@@ -48,6 +51,7 @@ Refresh mode (recompute hashes from current spec and artefact):
   gtms link --refresh tc-a1b2c3d4 --framework bats    (refresh only the bats record)
   gtms link --refresh my-feature                      (refresh stale records in folder)
   gtms link --refresh my-feature -r                   (include subdirectories)
+  gtms link --refresh my-feature --dry-run            (preview the refresh without writing)
 
 Repoint mode (reassign the stored execute adapter):
   gtms link tc-a1b2c3d4 --adapter runner-b                                    (single TC)
@@ -91,12 +95,23 @@ Repoint mode (reassign the stored execute adapter):
 					output.Errorf(msg, "")
 					return output.AsDisplayed(fmt.Errorf(msg))
 				}
-				var target string
+				// BUG-167 / REV-118: the classifier's decision crosses the
+				// orchestration boundary as a TYPED result. runRepoint switches on
+				// Result.Kind and NEVER re-derives folder-vs-TC from the string --
+				// so a trailing-separator folder target (tc-x/) can't be reclassified
+				// into a single-TC repoint on a global wiring. classified is nil only
+				// for --all (project-wide, no positional target).
+				var classified *targetpkg.Result
 				if len(args) > 0 {
-					target = strings.ToLower(args[0])
-					target = normaliseTarget(target)
+					res, cerr := targetpkg.Classify(root, args[0])
+					if cerr != nil {
+						output.Errorf(cerr.Error(),
+							"Use only letters, numbers, dashes, underscores, dots, and forward slashes.")
+						return output.AsDisplayed(cerr)
+					}
+					classified = &res
 				}
-				return runRepoint(root, target, adapterFlag, fromAdapterFlag, frameworkFlag, allFlag, recursiveFlag, dry)
+				return runRepoint(root, classified, adapterFlag, fromAdapterFlag, frameworkFlag, allFlag, recursiveFlag, dry)
 			}
 
 			// --from-adapter without --adapter is invalid.
@@ -113,10 +128,12 @@ Repoint mode (reassign the stored execute adapter):
 				return output.AsDisplayed(fmt.Errorf(msg))
 			}
 
-			// --dry-run outside repoint mode is rejected (BUG-146).
-			if dry {
+			// BUG-146: refresh mode now honours --dry-run (preview). Write and
+			// check modes still reject it -- so the rejection is gated on
+			// !refreshFlag. The refresh preview is dispatched via runRefresh below.
+			if dry && !refreshFlag {
 				msg := "--dry-run is not yet supported for non-repoint link operations."
-				output.Errorf(msg, "Use --adapter to enter repoint mode; write, check, and refresh modes do not support --dry-run.")
+				output.Errorf(msg, "Use --adapter to enter repoint mode, or --refresh --dry-run to preview a refresh; write and check modes do not support --dry-run.")
 				return output.AsDisplayed(fmt.Errorf(msg))
 			}
 
@@ -127,27 +144,52 @@ Repoint mode (reassign the stored execute adapter):
 				return output.AsDisplayed(fmt.Errorf(msg))
 			}
 
-			target := strings.ToLower(args[0])
-			target = normaliseTarget(target)
+			// BUG-167: shared classifier -- preserve folder case for --refresh,
+			// normalise separators, lowercase/strip only confirmed TC IDs.
+			res, cerr := targetpkg.Classify(root, args[0])
+			if cerr != nil {
+				// --refresh accepts a folder OR a TC scope, so it keeps the raw
+				// classifier error -- the generic "Invalid test case ID format"
+				// override would mislabel a rejected folder as a bad TC ID.
+				if refreshFlag {
+					output.Errorf(cerr.Error(),
+						"Use only letters, numbers, dashes, underscores, dots, and forward slashes.")
+					return output.AsDisplayed(cerr)
+				}
+				// Standard link is single-TC only: retain the historical generic
+				// message (BUG-058 frozen specs) plus the classifier's specific cause.
+				msg, hint := invalidTargetFormatError(args[0], cerr)
+				output.Errorf(msg, hint)
+				return output.AsDisplayed(cerr)
+			}
 
-			// --- Refresh mode (ENH-156) ---
+			// --- Refresh mode (ENH-156) -- accepts a folder scope or a TC ID ---
+			// BUG-167 / REV-118: pass the TYPED classifier result into runRefresh,
+			// which switches on Result.Kind and never re-derives folder-vs-TC from
+			// the string (scoped validation of a qualified TC happens inside).
 			if refreshFlag {
-				return runRefresh(root, target, frameworkFlag, artefactFlag, checkFlag, forceFlag, strictFlag, recursiveFlag)
+				return runRefresh(root, res, frameworkFlag, artefactFlag, checkFlag, forceFlag, strictFlag, recursiveFlag, dry)
 			}
 
-			// --- Standard link mode (original behavior) ---
-
-			if err := validateTargetID(target); err != nil {
-				msg := fmt.Sprintf("Invalid test case ID format: '%s'.", target)
+			// --- Standard link mode (original behavior) -- single TC only ---
+			if res.Kind != targetpkg.KindTCID {
+				msg := fmt.Sprintf("Invalid test case ID format: '%s'.", sanitizeForError(args[0]))
 				output.Errorf(msg, "Use format like tc-a1b2c3d4.")
 				return output.AsDisplayed(fmt.Errorf(msg))
 			}
-
-			if !isTestCaseID(target) {
-				msg := fmt.Sprintf("Invalid test case ID format: '%s'.", target)
-				output.Errorf(msg, "Use format like tc-a1b2c3d4.")
-				return output.AsDisplayed(fmt.Errorf(msg))
+			// BUG-059 (REV-114 CLAUDE-001): scope-validate a folder-qualified target
+			// BEFORE the check/link split, regardless of --strict. LinkRecord's own
+			// scoped check is gated on --strict (default off), so without this a
+			// non-strict `gtms link bar/tc-x` would resolve globally and write wiring
+			// to the wrong folder. requireScopedSpec only enforces when a qualifier is
+			// present, so a bare TC ID keeps the ENH-111 non-strict/global behaviour.
+			if err := requireScopedSpec(root, res); err != nil {
+				output.Errorf(err.Error(), "Check the folder qualifier, or drop it to match the TC anywhere.")
+				return output.AsDisplayed(err)
 			}
+			// Pass the QUALIFIED target to LinkRecord/CheckLink; they strip to the
+			// bare ID internally for the flat wiring key.
+			target := res.Target
 
 			if frameworkFlag == "" {
 				msg := "--framework is required for gtms link."
@@ -179,6 +221,17 @@ Repoint mode (reassign the stored execute adapter):
 			cfg := GetConfig()
 			wiringAdapter, warnings, err := link.LinkRecord(root, cfg, target, frameworkFlag, artefactFlag, forceFlag, strictFlag)
 			if err != nil {
+				// BUG-171: a missing execute adapter for the framework is a
+				// link/configuration problem, not an artefact problem. Give
+				// link-appropriate guidance and do NOT inherit automate's
+				// manual prime-path advice (the shared resolver error must stay
+				// command-specific at the CLI boundary).
+				var mae *adapter.MissingExecuteAdapterError
+				if errors.As(err, &mae) {
+					output.Errorf(err.Error(),
+						"Configure a compatible execute adapter in gtms.config (adapters.execute with a matching framework), or correct the link's --framework/--artefact.")
+					return output.AsDisplayed(err)
+				}
 				output.Errorf(err.Error(), "Check the artefact path or use --force to overwrite.")
 				return output.AsDisplayed(err)
 			}
@@ -204,23 +257,29 @@ Repoint mode (reassign the stored execute adapter):
 	cmd.Flags().StringVar(&adapterFlag, "adapter", "", "Repoint: new execute adapter name")
 	cmd.Flags().StringVar(&fromAdapterFlag, "from-adapter", "", "Repoint: filter by current adapter (mandatory for bulk)")
 	cmd.Flags().BoolVar(&allFlag, "all", false, "Repoint: project-wide scope (requires --from-adapter)")
-	cmd.Flags().BoolVar(&localDryRun, "dry-run", false, "Preview repoint without writing")
+	cmd.Flags().BoolVar(&localDryRun, "dry-run", false, "Preview a refresh or repoint without writing")
 
 	return cmd
 }
 
 // runRefresh handles the --refresh path for the link command (ENH-156).
 //
-// Reject incompatible flags first, then dispatch to single-TC or folder mode.
-func runRefresh(root, target, frameworkFlag, artefactFlag string, checkFlag, forceFlag, strictFlag, recursive bool) error {
-	// Reject incompatible flags.
+// BUG-167 / REV-118: runRefresh consumes the CLASSIFIED target.Result. It rejects
+// incompatible flags first, then dispatches by classified.Kind. It NEVER calls
+// IsBulkFolder or isTestCaseID to determine the target kind, and never infers kind
+// from the string, slashes, or filesystem existence -- so a trailing-separator
+// folder target (KindFolder) can't be re-derived into a single-TC refresh on a
+// global wiring, even when the folder is absent or TC-shaped.
+func runRefresh(root string, classified targetpkg.Result, frameworkFlag, artefactFlag string, checkFlag, forceFlag, strictFlag, recursive, dry bool) error {
+	// Reject incompatible flags. classified.Target is used only for the example
+	// hint text (never to determine kind).
 	if artefactFlag != "" {
 		msg := "--artefact is not valid with --refresh. Refresh sources the artefact from the existing wiring record."
-		output.Errorf(msg, fmt.Sprintf("To change the artefact path, use: gtms link %s --framework <fw> --artefact <path> --force", target))
+		output.Errorf(msg, fmt.Sprintf("To change the artefact path, use: gtms link %s --framework <fw> --artefact <path> --force", classified.Target))
 		return output.AsDisplayed(fmt.Errorf(msg))
 	}
 	if checkFlag {
-		msg := "--check is not valid with --refresh. To inspect stale wiring, use: gtms status"
+		msg := "--check is not valid with --refresh. To preview a refresh without writing, use: gtms link " + classified.Target + " --refresh --dry-run"
 		output.Errorf(msg, "")
 		return output.AsDisplayed(fmt.Errorf(msg))
 	}
@@ -235,13 +294,6 @@ func runRefresh(root, target, frameworkFlag, artefactFlag string, checkFlag, for
 		return output.AsDisplayed(fmt.Errorf(msg))
 	}
 
-	// Validate target safety.
-	if err := validateTargetID(target); err != nil {
-		output.Errorf(err.Error(),
-			"Use only letters, numbers, dashes, underscores, dots, and forward slashes.")
-		return output.AsDisplayed(err)
-	}
-
 	// Validate --framework if provided.
 	if frameworkFlag != "" && !config.ValidateFramework(frameworkFlag) {
 		msg := fmt.Sprintf("Invalid framework '%s'. Framework must contain only lowercase letters, digits, and hyphens.", frameworkFlag)
@@ -249,70 +301,169 @@ func runRefresh(root, target, frameworkFlag, artefactFlag string, checkFlag, for
 		return output.AsDisplayed(fmt.Errorf(msg))
 	}
 
-	// Dispatch: folder (bulk) vs single-TC.
-	if IsBulkFolder(root, target) {
-		return runFolderRefresh(root, target, frameworkFlag, recursive)
+	// Dispatch strictly by classified kind (target safety was already enforced by
+	// target.Classify -- validateFolderSafety ran on the complete input).
+	switch classified.Kind {
+	case targetpkg.KindFolder:
+		return runFolderRefresh(root, classified.Target, frameworkFlag, recursive, dry)
+	case targetpkg.KindTCID:
+		// BUG-059 (REV-113): scope-validate a qualified TC, then refresh the flat
+		// wiring keyed on the bare ID.
+		if err := requireScopedSpec(root, classified); err != nil {
+			output.Errorf(err.Error(), "Check the folder qualifier, or drop it to match the TC anywhere.")
+			return output.AsDisplayed(err)
+		}
+		return runSingleTCRefresh(root, classified.TCID, frameworkFlag, dry)
+	default:
+		return output.AsDisplayed(fmt.Errorf("internal error: unclassified refresh target"))
 	}
-
-	// Single-TC mode: validate TC ID format.
-	if !isTestCaseID(target) {
-		msg := fmt.Sprintf("'%s' is not a valid test case ID or an existing folder under gtms/test/cases/.", target)
-		output.Errorf(msg, "Use format like tc-a1b2c3d4 or provide a folder name.")
-		return output.AsDisplayed(fmt.Errorf(msg))
-	}
-
-	return runSingleTCRefresh(root, target, frameworkFlag)
 }
 
-// runSingleTCRefresh handles --refresh for a single TC ID (ENH-156).
-func runSingleTCRefresh(root, tcID, frameworkFlag string) error {
-	var records []*wiring.WiringRecord
+// dryMarker returns the "[dry-run] " prefix in preview mode and "" otherwise.
+//
+// Every line a preview emits carries it -- successes, per-record failures,
+// discovery failures, and the operation-level errors below (REV-128
+// CODEX-128-002, extended at REV-129 CODEX-129-001 to the directory-level
+// scan errors). The rule is that a user who asked for a preview must never be
+// shown output they could mistake for a real refresh, and drawing the line
+// anywhere short of "everything the operation prints" creates a distinction
+// they cannot see.
+//
+// The boundary is the operation, not the process: the flag-compatibility
+// rejections in runRefresh (--check/--force/--strict with --refresh, an invalid
+// --framework) stay unlabelled. Those reject the command line before a mode is
+// even dispatched, they say nothing about wiring, and they are identical whether
+// or not --dry-run was passed -- there is no real-refresh reading to confuse
+// them with.
+func dryMarker(dry bool) string {
+	if dry {
+		return "[dry-run] "
+	}
+	return ""
+}
 
-	if frameworkFlag != "" {
-		rec, _, err := wiring.Find(root, tcID, frameworkFlag)
+// refreshOutcome classifies the result of processing one wiring record during a
+// refresh (preview or real).
+type refreshOutcome int
+
+const (
+	refreshFailed refreshOutcome = iota
+	refreshChanged
+	refreshCurrent
+)
+
+// refreshDryFieldList formats the changed hash field tokens for a dry-run
+// preview line. Only the fields that would actually change are listed (BUG-146
+// AC3), so a pending record previews "testcase-hash" alone.
+func refreshDryFieldList(plan link.RefreshPlan) string {
+	var fields []string
+	if plan.TestCaseHashChanged {
+		fields = append(fields, "testcase-hash")
+	}
+	if plan.ArtefactHashChanged {
+		fields = append(fields, "artefact-hash")
+	}
+	return strings.Join(fields, ", ")
+}
+
+// processRefreshRecord previews (dry) or applies (real) a single wiring record's
+// refresh, prints the per-record line, and reports the outcome. The dry path
+// calls link.PlanRefresh (no write); the real path calls link.RefreshRecord.
+// Both share link.PlanRefresh's validation, so the preview surfaces exactly the
+// errors and field changes the real refresh would (BUG-146 parity).
+func processRefreshRecord(root, tcLabel string, rec *wiring.WiringRecord, dry bool) refreshOutcome {
+	if dry {
+		plan, err := link.PlanRefresh(root, rec)
 		if err != nil {
-			msg := fmt.Sprintf("Reading wiring for %s--%s: %v", tcID, frameworkFlag, err)
-			output.Errorf(msg, "Check the wiring file for parse errors.")
-			return output.AsDisplayed(fmt.Errorf(msg))
+			// BUG-146 CODEX-128-002 / AC2: a preview failure must carry the
+			// [dry-run] label so an all-failures preview is never mistaken for a
+			// real refresh failure. The cause substring is left intact (specs grep
+			// it); only the marker is prefixed, matched to the success line above.
+			fmt.Printf("  %s [dry-run] %s (%s): %s\n", output.IconError, tcLabel, rec.Framework, err.Error())
+			return refreshFailed
 		}
-		if rec == nil {
-			msg := fmt.Sprintf("No wiring record found for '%s' (framework: %s).", tcID, frameworkFlag)
+		if plan.Changed {
+			fmt.Printf("  %s [dry-run] Would refresh: %s (%s) -- %s\n",
+				output.IconComplete, tcLabel, rec.Framework, refreshDryFieldList(plan))
+			return refreshChanged
+		}
+		fmt.Printf("  %s [dry-run] Current: %s (%s)\n", output.IconSkipped, tcLabel, rec.Framework)
+		return refreshCurrent
+	}
+
+	refreshed, err := link.RefreshRecord(root, rec)
+	if err != nil {
+		fmt.Printf("  %s %s (%s): %s\n", output.IconError, tcLabel, rec.Framework, err.Error())
+		return refreshFailed
+	}
+	if refreshed {
+		fmt.Printf("  %s Refreshed: %s (%s)\n", output.IconComplete, tcLabel, rec.Framework)
+		return refreshChanged
+	}
+	fmt.Printf("  %s Current: %s (%s)\n", output.IconSkipped, tcLabel, rec.Framework)
+	return refreshCurrent
+}
+
+// processRefreshTarget renders one discovered refresh target: a discovery failure
+// (malformed/unreadable file, or a filename/content identity mismatch) prints the
+// per-record error line and counts as a failure; a valid record is previewed or
+// applied via processRefreshRecord. Routing failures here -- instead of dropping
+// them at discovery -- keeps the dry and real failure sets identical (CODEX-002).
+func processRefreshTarget(root string, tgt link.RefreshTarget, dry bool) refreshOutcome {
+	if tgt.Err != nil {
+		// BUG-146 CODEX-128-002 / AC2: a preview discovery failure (malformed /
+		// identity-mismatched wiring) carries the [dry-run] label; the real path
+		// renders the same line without it. The cause substring is unchanged.
+		fmt.Printf("  %s %s%s (%s): %s\n", output.IconError, dryMarker(dry), tgt.TCID, tgt.Framework, tgt.Err.Error())
+		return refreshFailed
+	}
+	return processRefreshRecord(root, tgt.TCID, tgt.Record, dry)
+}
+
+// runSingleTCRefresh handles --refresh for a single TC ID (ENH-156). With dry
+// set it renders a non-mutating preview instead of writing (BUG-146).
+//
+// Discovery goes through link.DiscoverRefreshTargets (identity-validating,
+// diagnostic-preserving) rather than wiring.Find/FindAllForTC, so a wiring file
+// whose YAML identity disagrees with its filename cannot be selected as this TC
+// and then written to a foreign identity (CODEX-001), and a malformed in-scope
+// file is a counted failure rather than a silent skip (CODEX-002).
+func runSingleTCRefresh(root, tcID, frameworkFlag string, dry bool) error {
+	targets, err := link.DiscoverRefreshTargets(root, []string{tcID}, frameworkFlag)
+	if err != nil {
+		msg := fmt.Sprintf("%sScanning wiring for %s: %v", dryMarker(dry), tcID, err)
+		output.Errorf(msg, "Check gtms/automation/wiring/ for parse errors.")
+		return output.AsDisplayed(fmt.Errorf(msg))
+	}
+	if len(targets) == 0 {
+		// BUG-146 CODEX-128-002 / AC2: a preview labels every line it emits,
+		// including the no-record outcome. Nothing was planned and nothing would be
+		// written either way, but the user asked for a preview and must be able to
+		// see that a preview is what ran -- an unlabelled line here is the only
+		// output of the command and reads as a real refresh failure. The cause
+		// substring, the hint, and the exit status are unchanged; only the marker
+		// is prefixed. (The `gtms execute` path emits the same two sentences from
+		// execute.go and is deliberately untouched -- it has no preview mode.)
+		marker := dryMarker(dry)
+		if frameworkFlag != "" {
+			msg := fmt.Sprintf("%sNo wiring record found for '%s' (framework: %s).", marker, tcID, frameworkFlag)
 			output.Errorf(msg, fmt.Sprintf("Run 'gtms link %s --framework %s --artefact <path>' to create it.", tcID, frameworkFlag))
 			return output.AsDisplayed(fmt.Errorf(msg))
 		}
-		records = []*wiring.WiringRecord{rec}
-	} else {
-		recs, err := wiring.FindAllForTC(root, tcID)
-		if err != nil {
-			msg := fmt.Sprintf("Scanning wiring for %s: %v", tcID, err)
-			output.Errorf(msg, "Check gtms/automation/wiring/ for parse errors.")
-			return output.AsDisplayed(fmt.Errorf(msg))
-		}
-		if len(recs) == 0 {
-			msg := fmt.Sprintf("No wiring records found for '%s'.", tcID)
-			output.Errorf(msg, fmt.Sprintf("Run 'gtms link %s --framework <fw> --artefact <path>' to create one.", tcID))
-			return output.AsDisplayed(fmt.Errorf(msg))
-		}
-		records = recs
+		msg := fmt.Sprintf("%sNo wiring records found for '%s'.", marker, tcID)
+		output.Errorf(msg, fmt.Sprintf("Run 'gtms link %s --framework <fw> --artefact <path>' to create one.", tcID))
+		return output.AsDisplayed(fmt.Errorf(msg))
 	}
 
 	failCount := 0
-	for _, rec := range records {
-		refreshed, err := link.RefreshRecord(root, rec)
-		if err != nil {
+	for _, tgt := range targets {
+		if processRefreshTarget(root, tgt, dry) == refreshFailed {
 			failCount++
-			fmt.Printf("  %s %s (%s): %s\n", output.IconError, tcID, rec.Framework, err.Error())
-			continue
-		}
-		if refreshed {
-			fmt.Printf("  %s Refreshed: %s (%s)\n", output.IconComplete, tcID, rec.Framework)
-		} else {
-			fmt.Printf("  %s Current: %s (%s)\n", output.IconSkipped, tcID, rec.Framework)
 		}
 	}
 
 	if failCount > 0 {
-		msg := fmt.Sprintf("%d of %d wiring records failed to refresh for %s", failCount, len(records), tcID)
+		msg := fmt.Sprintf("%d of %d wiring records failed to refresh for %s", failCount, len(targets), tcID)
 		return output.AsDisplayed(fmt.Errorf(msg))
 	}
 	return nil
@@ -322,66 +473,108 @@ func runSingleTCRefresh(root, tcID, frameworkFlag string) error {
 //
 // Spec-first selection: discover TC IDs under the folder, enumerate wiring
 // for each, filter to stale records, refresh those, report current as no-ops.
-func runFolderRefresh(root, folder, frameworkFlag string, recursive bool) error {
+// With dry set it renders a non-mutating preview instead of writing (BUG-146),
+// using the same per-record continuation policy so the preview's success/failure
+// set matches the real refresh exactly.
+func runFolderRefresh(root, folder, frameworkFlag string, recursive, dry bool) error {
 	tcIDs, err := DiscoverTestCases(root, folder, recursive)
 	if err != nil {
-		output.Errorf(err.Error(), "Check that gtms/test/cases/"+folder+"/ contains tc-*.md files.")
-		return output.AsDisplayed(err)
+		msg := dryMarker(dry) + err.Error()
+		output.Errorf(msg, "Check that gtms/test/cases/"+folder+"/ contains tc-*.md files.")
+		return output.AsDisplayed(fmt.Errorf(msg))
+	}
+
+	// CODEX-004: never refresh a bare TC ID that more than one spec in scope
+	// claims.
+	//
+	// The reason is the SPEC side, not the wiring side (REV-129 CLAUDE-001
+	// corrected the original rationale here, which claimed the preview would
+	// report two planned refreshes for one record -- it cannot: DiscoverRefreshTargets
+	// scopes through a set of bare IDs and emits one target per wiring FILE).
+	// What actually breaks is which spec the refresh hashes. Wiring is keyed on
+	// the bare ID, and PlanRefresh resolves the spec through
+	// pipeline.ResolveTestCaseSpec -> testcase.ResolveSpec, which takes the FIRST
+	// match from a filepath.Walk and stops. With two specs claiming one ID, the
+	// refresh would silently write a testcase-hash derived from whichever spec the
+	// filesystem happened to yield first -- a non-deterministic mutation, and the
+	// user has no way to see which source won. Failing closed on it is the same
+	// rule the qualified-target guard already applies (REV-120 CODEX-001,
+	// testcase.FindAllSpecs).
+	//
+	// REV-129 CLAUDE-003 narrowed the blast radius: only the colliding IDs are
+	// held back. They are reported as counted failures, exactly like any other
+	// per-record discovery failure, so the summary and the non-zero exit still
+	// account for them -- while every unambiguous test case in the folder (or,
+	// under -r, in the rest of the subtree) refreshes normally. Preview and real
+	// refresh consume the identical set, so they still agree record for record.
+	uniqueIDs, ambiguousIDs := link.PartitionTCIDsByAmbiguity(tcIDs)
+	ambiguous := make(map[string]bool, len(ambiguousIDs))
+	for _, id := range ambiguousIDs {
+		ambiguous[id] = true
+	}
+
+	// Single identity-validating discovery path for both dry and real refresh: an
+	// identity-mismatched record cannot be written to a foreign TC (CODEX-001) and
+	// a malformed in-scope record is a counted failure, not a silent drop
+	// (CODEX-002). Orphan wiring whose spec was deleted is excluded because tcIDs
+	// is spec-first.
+	//
+	// The ambiguous IDs go through discovery too (REV-130 CODEX-130-002). They are
+	// reported, never planned or written -- but routing them through the same
+	// discovery is what makes --framework govern them and gives one failure per
+	// in-scope RECORD. Counting them up-front instead meant an ambiguous ID with
+	// only a playwright record failed a `--framework bats` refresh that had no
+	// bats record in scope, and an ambiguous ID with three records counted once.
+	targets, err := link.DiscoverRefreshTargets(root, append(uniqueIDs, ambiguousIDs...), frameworkFlag)
+	if err != nil {
+		msg := fmt.Sprintf("%sScanning wiring for %s/: %v", dryMarker(dry), folder, err)
+		output.Errorf(msg, "Check gtms/automation/wiring/ for parse errors.")
+		return output.AsDisplayed(fmt.Errorf(msg))
 	}
 
 	failCount := 0
 	refreshedCount := 0
 	currentCount := 0
-	noWiringCount := 0
 
-	for _, tcID := range tcIDs {
-		var records []*wiring.WiringRecord
-
-		if frameworkFlag != "" {
-			rec, _, findErr := wiring.Find(root, tcID, frameworkFlag)
-			if findErr != nil {
-				failCount++
-				fmt.Printf("  %s %s (%s): %s\n", output.IconError, tcID, frameworkFlag, findErr.Error())
-				continue
-			}
-			if rec == nil {
-				noWiringCount++
-				continue
-			}
-			records = []*wiring.WiringRecord{rec}
-		} else {
-			recs, findErr := wiring.FindAllForTC(root, tcID)
-			if findErr != nil {
-				failCount++
-				fmt.Printf("  %s %s: %s\n", output.IconError, tcID, findErr.Error())
-				continue
-			}
-			if len(recs) == 0 {
-				noWiringCount++
-				continue
-			}
-			records = recs
+	for _, tgt := range targets {
+		if ambiguous[tgt.TCID] {
+			// The remedy travels with the line: an ambiguous record never reaches
+			// planning, so there is no per-record hint to fall back on.
+			fmt.Printf("  %s %s%s (%s): ambiguous refresh scope -- more than one spec under %s/; give each test case a unique tc-<id>\n",
+				output.IconError, dryMarker(dry), tgt.TCID, tgt.Framework, folder)
+			failCount++
+			continue
 		}
-
-		for _, rec := range records {
-			refreshed, refErr := link.RefreshRecord(root, rec)
-			if refErr != nil {
-				failCount++
-				fmt.Printf("  %s %s (%s): %s\n", output.IconError, tcID, rec.Framework, refErr.Error())
-				continue
-			}
-			if refreshed {
-				refreshedCount++
-				fmt.Printf("  %s Refreshed: %s (%s)\n", output.IconComplete, tcID, rec.Framework)
-			} else {
-				currentCount++
-				fmt.Printf("  %s Current: %s (%s)\n", output.IconSkipped, tcID, rec.Framework)
-			}
+		switch processRefreshTarget(root, tgt, dry) {
+		case refreshFailed:
+			failCount++
+		case refreshChanged:
+			refreshedCount++
+		case refreshCurrent:
+			currentCount++
 		}
 	}
 
-	// Summary
-	fmt.Printf("\n  %d refreshed, %d current, %d failed\n", refreshedCount, currentCount, failCount)
+	// Summary. In dry mode the counts describe the plan ("would refresh") rather
+	// than a completed mutation, and an entirely-current scope gets an explicit
+	// nothing-to-refresh line (BUG-146 AC2 empty case).
+	if dry {
+		if refreshedCount == 0 && failCount == 0 {
+			// REV-129 CLAUDE-002: "all wiring is current" is only true when there
+			// was wiring to find. With currentCount also zero the scope holds no
+			// wiring at all -- telling the user their wiring is current is the
+			// opposite diagnosis, and sends them away from the actual remedy
+			// (gtms link ... --artefact). Exit status stays 0 either way (AC2).
+			if currentCount > 0 {
+				fmt.Printf("\n  [dry-run] Nothing to refresh -- all wiring is current.\n")
+			} else {
+				fmt.Printf("\n  [dry-run] No wiring records in scope.\n")
+			}
+		}
+		fmt.Printf("\n  [dry-run] %d would refresh, %d current, %d failed\n", refreshedCount, currentCount, failCount)
+	} else {
+		fmt.Printf("\n  %d refreshed, %d current, %d failed\n", refreshedCount, currentCount, failCount)
+	}
 
 	if failCount > 0 {
 		msg := fmt.Sprintf("%d wiring records failed to refresh in %s/", failCount, folder)
@@ -402,16 +595,33 @@ func formatCheckOutput(result link.CheckResult) {
 }
 
 // runRepoint handles the --adapter repoint path (ENH-192).
-func runRepoint(root, target, adapterFlag, fromAdapterFlag, frameworkFlag string, allFlag, recursive, dryRun bool) error {
-	// Flag-combination rejections.
-	if err := validateRepointFlags(target, adapterFlag, fromAdapterFlag, allFlag, recursive); err != nil {
+// runRepoint handles the --adapter repoint path for the link command.
+//
+// BUG-167 / REV-118: runRepoint consumes the CLASSIFIED target.Result (nil only
+// for --all, the project-wide mode). It dispatches by classified.Kind and NEVER
+// calls IsBulkFolder or isTestCaseID to determine the target kind -- so a
+// trailing-separator folder target (KindFolder) can't be re-derived into a
+// single-TC repoint on a global wiring. Flag validation order and contracts are
+// preserved; classified.Target is used only for validation predicates/messages,
+// never to determine kind.
+func runRepoint(root string, classified *targetpkg.Result, adapterFlag, fromAdapterFlag, frameworkFlag string, allFlag, recursive, dryRun bool) error {
+	// targetStr participates ONLY in flag validation and message text (the
+	// "target present" predicate), never in kind determination.
+	targetStr := ""
+	if classified != nil {
+		targetStr = classified.Target
+	}
+
+	// Flag-combination rejections (unchanged order/contract).
+	if err := validateRepointFlags(targetStr, adapterFlag, fromAdapterFlag, allFlag, recursive); err != nil {
 		return err
 	}
 
-	// CODEX-010: -r is a folder-scope modifier. Reject it for a single-TC target
-	// before any adapter validation or mutation. (--all already rejects -r in
-	// validateRepointFlags.)
-	if recursive && !allFlag && target != "" && !IsBulkFolder(root, target) {
+	// CODEX-010 / REV-118: -r is a folder-scope modifier. Reject it for a single-TC
+	// target -- keyed on classified.Kind, NOT filesystem/string reclassification.
+	// (--all already rejects -r in validateRepointFlags.) A KindFolder target keeps
+	// folder intent for -r even when the folder is absent or TC-shaped.
+	if recursive && !allFlag && classified != nil && classified.Kind == targetpkg.KindTCID {
 		msg := "-r is only valid for a folder repoint, not a single test case."
 		output.Errorf(msg, "Drop -r, or target a folder under gtms/test/cases/.")
 		return output.AsDisplayed(fmt.Errorf(msg))
@@ -428,36 +638,38 @@ func runRepoint(root, target, adapterFlag, fromAdapterFlag, frameworkFlag string
 		DryRun:        dryRun,
 	}
 
-	// Determine scope.
+	// --all: project-wide scope (no positional target).
 	if allFlag {
 		return runRepointAll(root, opts)
 	}
 
-	// Validate target safety.
-	if err := validateTargetID(target); err != nil {
-		output.Errorf(err.Error(),
-			"Use only letters, numbers, dashes, underscores, dots, and forward slashes.")
-		return output.AsDisplayed(err)
+	// Non-all: validateRepointFlags already rejected an empty target, so classified
+	// is non-nil here.
+	if classified == nil {
+		return output.AsDisplayed(fmt.Errorf("internal error: repoint target not classified"))
 	}
 
-	// Folder (bulk) vs single-TC.
-	if IsBulkFolder(root, target) {
+	// Dispatch strictly by classified kind (target safety already enforced by
+	// target.Classify -- validateFolderSafety ran on the complete input).
+	switch classified.Kind {
+	case targetpkg.KindFolder:
 		if fromAdapterFlag == "" {
 			msg := "--from-adapter is required for folder repoint."
-			output.Errorf(msg, fmt.Sprintf("Example: gtms link %s --from-adapter old --adapter %s", target, adapterFlag))
+			output.Errorf(msg, fmt.Sprintf("Example: gtms link %s --from-adapter old --adapter %s", classified.Target, adapterFlag))
 			return output.AsDisplayed(fmt.Errorf(msg))
 		}
-		return runRepointFolder(root, target, recursive, opts)
+		return runRepointFolder(root, classified.Target, recursive, opts)
+	case targetpkg.KindTCID:
+		// BUG-059 (REV-113): scope-validate a qualified TC, then repoint the flat
+		// wiring keyed on the bare ID.
+		if err := requireScopedSpec(root, *classified); err != nil {
+			output.Errorf(err.Error(), "Check the folder qualifier, or drop it to match the TC anywhere.")
+			return output.AsDisplayed(err)
+		}
+		return runRepointSingleTC(root, classified.TCID, opts)
+	default:
+		return output.AsDisplayed(fmt.Errorf("internal error: unclassified repoint target"))
 	}
-
-	// Single-TC mode.
-	if !isTestCaseID(target) {
-		msg := fmt.Sprintf("'%s' is not a valid test case ID or an existing folder under gtms/test/cases/.", target)
-		output.Errorf(msg, "Use format like tc-a1b2c3d4 or provide a folder name.")
-		return output.AsDisplayed(fmt.Errorf(msg))
-	}
-
-	return runRepointSingleTC(root, target, opts)
 }
 
 // validateRepointFlags rejects invalid flag combinations for repoint mode.

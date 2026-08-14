@@ -5,11 +5,9 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 
 	"github.com/spf13/cobra"
 	"github.com/aitestmanagement/gtms-cli/internal/config"
-	"github.com/aitestmanagement/gtms-cli/internal/layout"
 	"github.com/aitestmanagement/gtms-cli/internal/output"
 	"github.com/aitestmanagement/gtms-cli/internal/reader"
 )
@@ -54,7 +52,11 @@ missing artefacts, and manual test cases with spec drift.
 			if len(args) == 0 {
 				// No arg: -r → recursive flat list; default → folder summary
 				if recursive {
-					scope := buildScopeFromArg(root, "", true)
+					scope, serr := buildScopeFromArg(root, "", true)
+					if serr != nil {
+						output.Errorf(serr.Error(), "")
+						return output.AsDisplayed(serr)
+					}
 					return runGaps(os.Stdout, root, scope, jsonOut, defaultFw, strict)
 				}
 				// BUG-082: pass the explicit --framework value, not the
@@ -67,15 +69,14 @@ missing artefacts, and manual test cases with spec drift.
 			// BUG-081: existence-first guard against TC-ID-shaped args.
 			// isTestCaseID is a loose prefix check, so a legitimate folder named
 			// e.g. "tc-regression" must still scope normally. Only reject when
-			// the arg is TC-shaped AND no folder of that name exists.
+			// the arg is TC-shaped AND no folder of that name exists. REV-119:
+			// IsBulkFolder delegates to the containment-checked resolver, so an
+			// out-of-tree symlink is NOT treated as an existing folder here.
 			normalised := normaliseTarget(args[0])
-			if isTestCaseID(normalised) {
-				folderPath := filepath.Join(layout.TestCasesDir(root), normalised)
-				if info, statErr := os.Stat(folderPath); statErr != nil || !info.IsDir() {
-					output.Errorf("argument must be a folder, not a TC ID",
-						"Use 'gtms status "+normalised+"' for per-TC detail.")
-					return output.AsDisplayed(fmt.Errorf("argument must be a folder, not a TC ID"))
-				}
+			if isTestCaseID(normalised) && !IsBulkFolder(root, normalised) {
+				output.Errorf("argument must be a folder, not a TC ID",
+					"Use 'gtms status "+normalised+"' for per-TC detail.")
+				return output.AsDisplayed(fmt.Errorf("argument must be a folder, not a TC ID"))
 			}
 
 			folder, err := validateFolderArg(args[0])
@@ -83,7 +84,11 @@ missing artefacts, and manual test cases with spec drift.
 				output.Errorf(err.Error(), "")
 				return output.AsDisplayed(err)
 			}
-			scope := buildScopeFromArg(root, folder, recursive)
+			scope, serr := buildScopeFromArg(root, folder, recursive)
+			if serr != nil {
+				output.Errorf(serr.Error(), "")
+				return output.AsDisplayed(serr)
+			}
 			return runGaps(os.Stdout, root, scope, jsonOut, defaultFw, strict)
 		},
 	}

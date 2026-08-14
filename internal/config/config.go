@@ -74,6 +74,17 @@ type ProjectConfig struct {
 	Repo string `yaml:"repo"`
 }
 
+// NoOriginRepo is the reserved project.repo value persisted by `gtms init` when
+// no `origin` remote can be resolved (ENH-190). It is deliberately non-empty --
+// it satisfies the project.repo non-empty validation below and the adapter
+// {repo} / GTMS_REPO contract -- and is deliberately not shaped like a real
+// org/repo identifier. User-facing project banners must translate it to friendly
+// prose; adapters receive it verbatim and must not treat it as a real repository.
+const NoOriginRepo = "no-origin-remote"
+
+// IsNoOriginRepo reports whether repo is the reserved no-origin sentinel.
+func IsNoOriginRepo(repo string) bool { return repo == NoOriginRepo }
+
 // AdapterConfig represents a single adapter definition under a command.
 type AdapterConfig struct {
 	Mode           string `yaml:"mode"`

@@ -43,6 +43,20 @@ func effectiveDefaultSyncTimeout() time.Duration {
 	return defaultSyncTimeout
 }
 
+// invocationError preserves a human-readable summary (shown to the user and
+// stored on the task/result) while keeping the underlying error's unwrap chain
+// intact. Without it, invoker.go's error return would flatten the summary into
+// a fresh error (fmt.Errorf("%s", summary)), severing the chain so a typed
+// error such as *MissingExecuteAdapterError could never be recovered via
+// errors.As at the CLI boundary (BUG-171).
+type invocationError struct {
+	summary string
+	err     error
+}
+
+func (e *invocationError) Error() string { return e.summary }
+func (e *invocationError) Unwrap() error { return e.err }
+
 // InvokeResult holds the outcome of an Invoke call, used by CLI for output formatting.
 type InvokeResult struct {
 	TaskID        string
@@ -362,7 +376,11 @@ func InvokeWithRoot(ctx context.Context, projectRoot string, cfg *config.Config,
 			"summary":   summary,
 			"completed": time.Now().UTC().Format(time.RFC3339),
 		})
-		return nil, fmt.Errorf("%s", summary)
+		// BUG-171: wrap so the human-readable summary stays the surfaced
+		// message (timeout/cancel/generic diagnostics unchanged) WHILE the
+		// underlying error's unwrap chain survives, keeping typed errors like
+		// *MissingExecuteAdapterError discoverable via errors.As at the CLI.
+		return nil, &invocationError{summary: summary, err: err}
 	}
 
 	// Detect cancellation/timeout even when process exited with non-zero code

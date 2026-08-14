@@ -4,9 +4,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/aitestmanagement/gtms-cli/internal/execution"
 	"github.com/aitestmanagement/gtms-cli/internal/layout"
 	"github.com/aitestmanagement/gtms-cli/internal/result"
 	"github.com/aitestmanagement/gtms-cli/internal/wiring"
@@ -344,6 +346,104 @@ func scanManualByTC(projectRoot string) map[string]*manualRecord {
 	return out
 }
 
+// manualExecutionLastRunAt joins a manual pipeline entry to the canonical
+// committed execution timestamp needed by BUG-044's recordSupersedes
+// reconciliation (BUG-162 Symptom B). The manual result FILE deliberately
+// carries no timestamp (CON-020 4-field contract), so the run-at is recovered
+// from gtms/execution/*.results.yaml -- which, unlike the .gtms/results/
+// handoffs, is COMMITTED and therefore survives the fresh-checkout scenario
+// that makes Symptom B routine.
+//
+// It returns the newest trustworthy `completed_at` for the TC, canonicalized to
+// whole-second UTC "Z" (see the return statement for why), or "" when no
+// trustworthy candidate exists (leaving LastRunAt empty so the existing
+// conservative error-task-wins path stays in force).
+//
+// Contract (BUG-162 PRP decisions log B1-B6):
+//   - Candidate identity (B1): a results file is a candidate only if it holds a
+//     row whose tc_id == tcID, its framework (file-level or that row's) is
+//     "manual", and that row's outcome (normalised skip->skipped) equals
+//     normalisedOutcome (the current manual result file's outcome).
+//   - Validation (B2): the candidate must also have a completed_at that parses
+//     as RFC3339. A file that fails to parse or fails any check is skipped
+//     individually; the scan CONTINUES to older candidates.
+//   - Ordering (B3/B4): candidates are ranked by PARSED completed_at, newest
+//     wins. Never filesystem mtime.
+//   - Tie-break (B5): equal completed_at -> the greatest-lexical FILENAME wins
+//     (embeds the task id; machine-independent, unlike mtime).
+func manualExecutionLastRunAt(projectRoot, tcID, normalisedOutcome string) string {
+	if tcID == "" || normalisedOutcome == "" {
+		return ""
+	}
+	dir := layout.ExecutionDir(projectRoot)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return ""
+	}
+
+	var bestParsed time.Time
+	var bestName string // filename of the winning candidate (tie-break)
+	found := false
+
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".results.yaml") {
+			continue
+		}
+		rf, rErr := execution.Read(filepath.Join(dir, e.Name()))
+		if rErr != nil || rf == nil {
+			continue // B2: skip malformed, keep searching.
+		}
+		// Locate the row for this TC with a matching outcome and manual framework.
+		matched := false
+		for _, row := range rf.Results {
+			if row.TCID != tcID {
+				continue
+			}
+			// Framework may be declared file-level or per-row; accept either.
+			fw := row.Framework
+			if fw == "" {
+				fw = rf.Framework
+			}
+			if fw != "manual" {
+				continue
+			}
+			if normaliseManualResult(row.Outcome) != normalisedOutcome {
+				continue
+			}
+			matched = true
+			break
+		}
+		if !matched {
+			continue
+		}
+		// B2: completed_at must be present and RFC3339-parseable.
+		parsed, pErr := time.Parse(time.RFC3339, rf.CompletedAt)
+		if pErr != nil {
+			continue
+		}
+		// B3/B4 newest-wins; B5 filename tie-break on equal timestamps.
+		if !found ||
+			parsed.After(bestParsed) ||
+			(parsed.Equal(bestParsed) && e.Name() > bestName) {
+			bestParsed = parsed
+			bestName = e.Name()
+			found = true
+		}
+	}
+
+	if !found {
+		return ""
+	}
+	// Canonicalize to whole-second UTC "Z" so the lexical comparison in
+	// applyTaskStatus' recordSupersedes (entry.LastRunAt >= task.Created) is
+	// chronologically correct. A raw completed_at with a non-Z offset (e.g.
+	// "...T13:00:00+02:00") or fractional seconds would sort lexically wrong
+	// against the whole-second-Z task timestamps. bestParsed already holds the
+	// parsed instant; .UTC().Format(RFC3339) normalises the offset to Z and
+	// drops sub-second precision, matching task-creation's timestamp form.
+	return bestParsed.UTC().Format(time.RFC3339)
+}
+
 type manualResultFM struct {
 	TestCaseID            string `yaml:"test_case_id"`
 	TestCaseHash          string `yaml:"test_case_hash"`
@@ -508,6 +608,9 @@ func buildPipelineEntry(
 			} else {
 				entry.ExecuteStatus = "complete"
 			}
+			// BUG-162 Symptom B: recover the committed execution timestamp so
+			// applyTaskStatus' recordSupersedes can fire on the manual path.
+			entry.LastRunAt = manualExecutionLastRunAt(projectRoot, tc.ID, manual.Result)
 		}
 	}
 
@@ -560,6 +663,9 @@ func buildPipelineEntry(
 			} else {
 				entry.ExecuteStatus = "complete"
 			}
+			// BUG-162 Symptom B: same execution-timestamp join on the BUG-127
+			// wired-plus-`--framework manual` selection path. BUG-127 stays closed.
+			entry.LastRunAt = manualExecutionLastRunAt(projectRoot, tc.ID, manual.Result)
 		}
 	}
 

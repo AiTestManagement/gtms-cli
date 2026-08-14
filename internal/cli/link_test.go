@@ -47,4 +47,16 @@ func TestSourceShape_LinkCmdNoBusinessLogic(t *testing.T) {
 		"link.go must delegate project-wide repoint to link.RepointAll")
 	assert.Contains(t, content, "link.RepointSingle",
 		"link.go must delegate single-TC repoint to link.RepointSingle")
+
+	// BUG-146: refresh preview delegates the drift computation to the core
+	// package; it must not recompute hashes in the CLI.
+	assert.Contains(t, content, "link.PlanRefresh",
+		"link.go must delegate refresh planning to link.PlanRefresh")
 }
+
+// The BUG-146 AC8 lifecycle guard now lives in link_refresh_codex_test.go
+// (TestLinkRefresh_DryRunState_ExecutionScoped_RealSingleton). It drives two
+// consecutive executions through the REAL singleton root command in one process
+// -- a root-position --dry-run refresh, then a real refresh -- and proves the
+// second invocation actually writes. That exercises the persistent-global
+// lifecycle the old fresh-instance flag check never touched.

@@ -632,3 +632,154 @@ func TestDiscoverAll_IdentityMismatchIsError(t *testing.T) {
 		t.Errorf("expected TCFromName tc-aaa11111, got %q", results[0].TCFromName)
 	}
 }
+
+// TestDiscoverForScope_SkipsOutOfScopeWithoutReading pins REV-129 CLAUDE-003 /
+// CODEX-129-002 at the wiring boundary: the scope is matched against the
+// FILENAME and decided BEFORE the file is opened. The out-of-scope fixture is
+// unparseable, so if it were read it would come back as a failing
+// DiscoveryResult; its absence is the evidence it was not.
+func TestDiscoverForScope_SkipsOutOfScopeWithoutReading(t *testing.T) {
+	root := t.TempDir()
+	rec := sampleRecord()
+	rec.TestCase = "tc-aaaa1111"
+	rec.Framework = "bats"
+	if _, err := Write(root, rec); err != nil {
+		t.Fatal(err)
+	}
+
+	dir := layout.WiringDir(root)
+	unreadable := filepath.Join(dir, "tc-bbbb2222--bats"+FileSuffix)
+	if err := os.WriteFile(unreadable, []byte("{{{ not yaml\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	results, err := DiscoverForScope(root, []string{"tc-aaaa1111"}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected only the in-scope record, got %d results", len(results))
+	}
+	if results[0].TCFromName != "tc-aaaa1111" || results[0].Err != nil {
+		t.Fatalf("unexpected result: %+v", results[0])
+	}
+
+	// DiscoverAll (no filter) still reads everything, including the bad file --
+	// so the exclusion above came from the scope filter, not from the file being
+	// skipped for some unrelated reason.
+	all, err := DiscoverAll(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("DiscoverAll should return both files, got %d", len(all))
+	}
+}
+
+// TestDiscoverForScope_UnparseableFilenameSkippedWhenScoped: a filename that
+// does not match {tc}--{framework} cannot match any requested ID, so a scoped
+// discovery skips it. Unfiltered DiscoverAll still reports it as a shape
+// failure -- that contract is unchanged.
+func TestDiscoverForScope_UnparseableFilenameSkippedWhenScoped(t *testing.T) {
+	root := t.TempDir()
+	dir := layout.WiringDir(root)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "noseparator"+FileSuffix), []byte("x: 1\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	scoped, err := DiscoverForScope(root, []string{"noseparator", "tc-aaaa1111"}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(scoped) != 0 {
+		t.Fatalf("expected the shape-violating file to be skipped when scoped, got %d", len(scoped))
+	}
+
+	all, err := DiscoverAll(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 1 || all[0].Err == nil {
+		t.Fatalf("DiscoverAll must still report the shape violation, got %+v", all)
+	}
+}
+
+// TestDiscoverForScope_TCIDContainingDoubleDash pins REV-130 CODEX-130-001.
+// IsTestCaseID only requires the "tc-" prefix, so "tc-foo--bar" is a linkable
+// test case and wiring.Write happily produces tc-foo--bar--bats.wiring.yaml.
+// ParseFilename splits on the FIRST "--" and reads that as testcase "tc-foo",
+// framework "bar--bats" -- so scoping by it made a refresh of tc-foo--bar find
+// nothing, and made a refresh that included tc-foo report this record as an
+// identity mismatch. Scoped matching takes the LONGEST requested ID instead.
+func TestDiscoverForScope_TCIDContainingDoubleDash(t *testing.T) {
+	root := t.TempDir()
+	rec := sampleRecord()
+	rec.TestCase = "tc-foo--bar"
+	rec.Framework = "bats"
+	if _, err := Write(root, rec); err != nil {
+		t.Fatal(err)
+	}
+
+	results, err := DiscoverForScope(root, []string{"tc-foo--bar"}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected the record to be found under its real ID, got %d results", len(results))
+	}
+	if results[0].TCFromName != "tc-foo--bar" || results[0].FWFromName != "bats" {
+		t.Fatalf("wrong split: tc=%q fw=%q", results[0].TCFromName, results[0].FWFromName)
+	}
+	if results[0].Err != nil {
+		t.Fatalf("a correctly-named record must not be an identity mismatch: %v", results[0].Err)
+	}
+
+	// The framework filter works on the correctly-split framework.
+	narrowed, err := DiscoverForScope(root, []string{"tc-foo--bar"}, "bats")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(narrowed) != 1 {
+		t.Fatalf("--framework bats must still match, got %d", len(narrowed))
+	}
+
+	// The longest ID wins when a shorter one is also in scope.
+	both, err := DiscoverForScope(root, []string{"tc-foo", "tc-foo--bar"}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(both) != 1 || both[0].TCFromName != "tc-foo--bar" || both[0].Err != nil {
+		t.Fatalf("longest-ID match expected, got %+v", both)
+	}
+}
+
+// TestSplitStemForScope covers the matcher directly, including the boundaries
+// that keep it from inventing identities.
+func TestSplitStemForScope(t *testing.T) {
+	scope := map[string]bool{"tc-a": true, "tc-a--b": true, "tc-long": true}
+
+	cases := []struct {
+		stem   string
+		wantTC string
+		wantFW string
+		wantOK bool
+	}{
+		{"tc-a--bats", "tc-a", "bats", true},
+		{"tc-a--b--bats", "tc-a--b", "bats", true},   // longest ID wins
+		{"tc-long--playwright", "tc-long", "playwright", true},
+		{"tc-zzz--bats", "", "", false},              // not in scope
+		{"tc-a", "", "", false},                      // no separator
+		{"tc-a--", "", "", false},                    // empty framework
+		{"--bats", "", "", false},                    // empty test case
+	}
+	for _, c := range cases {
+		tc, fw, ok := splitStemForScope(c.stem, scope)
+		if ok != c.wantOK || tc != c.wantTC || fw != c.wantFW {
+			t.Errorf("splitStemForScope(%q) = (%q, %q, %v), want (%q, %q, %v)",
+				c.stem, tc, fw, ok, c.wantTC, c.wantFW, c.wantOK)
+		}
+	}
+}

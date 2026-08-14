@@ -134,7 +134,7 @@ requirement: REQ-001
 	assert.False(t, isTestCaseID("folder-a"), "folder name with hyphen must not be treated as TC ID")
 
 	// Call runReset with folder scope -- this is the path that was broken before BUG-025 fix
-	scope := buildScopeFromArg(root, "folder-a", false)
+	scope, _ := buildScopeFromArg(root, "folder-a", false)
 	var buf bytes.Buffer
 	err := runReset(&buf, root, scope, "", false)
 	require.NoError(t, err)

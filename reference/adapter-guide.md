@@ -744,7 +744,7 @@ These variables are available in **Tier 1 `command:` templates** via `{variable_
 | `{testcase_file}` | Path to the test case markdown file (resolved from `findTestCaseSource`) | Short | automate, execute |
 | `{prompt_template}` | Path to prompt template file | Short | All (if set) |
 | `{branch}` | Git branch associated with this task. For sync adapters: the current project branch at invocation time (empty if not in a git repo or on detached HEAD). For async adapters: a constructed task branch (`feature/{command}-{target}`). | Short | All |
-| `{repo}` | Repository identifier from config | Short | All |
+| `{repo}` | Repository identifier from config. Reserved value `no-origin-remote` when init could not resolve an origin remote -- see the note below the table. | Short | All |
 | `{task_id}` | Generated task ID (e.g. `task-a3f72b1`) | Short | All |
 | `{result_file}` | Path to the result contract file | Short | All |
 | `{project_root}` | Absolute path to project root | Short | All |
@@ -760,6 +760,8 @@ These variables are available in **Tier 1 `command:` templates** via `{variable_
 | `{tc_name}` | Optional name from the second positional argument (e.g. `gtms create login user-can-login` → `user-can-login`). Empty if not provided. | Short | create |
 
 > **Size column:** "Short" variables are IDs, paths, or flags -- typically under 200 characters. "**Unbounded**" variables contain file content that can grow to thousands of lines. This matters for prompt template ordering -- see [Prompt Template Authoring](#prompt-template-authoring).
+
+> **Reserved `{repo}` / `GTMS_REPO` value:** when `gtms init` runs in a repository with no `origin` remote configured, it persists the reserved sentinel `no-origin-remote` as `project.repo`. Adapters therefore receive `no-origin-remote` in `{repo}` (Tier 1) and `GTMS_REPO` (Tier 2) unchanged. It is a real, non-empty string -- GTMS does not translate it before handing it to an adapter -- so an adapter that constructs a URL or remote reference from the repo value must treat `no-origin-remote` as "repository identity not yet configured" rather than as a real `org/repo`. Only GTMS's own user-facing project banners render it as `(no origin remote configured)`.
 
 #### Prompt-template placeholders
 
@@ -987,7 +989,7 @@ These variables are exported to Tier 2 scripts:
 | `GTMS_TESTCASE_FILE` | Path to the test case markdown file (resolved from `findTestCaseSource`) | Short | automate, execute |
 | `GTMS_PROMPT_TEMPLATE` | Path to prompt template file | Short | All (if set) |
 | `GTMS_BRANCH` | Git branch associated with this task. For sync adapters: the current project branch (empty if not in a git repo or on detached HEAD). For async adapters: a constructed task branch (`feature/{command}-{target}`). | Short | All |
-| `GTMS_REPO` | Repository identifier from config | Short | All |
+| `GTMS_REPO` | Repository identifier from config. Reserved value `no-origin-remote` when init could not resolve an origin remote (same contract as the Tier 1 `{repo}` note above). | Short | All |
 | `GTMS_PROJECT_ROOT` | Absolute path to project root | Short | All |
 | `GTMS_WORK_DIR` | The task's working-directory base handed to the adapter for reference -- the worktree path when the command created one, else the project root. NOT the process cwd (that is set from the resolved run directory: project root, or the `working-dir` subdir). Distinct from `GTMS_PROJECT_ROOT`. | Short | All |
 | `GTMS_RESULT_FILE` | Path to the result contract YAML file | Short | All |
@@ -1467,7 +1469,7 @@ What changes is observability: a primed-but-not-executed TC is now visibly disti
 
 ## Artefact Declaration Contract
 
-Adapters declare their output paths through automation record frontmatter fields. `gtms delete` uses these fields to discover and remove adapter-produced artefacts without knowing anything about the framework that created them.
+Adapters declare their output paths through automation record frontmatter fields. `gtms delete` uses these fields to discover adapter-produced artefacts without knowing anything about the framework that created them. Discovery is not deletion. A test artefact named by `artefact` is preserved by default and reported in the delete summary; it is removed only when the user passes `--force-artefact-deletion`. A result file named by `executed_artefact` is GTMS-owned state and is removed -- unless that same path is also named by `artefact`, in which case preservation wins over every deletion category (see cross-field dedupe below).
 
 ### Fields Used by Delete
 
@@ -1476,7 +1478,7 @@ Adapters declare their output paths through automation record frontmatter fields
 | `artefact` | GTMS (from adapter output) | Path to the generated test script (relative to project root) | Deleting test artefacts |
 | `executed_artefact` | GTMS (from execute adapter) | Path to execution output / result file (relative to project root) | Deleting result files |
 
-**Cross-field dedupe:** if `artefact` and `executed_artefact` resolve to the same canonical absolute path (e.g. `scripts/tc.sh` vs `./scripts/tc.sh`), `gtms delete` removes the file once, attributed to **Test artefacts** (artefact wins priority). The duplicate is silently filtered from the result-files deletion list. Adapters that legitimately point both fields at the same file -- common when the execute adapter runs the same script it was given -- do not need to worry about double-deletion failures.
+**Cross-field dedupe:** if `artefact` and `executed_artefact` resolve to the same canonical absolute path (e.g. `scripts/tc.sh` vs `./scripts/tc.sh`), `gtms delete` treats the path once, attributed to **Test artefacts** (artefact wins priority), and the duplicate is filtered from the result-files list. That attribution decides its fate: the path follows the test-artefact rule, so a plain `gtms delete` preserves it rather than removing it as a result file, and only `--force-artefact-deletion` removes it. Adapters that legitimately point both fields at the same file -- common when the execute adapter runs the same script it was given -- do not need to worry about double-deletion failures.
 
 ### Path Safety Contract
 
@@ -1844,6 +1846,17 @@ Two Tier 0 built-in automate adapters -- `agent-automate` and `manual-automate` 
 `manual-automate` is a byte-for-byte identical implementation today; the separate name exists for contract stability so future versions can diverge (e.g. richer skeletons for AI agents vs. lighter ones for human authors).
 
 `bats` and `playwright` are both supported -- each ships a per-framework skeleton template (see below). The `manual` framework has no automate stage and returns a prime/execute hint. Any other framework fails with `no automate support found for framework <name>`. Playwright's built-in skeleton is a deliberate one-file-per-TC starter; richer append-mode Playwright/Pester integration (multiple TCs sharing one artefact) is future work.
+
+A supported framework still needs an execute adapter configured for it before automate will run. Without one, automate refuses before writing any artefact:
+
+```text
+✗ No execute adapter configured for framework "bats"
+    Configured execute adapters: agent-execute-script(framework=manual), manual-execute-script(framework=manual).
+    To automate bats test cases, add an execute adapter for framework "bats" under adapters.execute (framework: bats) in gtms.config,
+    or stay on the manual prime path: gtms prime tc-abc12345 --framework manual
+```
+
+The two failures are worth telling apart when configuring a project: an unsupported framework has no skeleton to stamp, so adding an adapter cannot help, whereas a missing runner is fixed by adding one under `adapters.execute`. Over a folder, the check runs once before any test case is processed, so a project missing a runner reports it once rather than per test case.
 
 #### Per-framework skeleton templates
 
@@ -3127,6 +3140,27 @@ The execute pipeline is keyed on the wiring record -- `gtms/automation/wiring/<t
 - Do NOT use `& .\gtms.exe 2>&1` — PowerShell wraps stderr in `ErrorRecord` objects that break string assertions
 - Use `System.Diagnostics.Process` for clean stdout/stderr/exit code capture (the `Invoke-GtmsCli` helper in `GtmsTestHelper.psm1` does this)
 
+**PowerShell 5.1 kills adapter wrappers and CI steps on GTMS stderr chrome:**
+
+This is the same mechanism as the two entries above, generalised beyond Pester. It bites any adapter wrapper, deployment script, or CI step written in Windows PowerShell 5.1 that calls `gtms.exe`. Three ingredients are required, all of them:
+
+1. Windows PowerShell 5.1 (not PowerShell 7).
+2. `$ErrorActionPreference = 'Stop'` in scope.
+3. A redirect or capture of the native command's stderr *inside* PowerShell -- `2>$null`, `2>&1`, or assigning the stream to a variable.
+
+Left alone, `gtms` stderr is ordinary console text. The moment PowerShell 5.1 captures the stream it wraps each stderr line in a `NativeCommandError` ErrorRecord, and `EAP='Stop'` promotes the first one to a terminating error. So the redirect intended to silence the noise is what makes it fatal. It was measured in the field on a script where every `gtms` call exited 0 and the script still died -- on a spinner line.
+
+GTMS is behaving to contract here and no output setting fixes it: data goes to stdout, chrome (spinner, guidance, warnings) goes to stderr, and failure is signalled only by the exit code. The spinner already degrades to a single static line when stderr is not a TTY, and the trap fires on any stderr byte at all.
+
+For adapter and CI authors:
+
+- Treat `$LASTEXITCODE` as the only failure signal from `gtms`. `$ErrorActionPreference` governs cmdlet errors, not native tools -- it will not tell you whether `gtms` succeeded.
+- Then do one of: leave `gtms` stderr alone; set `$ErrorActionPreference = 'Continue'` around the native call and restore it after; or push the redirect into a child process so PowerShell never sees the stream, e.g. `cmd /c "gtms.exe status 2>nul"` (measured as surviving).
+- It never reproduces at an interactive prompt, where EAP defaults to `Continue`. The failure appears exactly when working ad-hoc commands are pasted into a script -- so test the script, not the commands.
+- PowerShell 7 does not manufacture ErrorRecords from native stderr this way. PowerShell 7.3+ adds `$PSNativeCommandUseErrorActionPreference`, which ties EAP to native *exit codes* -- different semantics, and opt-in.
+
+`sh`-based adapters (Tier 1 and Tier 2 on Unix, Git Bash, or WSL) are unaffected -- no shell in that family manufactures errors from a child's stderr.
+
 **Assertion patterns:**
 - Use `-Match` instead of `-Be` for string content — avoids CRLF mismatches
 - Always use `-Because` parameter — Pester failure messages without it are unhelpful
@@ -3213,7 +3247,9 @@ Use this when reviewing a new or modified adapter.
 
 ## Adapter Patterns
 
-Three common patterns have emerged. These are documentation concepts, not enforced at runtime — your adapter doesn't need to fit neatly into one category.
+Three common patterns have emerged. These are documentation concepts, not enforced at runtime -- your adapter doesn't need to fit neatly into one category.
+
+The patterns below describe shapes. For end-to-end builds -- a whole architecture assembled from these pieces, including the wrong turns taken on the way -- see [adapter-architectures/](adapter-architectures/). Three entries so far: pulling work from a remote queue, adopting an existing suite in place, and repurposing `--env` as an adapter-owned parameter.
 
 ### Engine Pattern (create, automate)
 
@@ -3526,6 +3562,12 @@ framework labels; each label gets its own wiring record and result slot:
 1. Export them inside the script: `export GOPATH=/path/to/go`
 2. Use a wrapper script that sources the needed vars before calling your adapter
 
+**Export before you launch the tool -- loading the value inside it can be too late.** Some variables are read once, at process startup: Node builds its TLS trust store from `NODE_EXTRA_CA_CERTS` as it starts, and many runtimes resolve identity or proxy settings the same way. For those, loading an environment file from *inside* the started process -- `dotenv` and its equivalents -- runs after the value was needed, so the fix looks correct and fails anyway. The Tier 2 script is the last point at which the environment can still be shaped, so recover and `export` there, before invoking the framework. Guard each recovery (`[ -z "${VAR}" ] && export VAR=...`) so it fills a gap rather than overriding a value that is already set, which makes it safe to leave in permanently.
+
+Note this is what option 2 above does and does not mean: a wrapper that GTMS invokes *as* the adapter, which exports and then calls the real tool, works. A wrapper that exports and then calls `gtms execute` does not -- see the gotcha below.
+
+If a suite depends heavily on ambient environment and the isolation is not wanted, a Tier 1 (`command:`) adapter inherits the caller's full environment and sidesteps the problem entirely.
+
 **Note:** Tier 1 adapters still inherit the full parent environment (Go default for `exec.Command` without `Env` set). This asymmetry is intentional — Tier 1 commands run via `sh -c` and may need `PATH`, `GOPATH`, etc. from the parent.
 
 **Gotcha: wrapper scripts can't pass env vars to Tier 2 adapters.** If a wrapper script (e.g. `remote-full-run.sh`) exports a custom env var and then calls `gtms execute`, that var will **not** reach the Tier 2 adapter script — `minimalEnv()` rebuilds the environment from scratch. If both a wrapper and an adapter need to agree on a value, derive it from the same source inside each script (e.g. both read `GTMS_PROJECT_ROOT`) rather than passing it via an env var. Discovered 2026-04-17 when `VPS_SLOT` was set by the sync script but stripped before reaching the adapter, causing sync and execution to target different VPS directories.
@@ -3553,7 +3595,7 @@ These are known gaps between the documented contract and the current implementat
 | ~~No input sanitization on target IDs~~ | **Fixed.** All filename-construction sites validate identifier components via `internal/pathsafe.ValidateFilenameComponent`. Path separators, traversal sequences, and control characters are rejected at the package boundary. `gtms link` CLI guard gap also closed. |  |
 | Errors silently swallowed on state transitions | `task.Move()` and `result.Update()` failures discarded in some paths |  |
 | ~~`--env` flag not implemented~~ | **Fixed.** `--env` flag available on `gtms automate` and `gtms execute`. Threaded to `{environment}` (Tier 1), `GTMS_ENVIRONMENT` (Tier 2), and `{environment}` in prompt templates. |  |
-| ~~`--dry-run` flag not functional~~ | **Fixed for `delete`, `reset`, and `gtms link` repoint mode.** All three honour `--dry-run` as a local flag, and the root-position form (`gtms --dry-run <cmd> ...`) works for each. Other `gtms link` modes reject `--dry-run` outright (a `--refresh` preview mode is future work); on the remaining mutating commands the flag is hidden and parses as a silent no-op. Per-command `--dry-run` elsewhere is open as future work. |  |
+| ~~`--dry-run` flag not functional~~ | **Fixed for `delete`, `reset`, `gtms link` repoint mode, and `gtms link --refresh`.** All four honour `--dry-run` as a local flag, and the root-position form (`gtms --dry-run <cmd> ...`) works for each. The refresh preview reports, per record, whether it would be refreshed, is already current, or failed validation, and labels every line `[dry-run]`. `gtms link` write mode and `--check` still reject `--dry-run` outright; on the remaining mutating commands the flag is hidden and parses as a silent no-op. Per-command `--dry-run` elsewhere is open as future work. |  |
 | ~~Timeout kills process (SIGKILL)~~ | **Fixed.** Cancellation now kills the full process tree: Unix uses `setpgid` + `kill(-pgid, SIGKILL)`; Windows uses `taskkill /T /F /PID`. A 30-minute default timeout applies to all sync adapters when no `timeout:` is configured. |  |
 
 ---
@@ -3564,3 +3606,4 @@ These are known gaps between the documented contract and the current implementat
 |----------|---------|
 | [USER-GUIDE.md](../USER-GUIDE.md) | Complete feature reference -- command flags, config fields, prompt templates |
 | [ARCHITECTURE.md](../ARCHITECTURE.md) | Package map, data flow, how to add commands |
+| [adapter-architectures/](adapter-architectures/) | Worked architectures -- full builds from real installs, with the dead ends kept in |

@@ -10,7 +10,9 @@ import (
 
 	"github.com/aitestmanagement/gtms-cli/internal/layout"
 	"github.com/aitestmanagement/gtms-cli/internal/pathsafe"
+	"github.com/aitestmanagement/gtms-cli/internal/result"
 	"github.com/aitestmanagement/gtms-cli/internal/testcase"
+	"github.com/aitestmanagement/gtms-cli/internal/wiring"
 )
 
 // PathSafetyError is a type alias for pathsafe.PathSafetyError, preserving
@@ -132,54 +134,119 @@ func executeDeletePlan(plan *deletePlan, dryRun bool) (*DeleteResult, error) {
 	return result, nil
 }
 
-// findTestCaseSpecs walks gtms/test/cases/ recursively to find spec files for the given TC ID.
-// Matches filenames like tc-{id}-slug.md or tc-{id}.md.
-func findTestCaseSpecs(projectRoot, tcID string) ([]string, error) {
-	tcDir := layout.TestCasesDir(projectRoot)
-	if _, err := os.Stat(tcDir); os.IsNotExist(err) {
-		return nil, nil
+// wiringPathsByTestCase enumerates every wiring record ONCE and returns two maps
+// (ADR-024 / BUG-188). Building the index once and reusing it across a whole
+// delete selection avoids the quadratic re-parse (O(ids x wiringFiles)) the ADR's
+// rejected-approaches list warns against.
+//
+//   - index: valid records grouped by PARSED body `testcase` identity.
+//   - corrupt (F2): records whose identity could NOT be established -- malformed
+//     YAML, unreadable, or a filename/body identity mismatch (ADR-024 s1 makes
+//     that a data-integrity error, NEVER absence). A destructive caller uses this
+//     to tell whether a corrupt record is RELEVANT to a selected id and must abort
+//     the plan, rather than silently treating it as absent and deleting around it.
+//
+// The two maps are built by DIFFERENT rules, and neither replaces the other:
+//
+//   - A record that READS is identified by its parsed body `testcase` field.
+//     Body identity is authoritative (ADR-024 s1), full stop.
+//   - A record that does NOT read has no body to trust, so relevance falls back to
+//     its filename -- attributed to the LONGEST id that filename could belong to,
+//     chosen from the ids this project actually contains plus the ids being
+//     deleted (attributionIDs).
+//
+// Longest-in-scope is what makes an extended id work. `dr.TCFromName` comes from
+// ParseFilename, which splits on the FIRST "--", so it read
+// "tc-77777777--legacy--bats.wiring.yaml" as tc-77777777 and filed the corruption
+// under the WRONG id. That inverted both halves of the guard at once: deleting
+// tc-77777777--legacy did not see its own corrupt record (corruption silently
+// converted back into absence -- exactly the defect F2 exists to close), while
+// deleting the unrelated tc-77777777 was refused because of it.
+//
+// A filename matching no candidate id is unattributable and omitted: it is
+// relevant to no id, so it blocks nothing.
+func wiringPathsByTestCase(projectRoot string, attributionIDs []string) (index map[string][]string, corrupt map[string]corruptWiring, err error) {
+	discovered, derr := wiring.DiscoverAll(projectRoot)
+	if derr != nil {
+		return nil, nil, fmt.Errorf("discovering wiring records: %w", derr)
 	}
-
-	var matches []string
-
-	err := filepath.Walk(tcDir, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return nil // skip unreadable entries
+	index = make(map[string][]string)
+	corrupt = make(map[string]corruptWiring)
+	for _, dr := range discovered {
+		if dr.Record != nil {
+			index[dr.Record.TestCase] = append(index[dr.Record.TestCase], dr.Path)
+			continue
 		}
-		if info.IsDir() {
-			return nil
+		attributed, ok := wiring.TCFromNameForScope(filepath.Base(dr.Path), attributionIDs)
+		if !ok {
+			continue // unattributable: no candidate id owns this filename
 		}
-		// REV-122: the ONE shared spec predicate -- identical to the uniqueness guard
-		// (testcase.FindAllSpecs) and the existence check (testcase.ResolveSpec), so
-		// the guard counts exactly what this mutation removes.
-		if testcase.MatchesSpecFile(info.Name(), tcID) {
-			matches = append(matches, path)
+		if _, seen := corrupt[attributed]; !seen {
+			corrupt[attributed] = corruptWiring{Path: dr.Path, Err: dr.Err}
 		}
-		return nil
-	})
-
-	return matches, err
+	}
+	return index, corrupt, nil
 }
 
-// findAutomationRecordFiles finds all wiring records for the given TC ID.
-// CON-023 / ENH-145: wiring records use framework-qualified naming
-// `tc-{id}--{framework}.wiring.yaml` under gtms/automation/wiring/. The
-// caller name is preserved for API stability; the underlying source is
-// now wiring, not the retired .automation.md files.
-func findAutomationRecordFiles(projectRoot, tcID string) ([]string, error) {
-	pattern := filepath.Join(layout.WiringDir(projectRoot),
-		fmt.Sprintf("%s--*.wiring.yaml", tcID))
-	matches, err := filepath.Glob(pattern)
-	if err != nil {
-		return nil, fmt.Errorf("globbing wiring records for %s: %w", tcID, err)
+// corruptWiring keeps the two repository-derived halves of an F2 diagnostic
+// APART rather than pre-formatting them into one string.
+//
+// REV-160 CLAUDE-007. The pre-formatted form was interpolated with %s straight
+// into the refusal the CLI prints, so control or ANSI bytes in a wiring filename
+// reached the terminal verbatim. ADR-024 s7 puts sanitisation at the CENTRAL
+// rendering boundary, which means the diagnostic has to still HAVE fields when
+// it gets there -- see CorruptWiringError.Error.
+type corruptWiring struct {
+	Path string
+	Err  error
+}
+
+// CorruptWiringError is the F2 refusal: a wiring record attributed to a test case
+// being deleted is malformed, unreadable, or declares an identity that disagrees
+// with its filename. ADR-024 s1 makes that a data-integrity error, NEVER absence,
+// so the whole delete plan aborts before any mutation. Callers detect it with
+// errors.As and render it through output.Errorf like every other typed refusal.
+type CorruptWiringError struct {
+	// TCID is the selected test case the corrupt record is attributed to.
+	TCID string
+	// Path is the wiring file, as found on disk.
+	Path string
+	// Err is the underlying parse/read failure.
+	Err error
+}
+
+// Error renders the diagnostic with control characters stripped from every
+// repository-controlled field (ADR-024 s7), through the same
+// testcase.SanitizeIdentityString every other typed identity diagnostic uses.
+// The wrapped parse error is rendered with %q for the same reason: it can quote
+// the offending file's bytes back at the user.
+func (e *CorruptWiringError) Error() string {
+	detail := ""
+	if e.Err != nil {
+		detail = e.Err.Error()
 	}
-	// Also include the manual record (if any).
+	return fmt.Sprintf(
+		"cannot delete '%s': a wiring record for it is corrupt or its declared identity disagrees with its filename -- %s: %q; fix or remove it before deleting",
+		testcase.SanitizeIdentityString(e.TCID),
+		testcase.SanitizeIdentityString(e.Path),
+		testcase.SanitizeIdentityString(detail))
+}
+
+// Unwrap exposes the underlying parse failure to errors.Is / errors.As.
+func (e *CorruptWiringError) Unwrap() error { return e.Err }
+
+// automationRecordsForID returns the wiring records owned by tcID (by body
+// identity, from the pre-built index) plus its exact manual record. The manual
+// record is addressed by an exact `<id>--manual.result.yaml` path, which a `--`
+// sibling cannot collide with (the id is the whole left half).
+func automationRecordsForID(projectRoot, tcID string, wiringIndex map[string][]string) []string {
+	matches := append([]string(nil), wiringIndex[tcID]...)
 	manualPath := filepath.Join(projectRoot, layout.Current().Manual, "records",
 		fmt.Sprintf("%s--manual.result.yaml", tcID))
-	if _, err := os.Stat(manualPath); err == nil {
+	if _, statErr := os.Stat(manualPath); statErr == nil {
 		matches = append(matches, manualPath)
 	}
-	return matches, nil
+	return matches
 }
 
 // recordArtefactFields is a minimal struct for extracting artefact paths from automation records.
@@ -308,15 +375,12 @@ func findTaskFiles(projectRoot, tcID string) ([]string, error) {
 	return matches, nil
 }
 
-// resultContractTarget is a minimal struct for parsing the target field from result contract YAML.
-// We avoid importing internal/result to prevent circular dependencies.
-type resultContractTarget struct {
-	Target string `yaml:"target"`
-}
-
-// findResultContracts scans .gtms/results/ for result contract YAML files whose target field
-// contains the given TC ID. Result contracts are named by task ID, not TC ID, so we must
-// parse each file's YAML to check the target field via substring match.
+// findResultContracts scans .gtms/results/ for handoff contracts attributable to
+// the given TC id (F1). Contracts are named by task id, so each file is parsed for
+// its command+target. Attribution is centralised in the result package
+// (result.TargetIsTestCaseScoped, the BUG-130 structural guard) so no results-dir
+// walker inlines the command dimension: a create contract is FOLDER-scoped and is
+// never attributed to a TC deletion, even when the folder name equals the id.
 func findResultContracts(projectRoot, tcID string) ([]string, error) {
 	resultsDir := filepath.Join(projectRoot, ".gtms", "results")
 	if _, err := os.Stat(resultsDir); os.IsNotExist(err) {
@@ -331,17 +395,14 @@ func findResultContracts(projectRoot, tcID string) ([]string, error) {
 
 	var matches []string
 	for _, path := range candidates {
-		data, err := os.ReadFile(path)
-		if err != nil {
-			continue // skip unreadable files
+		rc, rerr := result.Read(path)
+		if rerr != nil || rc == nil {
+			continue // unreadable/malformed: not attributable
 		}
-
-		var rc resultContractTarget
-		if err := yaml.Unmarshal(data, &rc); err != nil {
-			continue // skip malformed YAML
-		}
-
-		if strings.Contains(rc.Target, tcID) {
+		// TC-scoped command (not create) AND an exact target match. The command
+		// dimension lives in result.TargetIsTestCaseScoped; the exact target check
+		// stays here.
+		if result.TargetIsTestCaseScoped(rc) && rc.Target == tcID {
 			matches = append(matches, path)
 		}
 	}

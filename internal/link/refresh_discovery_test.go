@@ -39,36 +39,39 @@ func writeValidWiring(t *testing.T, root, tc, framework string) {
 	require.NoError(t, err)
 }
 
-// TestPartitionTCIDsByAmbiguity: only the colliding IDs are held back, and both
-// halves come back sorted so the caller's output does not depend on walk order
-// (REV-129 CLAUDE-003).
-func TestPartitionTCIDsByAmbiguity(t *testing.T) {
-	unique, ambiguous := PartitionTCIDsByAmbiguity(nil)
-	assert.Empty(t, unique)
-	assert.Empty(t, ambiguous)
-
-	unique, ambiguous = PartitionTCIDsByAmbiguity([]string{"tc-c", "tc-a", "tc-b"})
-	assert.Equal(t, []string{"tc-a", "tc-b", "tc-c"}, unique)
-	assert.Empty(t, ambiguous)
-
-	// One collision must not pull the unambiguous IDs out of scope.
-	unique, ambiguous = PartitionTCIDsByAmbiguity([]string{"tc-a", "tc-b", "tc-b", "tc-c"})
-	assert.Equal(t, []string{"tc-a", "tc-c"}, unique)
-	assert.Equal(t, []string{"tc-b"}, ambiguous)
-
-	// A trebled ID is reported once, not twice.
-	unique, ambiguous = PartitionTCIDsByAmbiguity([]string{"tc-a", "tc-a", "tc-a"})
-	assert.Empty(t, unique)
-	assert.Equal(t, []string{"tc-a"}, ambiguous)
-
-	// Several collisions, sorted.
-	unique, ambiguous = PartitionTCIDsByAmbiguity([]string{"tc-z", "tc-z", "tc-m", "tc-m", "tc-q"})
-	assert.Equal(t, []string{"tc-q"}, unique)
-	assert.Equal(t, []string{"tc-m", "tc-z"}, ambiguous)
-}
-
 // TestDiscoverRefreshTargets_ValidRecord: a well-formed, identity-matching record
 // is a selectable target with its Record set and no Err.
+// BUG-188 Gap 2 (tc-31d05fff step 3): a single-TC refresh of the SHORTER id, with
+// the extended sibling's wiring present, resolves ONLY the shorter id's record --
+// no spurious identity mismatch from the sibling being mis-attributed. Selection
+// is by parsed body identity, so the sibling is skipped (out of scope), not
+// reported as a failure.
+func TestDiscoverRefreshTargets_ShortIDIgnoresExtendedSibling(t *testing.T) {
+	root := t.TempDir()
+	writeValidWiring(t, root, "tc-77777777", "bats")
+	writeValidWiring(t, root, "tc-77777777--legacy", "bats")
+
+	targets, err := DiscoverRefreshTargets(root, []string{"tc-77777777"}, "")
+	require.NoError(t, err)
+	require.Len(t, targets, 1, "only the requested shorter id's record")
+	assert.Equal(t, "tc-77777777", targets[0].TCID)
+	assert.Equal(t, "bats", targets[0].Framework)
+	assert.NoError(t, targets[0].Err, "the extended sibling must not surface as a mismatch failure")
+}
+
+// The extended id refreshes to ITS OWN record when requested directly.
+func TestDiscoverRefreshTargets_ExtendedIDResolvesOwnRecord(t *testing.T) {
+	root := t.TempDir()
+	writeValidWiring(t, root, "tc-77777777", "bats")
+	writeValidWiring(t, root, "tc-77777777--legacy", "bats")
+
+	targets, err := DiscoverRefreshTargets(root, []string{"tc-77777777--legacy"}, "")
+	require.NoError(t, err)
+	require.Len(t, targets, 1)
+	assert.Equal(t, "tc-77777777--legacy", targets[0].TCID)
+	assert.NoError(t, targets[0].Err)
+}
+
 func TestDiscoverRefreshTargets_ValidRecord(t *testing.T) {
 	root := t.TempDir()
 	writeValidWiring(t, root, "tc-11111111", "bats")

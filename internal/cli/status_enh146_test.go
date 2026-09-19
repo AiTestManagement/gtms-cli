@@ -39,7 +39,7 @@ func TestENH146_Overview_NormalWiredHasPinnedShape(t *testing.T) {
 	})
 
 	var buf bytes.Buffer
-	require.NoError(t, runStatusOverview(&buf, root, nil, true, "", false))
+	require.NoError(t, runStatusOverview(&buf, root, nil, true, "", false, false, "", nil))
 
 	var entries []reader.PipelineEntry
 	require.NoError(t, json.Unmarshal(buf.Bytes(), &entries))
@@ -77,7 +77,7 @@ func TestENH146_Overview_NotRunHere(t *testing.T) {
 	seedLegacyRecord(t, root, legacyRecord{TC: "tc-eee0002", Framework: "bats"})
 
 	var buf bytes.Buffer
-	require.NoError(t, runStatusOverview(&buf, root, nil, true, "", false))
+	require.NoError(t, runStatusOverview(&buf, root, nil, true, "", false, false, "", nil))
 
 	var entries []reader.PipelineEntry
 	require.NoError(t, json.Unmarshal(buf.Bytes(), &entries))
@@ -107,7 +107,7 @@ func TestENH146_Overview_StatusErrorRendersExecutionError(t *testing.T) {
 	})
 
 	var buf bytes.Buffer
-	require.NoError(t, runStatusOverview(&buf, root, nil, true, "", false))
+	require.NoError(t, runStatusOverview(&buf, root, nil, true, "", false, false, "", nil))
 	var entries []reader.PipelineEntry
 	require.NoError(t, json.Unmarshal(buf.Bytes(), &entries))
 	require.Len(t, entries, 1)
@@ -160,7 +160,7 @@ framework: bats
 		[]byte(inProgressYAML), 0o644))
 
 	var buf bytes.Buffer
-	require.NoError(t, runStatusOverview(&buf, root, nil, true, "", false))
+	require.NoError(t, runStatusOverview(&buf, root, nil, true, "", false, false, "", nil))
 	var entries []reader.PipelineEntry
 	require.NoError(t, json.Unmarshal(buf.Bytes(), &entries))
 	require.Len(t, entries, 1)
@@ -188,7 +188,7 @@ func TestENH146_Overview_MultiFrameworkPicker(t *testing.T) {
 	})
 
 	var buf bytes.Buffer
-	require.NoError(t, runStatusOverview(&buf, root, nil, true, "", false))
+	require.NoError(t, runStatusOverview(&buf, root, nil, true, "", false, false, "", nil))
 	var entries []reader.PipelineEntry
 	require.NoError(t, json.Unmarshal(buf.Bytes(), &entries))
 	require.Len(t, entries, 1)
@@ -217,7 +217,7 @@ func TestENH146_Overview_StaleTestcaseHash(t *testing.T) {
 		"---\ntest_case_id: tc-eee0006\ntitle: mutated\n---\n")
 
 	var buf bytes.Buffer
-	require.NoError(t, runStatusOverview(&buf, root, nil, true, "", false))
+	require.NoError(t, runStatusOverview(&buf, root, nil, true, "", false, false, "", nil))
 	var entries []reader.PipelineEntry
 	require.NoError(t, json.Unmarshal(buf.Bytes(), &entries))
 	require.Len(t, entries, 1)
@@ -241,7 +241,7 @@ func TestENH146_Overview_StaleArtefactHash(t *testing.T) {
 	require.NoError(t, os.WriteFile(artefact, []byte("# mutated\n"), 0o644))
 
 	var buf bytes.Buffer
-	require.NoError(t, runStatusOverview(&buf, root, nil, true, "", false))
+	require.NoError(t, runStatusOverview(&buf, root, nil, true, "", false, false, "", nil))
 	var entries []reader.PipelineEntry
 	require.NoError(t, json.Unmarshal(buf.Bytes(), &entries))
 	require.Len(t, entries, 1)
@@ -266,7 +266,7 @@ func TestENH146_Overview_MissingArtefact(t *testing.T) {
 	})
 
 	var buf bytes.Buffer
-	require.NoError(t, runStatusOverview(&buf, root, nil, true, "", false))
+	require.NoError(t, runStatusOverview(&buf, root, nil, true, "", false, false, "", nil))
 	var entries []reader.PipelineEntry
 	require.NoError(t, json.Unmarshal(buf.Bytes(), &entries))
 	require.Len(t, entries, 1)
@@ -293,7 +293,7 @@ func TestENH146_Overview_ManualOnlyTC(t *testing.T) {
 	seedLegacyRecord(t, root, legacyRecord{TC: "tc-eee0009", Framework: "manual", Result: "pass"})
 
 	var buf bytes.Buffer
-	require.NoError(t, runStatusOverview(&buf, root, nil, true, "", false))
+	require.NoError(t, runStatusOverview(&buf, root, nil, true, "", false, false, "", nil))
 	var entries []reader.PipelineEntry
 	require.NoError(t, json.Unmarshal(buf.Bytes(), &entries))
 	require.Len(t, entries, 1)
@@ -339,7 +339,7 @@ completed: "2026-05-19T10:01:00Z"
 		[]byte(orphan), 0o644))
 
 	var buf bytes.Buffer
-	require.NoError(t, runStatusOverview(&buf, root, nil, true, "", false))
+	require.NoError(t, runStatusOverview(&buf, root, nil, true, "", false, false, "", nil))
 	var entries []reader.PipelineEntry
 	require.NoError(t, json.Unmarshal(buf.Bytes(), &entries))
 	require.Len(t, entries, 1)
@@ -402,7 +402,7 @@ git-dirty: false
 		[]byte(handoff), 0o644))
 
 	var buf bytes.Buffer
-	require.NoError(t, runStatusDetail(&buf, root, "tc-eee0011", true, "", false))
+	require.NoError(t, runStatusDetail(&buf, root, "tc-eee0011", true, "", false, false, "", nil))
 
 	var detail reader.PipelineDetailEntry
 	require.NoError(t, json.Unmarshal(buf.Bytes(), &detail))
@@ -448,7 +448,7 @@ func TestENH146_Detail_ManualOnlyHasNoFrameworksRow(t *testing.T) {
 	seedLegacyRecord(t, root, legacyRecord{TC: "tc-eee0012", Framework: "manual", Result: "pass"})
 
 	var buf bytes.Buffer
-	require.NoError(t, runStatusDetail(&buf, root, "tc-eee0012", true, "", false))
+	require.NoError(t, runStatusDetail(&buf, root, "tc-eee0012", true, "", false, false, "", nil))
 
 	var detail reader.PipelineDetailEntry
 	require.NoError(t, json.Unmarshal(buf.Bytes(), &detail))
@@ -469,7 +469,7 @@ func TestENH146_Detail_LegacyCarriersAbsent(t *testing.T) {
 	seedLegacyRecord(t, root, legacyRecord{TC: "tc-eee0013", Framework: "bats", Result: "pass"})
 
 	var buf bytes.Buffer
-	require.NoError(t, runStatusDetail(&buf, root, "tc-eee0013", true, "", false))
+	require.NoError(t, runStatusDetail(&buf, root, "tc-eee0013", true, "", false, false, "", nil))
 	assertNoLegacyCarriersInDetailJSON(t, buf.String())
 }
 
@@ -486,7 +486,7 @@ func TestENH146_Detail_TestcaseKeyPresent_TestCaseIdAbsent(t *testing.T) {
 	seedLegacyRecord(t, root, legacyRecord{TC: "tc-eee0014", Framework: "bats", Result: "pass"})
 
 	var buf bytes.Buffer
-	require.NoError(t, runStatusDetail(&buf, root, "tc-eee0014", true, "", false))
+	require.NoError(t, runStatusDetail(&buf, root, "tc-eee0014", true, "", false, false, "", nil))
 
 	top := decodeJSONObject(t, buf.Bytes())
 	assert.Contains(t, top, "testcase",
@@ -506,7 +506,7 @@ func TestENH146_Overview_SelectedFrameworkIsNullForManualOnly(t *testing.T) {
 	seedLegacyRecord(t, root, legacyRecord{TC: "tc-eee0015", Framework: "manual", Result: "pass"})
 
 	var buf bytes.Buffer
-	require.NoError(t, runStatusOverview(&buf, root, nil, true, "", false))
+	require.NoError(t, runStatusOverview(&buf, root, nil, true, "", false, false, "", nil))
 
 	arr := decodeJSONArray(t, buf.Bytes())
 	require.Len(t, arr, 1)
@@ -537,7 +537,7 @@ completed: "2026-05-19T10:01:00Z"
 		[]byte(orphan), 0o644))
 
 	var buf bytes.Buffer
-	require.NoError(t, runStatusOverview(&buf, root, nil, true, "", false))
+	require.NoError(t, runStatusOverview(&buf, root, nil, true, "", false, false, "", nil))
 	arr := decodeJSONArray(t, buf.Bytes())
 	require.Len(t, arr, 1)
 	assertSelectedFrameworkNull(t, arr[0])
@@ -552,7 +552,7 @@ func TestENH146_Overview_SelectedFrameworkIsNullForBareTC(t *testing.T) {
 		"---\ntest_case_id: tc-eee0017\ntitle: bare draft\n---\n")
 
 	var buf bytes.Buffer
-	require.NoError(t, runStatusOverview(&buf, root, nil, true, "", false))
+	require.NoError(t, runStatusOverview(&buf, root, nil, true, "", false, false, "", nil))
 	arr := decodeJSONArray(t, buf.Bytes())
 	require.Len(t, arr, 1)
 	assertSelectedFrameworkNull(t, arr[0])
@@ -567,7 +567,7 @@ func TestENH146_Detail_SelectedFrameworkIsNullForManualOnly(t *testing.T) {
 	seedLegacyRecord(t, root, legacyRecord{TC: "tc-eee0018", Framework: "manual", Result: "pass"})
 
 	var buf bytes.Buffer
-	require.NoError(t, runStatusDetail(&buf, root, "tc-eee0018", true, "", false))
+	require.NoError(t, runStatusDetail(&buf, root, "tc-eee0018", true, "", false, false, "", nil))
 	top := decodeJSONObject(t, buf.Bytes())
 	assertSelectedFrameworkNull(t, top)
 }
@@ -582,7 +582,7 @@ func TestENH146_Detail_SelectedFrameworkIsStringWhenWired(t *testing.T) {
 	seedLegacyRecord(t, root, legacyRecord{TC: "tc-eee0019", Framework: "bats", Result: "pass"})
 
 	var buf bytes.Buffer
-	require.NoError(t, runStatusDetail(&buf, root, "tc-eee0019", true, "", false))
+	require.NoError(t, runStatusDetail(&buf, root, "tc-eee0019", true, "", false, false, "", nil))
 	top := decodeJSONObject(t, buf.Bytes())
 	require.Contains(t, top, "selected_framework")
 	assert.Equal(t, "bats", top["selected_framework"],

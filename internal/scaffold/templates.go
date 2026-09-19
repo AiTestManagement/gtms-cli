@@ -63,6 +63,16 @@ var PresetAssets = map[string][]PresetAsset{
 	},
 }
 
+// PresetAssetPriorVersions maps a preset asset's RelPath to known, byte-exact
+// prior shipped contents of that file. The gtms init --force upgrade path uses
+// it to recognise a pristine older copy in an existing project that is safe to
+// refresh in place; an asset with no entry here keeps the plain
+// absent->write / present->skip behaviour even under --force (BUG-189).
+var PresetAssetPriorVersions = map[string][]string{
+	"gtms/adapters/playwright-runner.sh": playwrightRunnerScriptPriorVersions,
+	"gtms/adapters/bats-runner.sh":       batsRunnerScriptPriorVersions,
+}
+
 // ValidPresets returns the list of valid preset names.
 func ValidPresets() []string {
 	return []string{PresetManual, PresetBats, PresetPlaywright}
@@ -1330,6 +1340,142 @@ mode: sync
 status: ${STATUS}
 result: ${RESULT}
 summary: "${SUMMARY}"
+log: |2
+$(echo "${OUTPUT}" | sed 's/^/  /')
+completed: $(date -u +%Y-%m-%dT%H:%M:%SZ)
+EOF
+else
+cat > "${GTMS_RESULT_FILE}" <<EOF
+task: ${GTMS_TASK_ID}
+command: execute
+target: ${GTMS_ARTEFACT_FILE}
+adapter: bats-runner
+mode: sync
+status: ${STATUS}
+summary: "${SUMMARY}"
+log: |2
+$(echo "${OUTPUT}" | sed 's/^/  /')
+completed: $(date -u +%Y-%m-%dT%H:%M:%SZ)
+EOF
+fi
+
+# Echo summary to stdout for GTMS CLI output
+echo "${OUTPUT}"
+
+# Exit 0 for complete (adapter ran successfully), 1 for error (adapter broke)
+if [ "${STATUS}" = "complete" ]; then
+    exit 0
+else
+    exit 1
+fi
+`
+
+// batsRunnerScriptPreBUG196 is the exact bats runner body shipped unchanged
+// from v0.3.0 through v0.3.2 (and on integration up to the BUG-196 fix). It
+// writes the fragile bare `log: |` block. It is retained verbatim so the
+// gtms init --force upgrade path (installPresetAssets) can recognise a
+// pristine pre-BUG-196 copy in an existing project and refresh it in place.
+// Do NOT edit this string; it is a fingerprint of shipped bytes, not live
+// code, and deliberately keeps the bare `log: |` rather than `log: |2`
+// (BUG-196).
+const batsRunnerScriptPreBUG196 = `#!/bin/sh
+# bats-runner.sh -- Tier 2 sync execute adapter for local BATS runs.
+#
+# ENH-127: Replaces the Tier 1 ` + "`command: bats {artefact_file}`" + ` default.
+# The adapter classifies skip status itself via the shared TAP helper
+# instead of relying on core GTMS (classifyBATSSkip was removed).
+#
+# Receives: GTMS_ARTEFACT_FILE, GTMS_RESULT_FILE, GTMS_TASK_ID (plus others via Tier 2 env)
+# GTMS_RESULT_FILE points at .gtms/results/{task-id}.handoff.yaml -- the
+# adapter writes its outcome there as YAML (status/summary/log/completed).
+
+set -e
+
+# --- Source shared TAP classifier ---
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+. "$SCRIPT_DIR/lib/bats-tap.sh"
+
+# --- Scrub leaked BATS_* env from any enclosing bats run ---
+# When ` + "`gtms execute`" + ` is invoked from inside a bats test (common during
+# dogfood / acceptance suites), the parent bats prepends its internal
+# $BATS_LIBEXEC to PATH and exports BATS_* vars. PATH lookup then resolves
+# ` + "`bats`" + ` to the libexec entry script, which expects helpers that only the
+# user-facing wrapper sources -- invoking it directly fails with errors like
+# "bats_readlinkf: command not found". Strip libexec entries from PATH and
+# unset BATS_* before running our own bats so we always go through the
+# wrapper.
+unset BATS_LIBEXEC BATS_ROOT BATS_CWD BATS_TMPDIR BATS_ROOT_PID BATS_VERSION
+PATH=$(printf '%s' "$PATH" | tr ':' '\n' | grep -vE '/libexec/bats-core/?$' | tr '\n' ':' | sed 's/:$//')
+export PATH
+
+# --- Run BATS locally ---
+set +e
+OUTPUT=$(bats "$GTMS_ARTEFACT_FILE" 2>&1)
+EXIT_CODE=$?
+set -e
+
+# --- Classify result ---
+# Check for a TAP plan line to detect whether bats ran at all.
+HAS_PLAN=0
+if echo "${OUTPUT}" | grep -Eq '^1\.\.[0-9]+$'; then
+    HAS_PLAN=1
+fi
+
+if [ "${HAS_PLAN}" = "0" ]; then
+    # No TAP plan line -- bats itself couldn't run or produced garbage
+    STATUS="error"
+    RESULT=""
+    SUMMARY="Malformed or missing TAP output (exit ${EXIT_CODE})"
+else
+    # Valid TAP -- classify via shared helper
+    CLASSIFIED=$(echo "${OUTPUT}" | classify_bats_status)
+    case "$CLASSIFIED" in
+        pass)
+            STATUS="complete"
+            RESULT="pass"
+            PASS_COUNT=$(echo "${OUTPUT}" | grep -Ec '^ok ' || true)
+            SUMMARY="All ${PASS_COUNT} tests passed"
+            ;;
+        fail)
+            STATUS="complete"
+            RESULT="fail"
+            PASS_COUNT=$(echo "${OUTPUT}" | grep -Ec '^ok ' || true)
+            FAIL_COUNT=$(echo "${OUTPUT}" | grep -Ec '^not ok ' || true)
+            SUMMARY="${PASS_COUNT} passed, ${FAIL_COUNT} failed"
+            ;;
+        skipped)
+            STATUS="complete"
+            RESULT="skip"
+            PASS_COUNT=$(echo "${OUTPUT}" | grep -Ec '^ok ' || true)
+            SKIP_COUNT=$(echo "${OUTPUT}" | grep -Eci '^ok .* # skip' || true)
+            PASS_ONLY=$((PASS_COUNT - SKIP_COUNT))
+            if [ "$PASS_ONLY" -eq 0 ]; then
+                SUMMARY="All ${SKIP_COUNT} tests skipped"
+            else
+                SUMMARY="${PASS_ONLY} passed, ${SKIP_COUNT} skipped"
+            fi
+            ;;
+        error)
+            STATUS="error"
+            RESULT=""
+            SUMMARY="No test results found in TAP output (exit ${EXIT_CODE})"
+            ;;
+    esac
+fi
+
+# --- Update result contract ---
+# ENH-130: orthogonal contract -- status carries adapter state, result carries test outcome.
+# Only include result: field when RESULT is non-empty (omit for error/no-outcome cases).
+if [ -n "${RESULT}" ]; then
+cat > "${GTMS_RESULT_FILE}" <<EOF
+task: ${GTMS_TASK_ID}
+command: execute
+target: ${GTMS_ARTEFACT_FILE}
+adapter: bats-runner
+mode: sync
+status: ${STATUS}
+result: ${RESULT}
+summary: "${SUMMARY}"
 log: |
 $(echo "${OUTPUT}" | sed 's/^/  /')
 completed: $(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -1952,10 +2098,533 @@ classify_bats_status() {
 `
 
 // playwrightRunnerScript is the local Tier 2 Playwright execute adapter shipped
-// by gtms init --preset playwright. BUG-111: deliberately skeletal -- runs a
-// single TC-specific .spec.ts file. Does not implement ENH-152 append mode,
-// shared-file selection, or JUnit parsing.
+// by gtms init --preset playwright. It runs a single TC-specific .spec.ts file
+// via npx playwright test and classifies the outcome from Playwright's
+// structured JSON reporter, NOT the process exit code.
+//
+// BUG-189: Playwright exits 0 when a run contains no failures -- INCLUDING a run
+// where every selected test was skipped (e.g. the untouched gtms automate
+// skeleton, which stamps test.skip(true, 'skeleton -- not yet implemented')).
+// The previous runner mapped every zero exit to result: pass, so an all-skipped
+// run was recorded as a passing test. The exit code therefore cannot decide the
+// outcome. This runner reads the JSON reporter's stats counters and top-level
+// errors array instead, and FAILS CLOSED to status: error when the document is
+// missing, malformed, or an unrecognised shape (GTMS neither installs nor pins
+// the project's Playwright version). Aggregate policy follows ENH-126: failure
+// wins; otherwise any skip demotes the aggregate to skip; otherwise pass.
+//
+// REV-165: the classifier is structured parsing through node, not a handwritten
+// shell/awk scanner. Node is necessarily present in any project that can run
+// Playwright, so depending on it is safe, and it closes three review findings at
+// the root rather than patching each one:
+//
+//   - truncation (CODEX-002): JSON.parse rejects an incomplete document
+//     outright, so a report truncated after the stats block can no longer yield
+//     counters that classify as a pass;
+//   - quadratic runtime (CLAUDE-001): the old awk scanner accumulated the whole
+//     document line by line, which is O(n^2) under mawk (the Debian/Ubuntu
+//     default awk) -- 4 MB took ~2 minutes, and a large enough report blew the
+//     30-minute sync timeout and turned a PASSING run into status: error;
+//   - interruption shape (CODEX-001): Playwright derives stats.skipped from
+//     test.outcome(), which folds an all-interrupted test into "skipped", and
+//     its JSON reporter does not serialise the full-run status. The only
+//     evidence of an interruption is the nested results[].status, which is
+//     trivial to inspect once the document is a real object.
+//
+// There is deliberately NO shell-side JSON fallback: a second parser would be a
+// second set of bugs. If node is absent, exits non-zero, or returns anything but
+// the expected fixed record, the runner fails closed to status: error.
+//
+// BUG-111: still deliberately skeletal -- one TC-specific .spec.ts file, no
+// ENH-152 append mode or shared-file selection.
 const playwrightRunnerScript = `#!/bin/sh
+# playwright-runner.sh -- Tier 2 sync execute adapter for local Playwright runs.
+# Runs a single TC-specific .spec.ts file via npx playwright test and classifies
+# the outcome from Playwright's structured JSON reporter (BUG-189), never from
+# the process exit code. Deliberately skeletal (BUG-111): one .spec.ts per run.
+
+set -e
+
+# yaml_sq -- emit $1 as the BODY of a YAML single-quoted scalar.
+#
+# REV-165 (CLAUDE-002 / CODEX-005): the summary used to be interpolated into a
+# DOUBLE-quoted YAML scalar after stripping double quotes but not backslashes.
+# A Playwright error naming a Windows path (C:\Users\...) then produced YAML
+# escapes such as \U, and yaml.v3 rejected the WHOLE document -- status, result,
+# log and completed were all lost, not just the summary. A single-quoted scalar
+# has NO escape sequences at all, so a backslash is an ordinary character and the
+# operator keeps the path they need. The only thing that needs handling is an
+# embedded single quote, which YAML doubles.
+yaml_sq() {
+  printf '%s' "$1" | tr '\n\r\t' '   ' | sed "s/'/''/g"
+}
+
+# --- Check tooling ---
+# Both npx (to run Playwright) and node (to parse its JSON report) are required.
+# Any project able to run Playwright already has both.
+if ! command -v npx >/dev/null 2>&1 || ! command -v node >/dev/null 2>&1; then
+  # BUG-111 AC #15/#30: actionable diagnostic on missing local Node/Playwright
+  # tooling. The summary is duplicated in the result contract so it surfaces
+  # via formatExecuteOutput when the adapter exits with status: error -- the
+  # adapter's own stderr stream is captured but not threaded through to the
+  # parent gtms process today.
+  DIAG="Playwright or Node not found -- gtms init does not install Node, Playwright, browsers, or third-party tooling. Install Node and run 'npx playwright install', then re-run."
+  echo "$DIAG" >&2
+  cat > "${GTMS_RESULT_FILE}" <<EOF
+task: ${GTMS_TASK_ID}
+command: execute
+target: ${GTMS_ARTEFACT_FILE}
+adapter: playwright-runner
+mode: sync
+status: error
+summary: '$(yaml_sq "${DIAG}")'
+completed: $(date -u +%Y-%m-%dT%H:%M:%SZ)
+EOF
+  exit 1
+fi
+
+# --- Run playwright test with a structured JSON reporter ---
+# list -> stdout (human-readable log, preserved for operator diagnosis);
+# json -> a file (the authoritative document the classifier reads).
+# BUG-189: PLAYWRIGHT_JSON_OUTPUT_NAME routes the json reporter to a file so the
+# human log survives AND the machine document drives classification. No mktemp:
+# tc-12c9a997 runs this under a minimal PATH whose allowlist excludes mktemp.
+PW_JSON="${GTMS_RESULT_FILE}.pw.json"
+# .cjs, not .js: a project whose package.json declares "type": "module" would
+# otherwise have node load this as an ES module and reject its require().
+PW_JS="${GTMS_RESULT_FILE}.pw-classify.cjs"
+rm -f "${PW_JSON}" "${PW_JS}"
+trap 'rm -f "${PW_JSON}" "${PW_JS}"' EXIT
+
+# The classifier. Reads Playwright's JSON report and prints ONE fixed nine-line
+# record on stdout, which the shell below reads positionally. Structured parsing
+# is the whole point: a truncated, malformed or unexpected document can never
+# produce counters, and nested per-test statuses are directly inspectable.
+cat > "${PW_JS}" <<'GTMS_PW_CLASSIFY'
+'use strict';
+// GTMS Playwright result classifier (BUG-189, hardened by REV-165).
+//
+// Output contract -- exactly nine lines, always in this order:
+//   1 GTMSPW1            fixed sentinel; the shell refuses anything else
+//   2 verdict            ok | badread | badjson | badshape
+//   3 stats.expected     integer (0 unless verdict is ok)
+//   4 stats.unexpected   integer
+//   5 stats.skipped      integer
+//   6 stats.flaky        integer
+//   7 interrupted        count of per-test results serialised as "interrupted"
+//   8 errorsPresent      1 if the TOP-LEVEL errors array is non-empty, else 0
+//   9 message            first top-level error message, or the parse diagnostic
+//
+// Exit status is 0 on every handled verdict. A non-zero exit means the
+// classifier itself broke, and the shell fails closed on that too.
+var fs = require('fs');
+
+function clean(s) {
+  if (typeof s !== 'string') { return ''; }
+  var out = s.replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/[ ]+/g, ' ').trim();
+  if (out.length > 400) { out = out.slice(0, 400); }
+  return out;
+}
+
+function emit(verdict, stats, interrupted, errorsPresent, message) {
+  process.stdout.write([
+    'GTMSPW1',
+    verdict,
+    String(stats.expected),
+    String(stats.unexpected),
+    String(stats.skipped),
+    String(stats.flaky),
+    String(interrupted),
+    String(errorsPresent),
+    clean(message)
+  ].join('\n') + '\n');
+  process.exit(0);
+}
+
+var ZERO = { expected: 0, unexpected: 0, skipped: 0, flaky: 0 };
+
+var raw;
+try {
+  raw = fs.readFileSync(process.argv[2], 'utf8');
+} catch (e) {
+  emit('badread', ZERO, 0, 0, (e && e.message) || 'result document could not be read');
+}
+
+var doc;
+try {
+  doc = JSON.parse(raw);
+} catch (e) {
+  // A document truncated anywhere -- including immediately after a complete
+  // "stats" block, which the old shell guard accepted -- lands here.
+  emit('badjson', ZERO, 0, 0, (e && e.message) || 'result document is not valid JSON');
+}
+
+// Parsing successfully proves the bytes are JSON. It does NOT prove they are a
+// Playwright report, so every container and counter is type- and range-checked
+// before any of it is trusted. A syntactically valid document with
+// "skipped": "3", "skipped": -1, a missing counter, or a nested status nobody
+// recognises reaches the unrecognised-shape branch -- never the classifier.
+if (doc === null || typeof doc !== 'object' || Array.isArray(doc)) {
+  emit('badshape', ZERO, 0, 0, 'result document is not a JSON object');
+}
+if (!Array.isArray(doc.errors)) {
+  emit('badshape', ZERO, 0, 0, 'result document has no top-level "errors" array');
+}
+var st = doc.stats;
+if (st === null || typeof st !== 'object' || Array.isArray(st)) {
+  emit('badshape', ZERO, 0, 0, 'result document has no "stats" block');
+}
+
+var KEYS = ['expected', 'unexpected', 'skipped', 'flaky'];
+var stats = {};
+for (var i = 0; i < KEYS.length; i++) {
+  var v = st[KEYS[i]];
+  if (typeof v !== 'number' || !isFinite(v) || Math.floor(v) !== v || v < 0) {
+    emit('badshape', ZERO, 0, 0, 'stats.' + KEYS[i] + ' is not a non-negative integer');
+  }
+  stats[KEYS[i]] = v;
+}
+if (!Array.isArray(doc.suites)) {
+  emit('badshape', ZERO, 0, 0, 'result document has no top-level "suites" array');
+}
+
+var errorsPresent = doc.errors.length > 0 ? 1 : 0;
+var message = '';
+if (errorsPresent) {
+  var first = doc.errors[0];
+  if (typeof first === 'string') {
+    message = first;
+  } else if (first && typeof first === 'object') {
+    if (typeof first.message === 'string') { message = first.message; }
+    else if (typeof first.stack === 'string') { message = first.stack; }
+  }
+}
+
+// CODEX-001: count per-test results serialised as "interrupted". Playwright
+// derives the top-level skipped tally from test.outcome(), which groups an
+// all-interrupted test under "skipped", and the JSON reporter omits the
+// full-run status. So a real interruption arrives as skipped > 0 with an EMPTY
+// top-level errors array -- indistinguishable from a clean skip unless the
+// nested statuses are inspected.
+//
+// An unrecognised nested status is NOT treated as benign: that is precisely how
+// the interrupted case slipped through in the first place. Anything outside the
+// known vocabularies fails closed to the unrecognised-shape branch.
+var TEST_OUTCOMES = {
+  expected: 1, unexpected: 1, flaky: 1, skipped: 1, interrupted: 1
+};
+var RESULT_STATUSES = {
+  passed: 1, failed: 1, timedOut: 1, skipped: 1, interrupted: 1
+};
+var interrupted = 0;
+
+function walkSuites(suites, where) {
+  if (!Array.isArray(suites)) {
+    emit('badshape', ZERO, 0, 0, where + ' is not an array');
+  }
+  for (var a = 0; a < suites.length; a++) {
+    var suite = suites[a];
+    if (suite === null || typeof suite !== 'object' || Array.isArray(suite)) {
+      emit('badshape', ZERO, 0, 0, where + '[' + a + '] is not an object');
+    }
+    if (suite.suites !== undefined) {
+      walkSuites(suite.suites, where + '[' + a + '].suites');
+    }
+    if (suite.specs === undefined) { continue; }
+    if (!Array.isArray(suite.specs)) {
+      emit('badshape', ZERO, 0, 0, where + '[' + a + '].specs is not an array');
+    }
+    for (var b = 0; b < suite.specs.length; b++) {
+      var spec = suite.specs[b];
+      if (spec === null || typeof spec !== 'object' || Array.isArray(spec)) {
+        emit('badshape', ZERO, 0, 0, where + '[' + a + '].specs[' + b + '] is not an object');
+      }
+      if (spec.tests === undefined) { continue; }
+      if (!Array.isArray(spec.tests)) {
+        emit('badshape', ZERO, 0, 0, where + '[' + a + '].specs[' + b + '].tests is not an array');
+      }
+      for (var c = 0; c < spec.tests.length; c++) {
+        var test = spec.tests[c];
+        if (test === null || typeof test !== 'object' || Array.isArray(test)) {
+          emit('badshape', ZERO, 0, 0, 'a serialised test entry is not an object');
+        }
+        if (typeof test.status !== 'string' || TEST_OUTCOMES[test.status] !== 1) {
+          emit('badshape', ZERO, 0, 0, 'unrecognised test outcome ' + JSON.stringify(test.status));
+        }
+        if (!Array.isArray(test.results)) {
+          emit('badshape', ZERO, 0, 0, 'a serialised test entry has no "results" array');
+        }
+        var sawInterrupt = test.status === 'interrupted';
+        for (var d = 0; d < test.results.length; d++) {
+          var res = test.results[d];
+          if (res === null || typeof res !== 'object' || Array.isArray(res)) {
+            emit('badshape', ZERO, 0, 0, 'a serialised test result is not an object');
+          }
+          if (typeof res.status !== 'string' || RESULT_STATUSES[res.status] !== 1) {
+            emit('badshape', ZERO, 0, 0, 'unrecognised test result status ' + JSON.stringify(res.status));
+          }
+          if (res.status === 'interrupted') { sawInterrupt = true; }
+        }
+        if (sawInterrupt) { interrupted++; }
+      }
+    }
+  }
+}
+walkSuites(doc.suites, 'suites');
+
+emit('ok', stats, interrupted, errorsPresent, message);
+GTMS_PW_CLASSIFY
+
+set +e
+OUTPUT=$(PLAYWRIGHT_JSON_OUTPUT_NAME="${PW_JSON}" npx playwright test "${GTMS_ARTEFACT_FILE}" --reporter=list,json 2>&1)
+EXIT_CODE=$?
+# Deliberately stay in +e for classification: extraction pipelines that match
+# nothing exit non-zero, and that must not abort the script before it can record
+# an error outcome. set -e is restored before the contract is persisted.
+
+# --- Classify from the JSON document (exit code is deliberately ignored) ---
+STATUS=""
+RESULT=""
+SUMMARY=""
+
+classify() {
+  # 1. Missing or empty result document.
+  if [ ! -s "${PW_JSON}" ]; then
+    STATUS="error"
+    SUMMARY="Playwright result document not found (exit ${EXIT_CODE}); cannot classify outcome"
+    return
+  fi
+
+  SCAN=$(node "${PW_JS}" "${PW_JSON}" 2>/dev/null)
+  NODE_EXIT=$?
+
+  # 2. The classifier itself failed, or returned something that is not its
+  #    contract. Fail closed -- there is no second parser to fall back to.
+  if [ "${NODE_EXIT}" -ne 0 ] || [ "$(printf '%s\n' "${SCAN}" | sed -n 1p)" != "GTMSPW1" ]; then
+    STATUS="error"
+    SUMMARY="Playwright result document could not be classified (exit ${EXIT_CODE}); the JSON classifier failed or returned an unexpected record"
+    return
+  fi
+
+  VERDICT=$(printf '%s\n' "${SCAN}" | sed -n 2p)
+  EXPECTED=$(printf '%s\n' "${SCAN}" | sed -n 3p)
+  UNEXPECTED=$(printf '%s\n' "${SCAN}" | sed -n 4p)
+  SKIPPED=$(printf '%s\n' "${SCAN}" | sed -n 5p)
+  FLAKY=$(printf '%s\n' "${SCAN}" | sed -n 6p)
+  INTERRUPTED=$(printf '%s\n' "${SCAN}" | sed -n 7p)
+  ERRORS_PRESENT=$(printf '%s\n' "${SCAN}" | sed -n 8p)
+  ERROR_MSG=$(printf '%s\n' "${SCAN}" | sed -n 9p)
+
+  case "${VERDICT}" in
+    ok)
+      :
+      ;;
+    badread)
+      STATUS="error"
+      SUMMARY="Playwright result document not found (exit ${EXIT_CODE}); cannot classify outcome"
+      return
+      ;;
+    badjson)
+      # 3. Not valid JSON -> malformed / unreadable. A document truncated at ANY
+      #    point, including one that still begins with { and ends with }, is
+      #    rejected here rather than yielding counters (CODEX-002).
+      STATUS="error"
+      if [ -n "${ERROR_MSG}" ]; then
+        SUMMARY="Malformed or unreadable Playwright result document (exit ${EXIT_CODE}): ${ERROR_MSG}"
+      else
+        SUMMARY="Malformed or unreadable Playwright result document (exit ${EXIT_CODE})"
+      fi
+      return
+      ;;
+    badshape)
+      # 4. Valid JSON the runner does not recognise -- e.g. a Playwright version
+      #    whose reporter schema differs. GTMS neither installs nor pins it.
+      STATUS="error"
+      SUMMARY="Unrecognised Playwright reporter shape (exit ${EXIT_CODE}); expected a stats block with expected/unexpected/skipped/flaky counters"
+      return
+      ;;
+    *)
+      STATUS="error"
+      SUMMARY="Playwright result document could not be classified (exit ${EXIT_CODE}); the JSON classifier returned an unknown verdict"
+      return
+      ;;
+  esac
+
+  # Defensive: the contract says these are integers, but never do arithmetic on
+  # an unverified string.
+  if [ -z "${EXPECTED}" ] || [ -z "${UNEXPECTED}" ] || [ -z "${SKIPPED}" ] || [ -z "${FLAKY}" ] || [ -z "${INTERRUPTED}" ] || [ -z "${ERRORS_PRESENT}" ]; then
+    STATUS="error"
+    SUMMARY="Unrecognised Playwright reporter shape (exit ${EXIT_CODE}); expected a stats block with expected/unexpected/skipped/flaky counters"
+    return
+  fi
+
+  TOTAL=$((EXPECTED + UNEXPECTED + SKIPPED + FLAKY))
+
+  # 5. Interruption (REV-165 / CODEX-001). This MUST be tested before the
+  #    aggregate branches: Playwright folds an all-interrupted test into the
+  #    skipped tally and reports no top-level error, so an interrupted run is
+  #    otherwise indistinguishable from a clean skip. An interrupted run did not
+  #    resolve the tests it selected, so any outcome inferred from it is a guess.
+  if [ "${INTERRUPTED}" -gt 0 ]; then
+    STATUS="error"
+    SUMMARY="Playwright run was interrupted (exit ${EXIT_CODE}); ${INTERRUPTED} test result(s) did not resolve, so no test outcome was recorded"
+    return
+  fi
+
+  # Does Playwright itself report that no tests were found? (its own phrasing).
+  # CLAUDE-003: ERE alternation, not the GNU-only BRE \| -- BSD/macOS grep
+  # treats \| as a literal and the clause would never fire there.
+  NO_TESTS=0
+  if { cat "${PW_JSON}"; printf '%s\n' "${OUTPUT}"; } | grep -qiE 'no tests found|found no tests|did not match any tests'; then
+    NO_TESTS=1
+  fi
+
+  # 6. Zero discovery: nothing ran, and either there were no errors or the error
+  #    is Playwright's own no-tests error. Distinct from a runner failure.
+  if [ "${TOTAL}" -eq 0 ] && { [ "${ERRORS_PRESENT}" -eq 0 ] || [ "${NO_TESTS}" -eq 1 ]; }; then
+    STATUS="error"
+    SUMMARY="Playwright discovered no tests (exit ${EXIT_CODE}); nothing was executed"
+    return
+  fi
+
+  # 7. A readable document reporting a runner or configuration failure. Name
+  #    what the document actually reported -- a browser that would not launch and
+  #    a run cut short by a global timeout are the same status but very different
+  #    problems, and an operator should not have to re-run to tell them apart.
+  if [ "${ERRORS_PRESENT}" -eq 1 ]; then
+    STATUS="error"
+    if [ -n "${ERROR_MSG}" ]; then
+      SUMMARY="Playwright reported a runner or configuration error (exit ${EXIT_CODE}): ${ERROR_MSG}"
+    else
+      SUMMARY="Playwright reported a runner or configuration error (exit ${EXIT_CODE}); the run did not produce a test outcome"
+    fi
+    return
+  fi
+
+  # 8. Zero discovery with an empty errors array not already handled (defensive).
+  if [ "${TOTAL}" -eq 0 ]; then
+    STATUS="error"
+    SUMMARY="Playwright discovered no tests (exit ${EXIT_CODE}); nothing was executed"
+    return
+  fi
+
+  # 9. Failure wins over everything (assertion failures and timeouts both land
+  #    in unexpected).
+  if [ "${UNEXPECTED}" -gt 0 ]; then
+    STATUS="complete"
+    RESULT="fail"
+    if [ "${SKIPPED}" -gt 0 ]; then
+      SUMMARY="Playwright: ${EXPECTED} passed, ${UNEXPECTED} failed, ${SKIPPED} skipped"
+    else
+      SUMMARY="Playwright: ${EXPECTED} passed, ${UNEXPECTED} failed"
+    fi
+    return
+  fi
+
+  # 10. ENH-126: any skip without a failure demotes the aggregate to skip. This
+  #     covers the all-skipped skeleton, an all-runtime-skip run, and mixed
+  #     pass+skip. flaky-without-failure counts toward the passed tally here.
+  if [ "${SKIPPED}" -gt 0 ]; then
+    STATUS="complete"
+    RESULT="skip"
+    PASSED=$((EXPECTED + FLAKY))
+    if [ "${PASSED}" -eq 0 ]; then
+      SUMMARY="Playwright: all ${SKIPPED} skipped"
+    else
+      SUMMARY="Playwright: ${PASSED} passed, ${SKIPPED} skipped"
+    fi
+    return
+  fi
+
+  # 11. Genuine pass (expected-failure that failed as expected also lands here;
+  #     an unexpectedly passing expected-failure counts in unexpected -> branch 9).
+  STATUS="complete"
+  RESULT="pass"
+  if [ "${FLAKY}" -gt 0 ]; then
+    SUMMARY="Playwright: ${EXPECTED} passed, ${FLAKY} flaky"
+  else
+    SUMMARY="Playwright: ${EXPECTED} passed"
+  fi
+}
+
+classify
+
+# --- Write handoff contract ---
+# ENH-130: status carries adapter state, result carries the test outcome. Omit
+# the result: key entirely on error (no outcome to report), mirroring bats-runner.
+COMPLETED=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+LOG_BODY=$(echo "${OUTPUT}" | sed 's/^/  /')
+SUMMARY_YAML=$(yaml_sq "${SUMMARY}")
+
+# REV-165 (CODEX-006): classification ran under set +e; the previous runner
+# never restored strict mode, so a FAILED contract write -- a full disk is the
+# obvious trigger -- left the pre-created non-terminal handoff in place while the
+# script still reached exit 0. A readable non-terminal contract falls through
+# to exit-code handling (BUG-191), and exit 0 there records a PASS. Restore
+# strict mode AND check the write explicitly, so a masked write can never become
+# a false green.
+set -e
+
+write_contract() {
+  if [ -n "${RESULT}" ]; then
+    cat > "${GTMS_RESULT_FILE}" <<EOF
+task: ${GTMS_TASK_ID}
+command: execute
+target: ${GTMS_ARTEFACT_FILE}
+adapter: playwright-runner
+mode: sync
+status: ${STATUS}
+result: ${RESULT}
+summary: '${SUMMARY_YAML}'
+log: |2
+${LOG_BODY}
+completed: ${COMPLETED}
+EOF
+  else
+    cat > "${GTMS_RESULT_FILE}" <<EOF
+task: ${GTMS_TASK_ID}
+command: execute
+target: ${GTMS_ARTEFACT_FILE}
+adapter: playwright-runner
+mode: sync
+status: ${STATUS}
+summary: '${SUMMARY_YAML}'
+log: |2
+${LOG_BODY}
+completed: ${COMPLETED}
+EOF
+  fi
+}
+
+if ! write_contract; then
+  echo "playwright-runner: failed to write the result contract at ${GTMS_RESULT_FILE}" >&2
+  exit 1
+fi
+# Read back the one line that makes the contract terminal. A write that reported
+# success but landed short still exits non-zero rather than falling through.
+if ! grep -q "^status: ${STATUS}$" "${GTMS_RESULT_FILE}"; then
+  echo "playwright-runner: result contract at ${GTMS_RESULT_FILE} is incomplete after writing" >&2
+  exit 1
+fi
+
+echo "${OUTPUT}"
+
+# ENH-130: a clean adapter run with a failing/skipped test outcome is exit 0;
+# only an adapter-level error exits non-zero. The invoker routes the task bucket
+# from the contract status regardless, but keep the process exit honest.
+if [ "${STATUS}" = "error" ]; then
+  exit 1
+fi
+exit 0
+`
+
+// playwrightRunnerScriptV1 is the exact pre-BUG-189 Playwright runner: it
+// classified solely from the process exit code and mapped every zero exit to
+// result: pass. It is retained verbatim so the gtms init --force upgrade path
+// (installPresetAssets) can recognise a pristine pre-fix copy in an existing
+// project and refresh it in place. Do NOT edit this string; it is a fingerprint
+// of shipped bytes, not live code.
+const playwrightRunnerScriptV1 = `#!/bin/sh
 # playwright-runner.sh -- Tier 2 sync execute adapter for local Playwright runs.
 # Runs a single TC-specific .spec.ts file via npx playwright test.
 # BUG-111: deliberately skeletal -- does not implement ENH-152 append mode,
@@ -2020,6 +2689,516 @@ EOF
 echo "${OUTPUT}"
 exit 0
 `
+
+// playwrightRunnerScriptV2 is the exact post-BUG-189, pre-BUG-196 Playwright
+// runner body: it classifies from the JSON reporter but still writes the
+// fragile bare `log: |` block. It reached prerelease field-test builds only.
+// It is retained verbatim so the gtms init --force upgrade path can recognise
+// a pristine copy of that body and refresh it in place. Do NOT edit this
+// string; it is a fingerprint of shipped bytes and deliberately keeps the
+// bare `log: |` rather than `log: |2` (BUG-196).
+const playwrightRunnerScriptV2 = `#!/bin/sh
+# playwright-runner.sh -- Tier 2 sync execute adapter for local Playwright runs.
+# Runs a single TC-specific .spec.ts file via npx playwright test and classifies
+# the outcome from Playwright's structured JSON reporter (BUG-189), never from
+# the process exit code. Deliberately skeletal (BUG-111): one .spec.ts per run.
+
+set -e
+
+# yaml_sq -- emit $1 as the BODY of a YAML single-quoted scalar.
+#
+# REV-165 (CLAUDE-002 / CODEX-005): the summary used to be interpolated into a
+# DOUBLE-quoted YAML scalar after stripping double quotes but not backslashes.
+# A Playwright error naming a Windows path (C:\Users\...) then produced YAML
+# escapes such as \U, and yaml.v3 rejected the WHOLE document -- status, result,
+# log and completed were all lost, not just the summary. A single-quoted scalar
+# has NO escape sequences at all, so a backslash is an ordinary character and the
+# operator keeps the path they need. The only thing that needs handling is an
+# embedded single quote, which YAML doubles.
+yaml_sq() {
+  printf '%s' "$1" | tr '\n\r\t' '   ' | sed "s/'/''/g"
+}
+
+# --- Check tooling ---
+# Both npx (to run Playwright) and node (to parse its JSON report) are required.
+# Any project able to run Playwright already has both.
+if ! command -v npx >/dev/null 2>&1 || ! command -v node >/dev/null 2>&1; then
+  # BUG-111 AC #15/#30: actionable diagnostic on missing local Node/Playwright
+  # tooling. The summary is duplicated in the result contract so it surfaces
+  # via formatExecuteOutput when the adapter exits with status: error -- the
+  # adapter's own stderr stream is captured but not threaded through to the
+  # parent gtms process today.
+  DIAG="Playwright or Node not found -- gtms init does not install Node, Playwright, browsers, or third-party tooling. Install Node and run 'npx playwright install', then re-run."
+  echo "$DIAG" >&2
+  cat > "${GTMS_RESULT_FILE}" <<EOF
+task: ${GTMS_TASK_ID}
+command: execute
+target: ${GTMS_ARTEFACT_FILE}
+adapter: playwright-runner
+mode: sync
+status: error
+summary: '$(yaml_sq "${DIAG}")'
+completed: $(date -u +%Y-%m-%dT%H:%M:%SZ)
+EOF
+  exit 1
+fi
+
+# --- Run playwright test with a structured JSON reporter ---
+# list -> stdout (human-readable log, preserved for operator diagnosis);
+# json -> a file (the authoritative document the classifier reads).
+# BUG-189: PLAYWRIGHT_JSON_OUTPUT_NAME routes the json reporter to a file so the
+# human log survives AND the machine document drives classification. No mktemp:
+# tc-12c9a997 runs this under a minimal PATH whose allowlist excludes mktemp.
+PW_JSON="${GTMS_RESULT_FILE}.pw.json"
+# .cjs, not .js: a project whose package.json declares "type": "module" would
+# otherwise have node load this as an ES module and reject its require().
+PW_JS="${GTMS_RESULT_FILE}.pw-classify.cjs"
+rm -f "${PW_JSON}" "${PW_JS}"
+trap 'rm -f "${PW_JSON}" "${PW_JS}"' EXIT
+
+# The classifier. Reads Playwright's JSON report and prints ONE fixed nine-line
+# record on stdout, which the shell below reads positionally. Structured parsing
+# is the whole point: a truncated, malformed or unexpected document can never
+# produce counters, and nested per-test statuses are directly inspectable.
+cat > "${PW_JS}" <<'GTMS_PW_CLASSIFY'
+'use strict';
+// GTMS Playwright result classifier (BUG-189, hardened by REV-165).
+//
+// Output contract -- exactly nine lines, always in this order:
+//   1 GTMSPW1            fixed sentinel; the shell refuses anything else
+//   2 verdict            ok | badread | badjson | badshape
+//   3 stats.expected     integer (0 unless verdict is ok)
+//   4 stats.unexpected   integer
+//   5 stats.skipped      integer
+//   6 stats.flaky        integer
+//   7 interrupted        count of per-test results serialised as "interrupted"
+//   8 errorsPresent      1 if the TOP-LEVEL errors array is non-empty, else 0
+//   9 message            first top-level error message, or the parse diagnostic
+//
+// Exit status is 0 on every handled verdict. A non-zero exit means the
+// classifier itself broke, and the shell fails closed on that too.
+var fs = require('fs');
+
+function clean(s) {
+  if (typeof s !== 'string') { return ''; }
+  var out = s.replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/[ ]+/g, ' ').trim();
+  if (out.length > 400) { out = out.slice(0, 400); }
+  return out;
+}
+
+function emit(verdict, stats, interrupted, errorsPresent, message) {
+  process.stdout.write([
+    'GTMSPW1',
+    verdict,
+    String(stats.expected),
+    String(stats.unexpected),
+    String(stats.skipped),
+    String(stats.flaky),
+    String(interrupted),
+    String(errorsPresent),
+    clean(message)
+  ].join('\n') + '\n');
+  process.exit(0);
+}
+
+var ZERO = { expected: 0, unexpected: 0, skipped: 0, flaky: 0 };
+
+var raw;
+try {
+  raw = fs.readFileSync(process.argv[2], 'utf8');
+} catch (e) {
+  emit('badread', ZERO, 0, 0, (e && e.message) || 'result document could not be read');
+}
+
+var doc;
+try {
+  doc = JSON.parse(raw);
+} catch (e) {
+  // A document truncated anywhere -- including immediately after a complete
+  // "stats" block, which the old shell guard accepted -- lands here.
+  emit('badjson', ZERO, 0, 0, (e && e.message) || 'result document is not valid JSON');
+}
+
+// Parsing successfully proves the bytes are JSON. It does NOT prove they are a
+// Playwright report, so every container and counter is type- and range-checked
+// before any of it is trusted. A syntactically valid document with
+// "skipped": "3", "skipped": -1, a missing counter, or a nested status nobody
+// recognises reaches the unrecognised-shape branch -- never the classifier.
+if (doc === null || typeof doc !== 'object' || Array.isArray(doc)) {
+  emit('badshape', ZERO, 0, 0, 'result document is not a JSON object');
+}
+if (!Array.isArray(doc.errors)) {
+  emit('badshape', ZERO, 0, 0, 'result document has no top-level "errors" array');
+}
+var st = doc.stats;
+if (st === null || typeof st !== 'object' || Array.isArray(st)) {
+  emit('badshape', ZERO, 0, 0, 'result document has no "stats" block');
+}
+
+var KEYS = ['expected', 'unexpected', 'skipped', 'flaky'];
+var stats = {};
+for (var i = 0; i < KEYS.length; i++) {
+  var v = st[KEYS[i]];
+  if (typeof v !== 'number' || !isFinite(v) || Math.floor(v) !== v || v < 0) {
+    emit('badshape', ZERO, 0, 0, 'stats.' + KEYS[i] + ' is not a non-negative integer');
+  }
+  stats[KEYS[i]] = v;
+}
+if (!Array.isArray(doc.suites)) {
+  emit('badshape', ZERO, 0, 0, 'result document has no top-level "suites" array');
+}
+
+var errorsPresent = doc.errors.length > 0 ? 1 : 0;
+var message = '';
+if (errorsPresent) {
+  var first = doc.errors[0];
+  if (typeof first === 'string') {
+    message = first;
+  } else if (first && typeof first === 'object') {
+    if (typeof first.message === 'string') { message = first.message; }
+    else if (typeof first.stack === 'string') { message = first.stack; }
+  }
+}
+
+// CODEX-001: count per-test results serialised as "interrupted". Playwright
+// derives the top-level skipped tally from test.outcome(), which groups an
+// all-interrupted test under "skipped", and the JSON reporter omits the
+// full-run status. So a real interruption arrives as skipped > 0 with an EMPTY
+// top-level errors array -- indistinguishable from a clean skip unless the
+// nested statuses are inspected.
+//
+// An unrecognised nested status is NOT treated as benign: that is precisely how
+// the interrupted case slipped through in the first place. Anything outside the
+// known vocabularies fails closed to the unrecognised-shape branch.
+var TEST_OUTCOMES = {
+  expected: 1, unexpected: 1, flaky: 1, skipped: 1, interrupted: 1
+};
+var RESULT_STATUSES = {
+  passed: 1, failed: 1, timedOut: 1, skipped: 1, interrupted: 1
+};
+var interrupted = 0;
+
+function walkSuites(suites, where) {
+  if (!Array.isArray(suites)) {
+    emit('badshape', ZERO, 0, 0, where + ' is not an array');
+  }
+  for (var a = 0; a < suites.length; a++) {
+    var suite = suites[a];
+    if (suite === null || typeof suite !== 'object' || Array.isArray(suite)) {
+      emit('badshape', ZERO, 0, 0, where + '[' + a + '] is not an object');
+    }
+    if (suite.suites !== undefined) {
+      walkSuites(suite.suites, where + '[' + a + '].suites');
+    }
+    if (suite.specs === undefined) { continue; }
+    if (!Array.isArray(suite.specs)) {
+      emit('badshape', ZERO, 0, 0, where + '[' + a + '].specs is not an array');
+    }
+    for (var b = 0; b < suite.specs.length; b++) {
+      var spec = suite.specs[b];
+      if (spec === null || typeof spec !== 'object' || Array.isArray(spec)) {
+        emit('badshape', ZERO, 0, 0, where + '[' + a + '].specs[' + b + '] is not an object');
+      }
+      if (spec.tests === undefined) { continue; }
+      if (!Array.isArray(spec.tests)) {
+        emit('badshape', ZERO, 0, 0, where + '[' + a + '].specs[' + b + '].tests is not an array');
+      }
+      for (var c = 0; c < spec.tests.length; c++) {
+        var test = spec.tests[c];
+        if (test === null || typeof test !== 'object' || Array.isArray(test)) {
+          emit('badshape', ZERO, 0, 0, 'a serialised test entry is not an object');
+        }
+        if (typeof test.status !== 'string' || TEST_OUTCOMES[test.status] !== 1) {
+          emit('badshape', ZERO, 0, 0, 'unrecognised test outcome ' + JSON.stringify(test.status));
+        }
+        if (!Array.isArray(test.results)) {
+          emit('badshape', ZERO, 0, 0, 'a serialised test entry has no "results" array');
+        }
+        var sawInterrupt = test.status === 'interrupted';
+        for (var d = 0; d < test.results.length; d++) {
+          var res = test.results[d];
+          if (res === null || typeof res !== 'object' || Array.isArray(res)) {
+            emit('badshape', ZERO, 0, 0, 'a serialised test result is not an object');
+          }
+          if (typeof res.status !== 'string' || RESULT_STATUSES[res.status] !== 1) {
+            emit('badshape', ZERO, 0, 0, 'unrecognised test result status ' + JSON.stringify(res.status));
+          }
+          if (res.status === 'interrupted') { sawInterrupt = true; }
+        }
+        if (sawInterrupt) { interrupted++; }
+      }
+    }
+  }
+}
+walkSuites(doc.suites, 'suites');
+
+emit('ok', stats, interrupted, errorsPresent, message);
+GTMS_PW_CLASSIFY
+
+set +e
+OUTPUT=$(PLAYWRIGHT_JSON_OUTPUT_NAME="${PW_JSON}" npx playwright test "${GTMS_ARTEFACT_FILE}" --reporter=list,json 2>&1)
+EXIT_CODE=$?
+# Deliberately stay in +e for classification: extraction pipelines that match
+# nothing exit non-zero, and that must not abort the script before it can record
+# an error outcome. set -e is restored before the contract is persisted.
+
+# --- Classify from the JSON document (exit code is deliberately ignored) ---
+STATUS=""
+RESULT=""
+SUMMARY=""
+
+classify() {
+  # 1. Missing or empty result document.
+  if [ ! -s "${PW_JSON}" ]; then
+    STATUS="error"
+    SUMMARY="Playwright result document not found (exit ${EXIT_CODE}); cannot classify outcome"
+    return
+  fi
+
+  SCAN=$(node "${PW_JS}" "${PW_JSON}" 2>/dev/null)
+  NODE_EXIT=$?
+
+  # 2. The classifier itself failed, or returned something that is not its
+  #    contract. Fail closed -- there is no second parser to fall back to.
+  if [ "${NODE_EXIT}" -ne 0 ] || [ "$(printf '%s\n' "${SCAN}" | sed -n 1p)" != "GTMSPW1" ]; then
+    STATUS="error"
+    SUMMARY="Playwright result document could not be classified (exit ${EXIT_CODE}); the JSON classifier failed or returned an unexpected record"
+    return
+  fi
+
+  VERDICT=$(printf '%s\n' "${SCAN}" | sed -n 2p)
+  EXPECTED=$(printf '%s\n' "${SCAN}" | sed -n 3p)
+  UNEXPECTED=$(printf '%s\n' "${SCAN}" | sed -n 4p)
+  SKIPPED=$(printf '%s\n' "${SCAN}" | sed -n 5p)
+  FLAKY=$(printf '%s\n' "${SCAN}" | sed -n 6p)
+  INTERRUPTED=$(printf '%s\n' "${SCAN}" | sed -n 7p)
+  ERRORS_PRESENT=$(printf '%s\n' "${SCAN}" | sed -n 8p)
+  ERROR_MSG=$(printf '%s\n' "${SCAN}" | sed -n 9p)
+
+  case "${VERDICT}" in
+    ok)
+      :
+      ;;
+    badread)
+      STATUS="error"
+      SUMMARY="Playwright result document not found (exit ${EXIT_CODE}); cannot classify outcome"
+      return
+      ;;
+    badjson)
+      # 3. Not valid JSON -> malformed / unreadable. A document truncated at ANY
+      #    point, including one that still begins with { and ends with }, is
+      #    rejected here rather than yielding counters (CODEX-002).
+      STATUS="error"
+      if [ -n "${ERROR_MSG}" ]; then
+        SUMMARY="Malformed or unreadable Playwright result document (exit ${EXIT_CODE}): ${ERROR_MSG}"
+      else
+        SUMMARY="Malformed or unreadable Playwright result document (exit ${EXIT_CODE})"
+      fi
+      return
+      ;;
+    badshape)
+      # 4. Valid JSON the runner does not recognise -- e.g. a Playwright version
+      #    whose reporter schema differs. GTMS neither installs nor pins it.
+      STATUS="error"
+      SUMMARY="Unrecognised Playwright reporter shape (exit ${EXIT_CODE}); expected a stats block with expected/unexpected/skipped/flaky counters"
+      return
+      ;;
+    *)
+      STATUS="error"
+      SUMMARY="Playwright result document could not be classified (exit ${EXIT_CODE}); the JSON classifier returned an unknown verdict"
+      return
+      ;;
+  esac
+
+  # Defensive: the contract says these are integers, but never do arithmetic on
+  # an unverified string.
+  if [ -z "${EXPECTED}" ] || [ -z "${UNEXPECTED}" ] || [ -z "${SKIPPED}" ] || [ -z "${FLAKY}" ] || [ -z "${INTERRUPTED}" ] || [ -z "${ERRORS_PRESENT}" ]; then
+    STATUS="error"
+    SUMMARY="Unrecognised Playwright reporter shape (exit ${EXIT_CODE}); expected a stats block with expected/unexpected/skipped/flaky counters"
+    return
+  fi
+
+  TOTAL=$((EXPECTED + UNEXPECTED + SKIPPED + FLAKY))
+
+  # 5. Interruption (REV-165 / CODEX-001). This MUST be tested before the
+  #    aggregate branches: Playwright folds an all-interrupted test into the
+  #    skipped tally and reports no top-level error, so an interrupted run is
+  #    otherwise indistinguishable from a clean skip. An interrupted run did not
+  #    resolve the tests it selected, so any outcome inferred from it is a guess.
+  if [ "${INTERRUPTED}" -gt 0 ]; then
+    STATUS="error"
+    SUMMARY="Playwright run was interrupted (exit ${EXIT_CODE}); ${INTERRUPTED} test result(s) did not resolve, so no test outcome was recorded"
+    return
+  fi
+
+  # Does Playwright itself report that no tests were found? (its own phrasing).
+  # CLAUDE-003: ERE alternation, not the GNU-only BRE \| -- BSD/macOS grep
+  # treats \| as a literal and the clause would never fire there.
+  NO_TESTS=0
+  if { cat "${PW_JSON}"; printf '%s\n' "${OUTPUT}"; } | grep -qiE 'no tests found|found no tests|did not match any tests'; then
+    NO_TESTS=1
+  fi
+
+  # 6. Zero discovery: nothing ran, and either there were no errors or the error
+  #    is Playwright's own no-tests error. Distinct from a runner failure.
+  if [ "${TOTAL}" -eq 0 ] && { [ "${ERRORS_PRESENT}" -eq 0 ] || [ "${NO_TESTS}" -eq 1 ]; }; then
+    STATUS="error"
+    SUMMARY="Playwright discovered no tests (exit ${EXIT_CODE}); nothing was executed"
+    return
+  fi
+
+  # 7. A readable document reporting a runner or configuration failure. Name
+  #    what the document actually reported -- a browser that would not launch and
+  #    a run cut short by a global timeout are the same status but very different
+  #    problems, and an operator should not have to re-run to tell them apart.
+  if [ "${ERRORS_PRESENT}" -eq 1 ]; then
+    STATUS="error"
+    if [ -n "${ERROR_MSG}" ]; then
+      SUMMARY="Playwright reported a runner or configuration error (exit ${EXIT_CODE}): ${ERROR_MSG}"
+    else
+      SUMMARY="Playwright reported a runner or configuration error (exit ${EXIT_CODE}); the run did not produce a test outcome"
+    fi
+    return
+  fi
+
+  # 8. Zero discovery with an empty errors array not already handled (defensive).
+  if [ "${TOTAL}" -eq 0 ]; then
+    STATUS="error"
+    SUMMARY="Playwright discovered no tests (exit ${EXIT_CODE}); nothing was executed"
+    return
+  fi
+
+  # 9. Failure wins over everything (assertion failures and timeouts both land
+  #    in unexpected).
+  if [ "${UNEXPECTED}" -gt 0 ]; then
+    STATUS="complete"
+    RESULT="fail"
+    if [ "${SKIPPED}" -gt 0 ]; then
+      SUMMARY="Playwright: ${EXPECTED} passed, ${UNEXPECTED} failed, ${SKIPPED} skipped"
+    else
+      SUMMARY="Playwright: ${EXPECTED} passed, ${UNEXPECTED} failed"
+    fi
+    return
+  fi
+
+  # 10. ENH-126: any skip without a failure demotes the aggregate to skip. This
+  #     covers the all-skipped skeleton, an all-runtime-skip run, and mixed
+  #     pass+skip. flaky-without-failure counts toward the passed tally here.
+  if [ "${SKIPPED}" -gt 0 ]; then
+    STATUS="complete"
+    RESULT="skip"
+    PASSED=$((EXPECTED + FLAKY))
+    if [ "${PASSED}" -eq 0 ]; then
+      SUMMARY="Playwright: all ${SKIPPED} skipped"
+    else
+      SUMMARY="Playwright: ${PASSED} passed, ${SKIPPED} skipped"
+    fi
+    return
+  fi
+
+  # 11. Genuine pass (expected-failure that failed as expected also lands here;
+  #     an unexpectedly passing expected-failure counts in unexpected -> branch 9).
+  STATUS="complete"
+  RESULT="pass"
+  if [ "${FLAKY}" -gt 0 ]; then
+    SUMMARY="Playwright: ${EXPECTED} passed, ${FLAKY} flaky"
+  else
+    SUMMARY="Playwright: ${EXPECTED} passed"
+  fi
+}
+
+classify
+
+# --- Write handoff contract ---
+# ENH-130: status carries adapter state, result carries the test outcome. Omit
+# the result: key entirely on error (no outcome to report), mirroring bats-runner.
+COMPLETED=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+LOG_BODY=$(echo "${OUTPUT}" | sed 's/^/  /')
+SUMMARY_YAML=$(yaml_sq "${SUMMARY}")
+
+# REV-165 (CODEX-006): classification ran under set +e; the previous runner
+# never restored strict mode, so a FAILED contract write -- a full disk is the
+# obvious trigger -- left the pre-created non-terminal handoff in place while the
+# script still reached exit 0. A readable non-terminal contract falls through
+# to exit-code handling (BUG-191), and exit 0 there records a PASS. Restore
+# strict mode AND check the write explicitly, so a masked write can never become
+# a false green.
+set -e
+
+write_contract() {
+  if [ -n "${RESULT}" ]; then
+    cat > "${GTMS_RESULT_FILE}" <<EOF
+task: ${GTMS_TASK_ID}
+command: execute
+target: ${GTMS_ARTEFACT_FILE}
+adapter: playwright-runner
+mode: sync
+status: ${STATUS}
+result: ${RESULT}
+summary: '${SUMMARY_YAML}'
+log: |
+${LOG_BODY}
+completed: ${COMPLETED}
+EOF
+  else
+    cat > "${GTMS_RESULT_FILE}" <<EOF
+task: ${GTMS_TASK_ID}
+command: execute
+target: ${GTMS_ARTEFACT_FILE}
+adapter: playwright-runner
+mode: sync
+status: ${STATUS}
+summary: '${SUMMARY_YAML}'
+log: |
+${LOG_BODY}
+completed: ${COMPLETED}
+EOF
+  fi
+}
+
+if ! write_contract; then
+  echo "playwright-runner: failed to write the result contract at ${GTMS_RESULT_FILE}" >&2
+  exit 1
+fi
+# Read back the one line that makes the contract terminal. A write that reported
+# success but landed short still exits non-zero rather than falling through.
+if ! grep -q "^status: ${STATUS}$" "${GTMS_RESULT_FILE}"; then
+  echo "playwright-runner: result contract at ${GTMS_RESULT_FILE} is incomplete after writing" >&2
+  exit 1
+fi
+
+echo "${OUTPUT}"
+
+# ENH-130: a clean adapter run with a failing/skipped test outcome is exit 0;
+# only an adapter-level error exits non-zero. The invoker routes the task bucket
+# from the contract status regardless, but keep the process exit honest.
+if [ "${STATUS}" = "error" ]; then
+  exit 1
+fi
+exit 0
+`
+
+// playwrightRunnerScriptPriorVersions lists known, byte-exact shipped contents
+// of gtms/adapters/playwright-runner.sh that predate the current version. The
+// gtms init --force upgrade path treats an on-disk runner that matches any entry
+// here as a pristine GTMS-shipped copy safe to overwrite in place; anything else
+// that differs from the current content is treated as user-modified and gets a
+// companion file rather than being clobbered (BUG-189, tc-65df1eb5).
+//
+// BUG-196: playwrightRunnerScriptV2 is the post-BUG-189, pre-BUG-196 body; it is
+// added here so a pristine copy carrying the fragile bare `log: |` block is
+// refreshed in place to the corrected `log: |2` body (tc-9c62955d).
+var playwrightRunnerScriptPriorVersions = []string{playwrightRunnerScriptV1, playwrightRunnerScriptV2}
+
+// batsRunnerScriptPriorVersions lists known, byte-exact shipped contents of
+// gtms/adapters/bats-runner.sh that predate the current version. BUG-196 made
+// the bats runner upgradeable through gtms init --force: a project carrying the
+// pre-BUG-196 body (shipped v0.3.0 through v0.3.2, with the fragile bare
+// `log: |` block) is refreshed in place to the corrected `log: |2` body
+// (tc-e6f5f22e). The v0.2.0 `#!/bin/bash` body is deliberately NOT listed here:
+// it is treated as user-modified and kept with a `.gtms-new` companion
+// (tc-55884862).
+var batsRunnerScriptPriorVersions = []string{batsRunnerScriptPreBUG196}
 
 // tasksReadmeContent is the warning file placed at gtms/tasks/.README.md.
 // ENH-135: Signals that the tasks directory is GTMS-managed state.

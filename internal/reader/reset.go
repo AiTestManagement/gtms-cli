@@ -7,14 +7,16 @@ import (
 	"strings"
 
 	"github.com/aitestmanagement/gtms-cli/internal/layout"
+	"github.com/aitestmanagement/gtms-cli/internal/pathsafe"
 	"github.com/aitestmanagement/gtms-cli/internal/result"
+	"github.com/aitestmanagement/gtms-cli/internal/testcase"
 )
 
 // ResetResult describes what a reset operation did (or would do in dry-run mode).
 type ResetResult struct {
-	TestCasesAffected      int
+	TestCasesAffected        int
 	AutomationRecordsCleared int
-	TaskFilesRemoved       int
+	TaskFilesRemoved         int
 }
 
 // ResetExecuteResults clears execute results for test cases matching the given
@@ -26,11 +28,67 @@ type ResetResult struct {
 func ResetExecuteResults(projectRoot string, scope *ScopeInfo, tcID string, dryRun bool) (*ResetResult, error) {
 	result := &ResetResult{}
 
+	// ADR-024: reset is destructive by EFFECT (it removes handoffs and task
+	// files), so it requires proven UniqueOwner ownership before any mutation.
+	// One project-wide snapshot backs the preflight; Ambiguous or Unprovable
+	// ownership for any selected id refuses the WHOLE reset (all-or-nothing),
+	// visibly, before a single file is removed. A NotFound id proceeds so orphaned
+	// execute state keyed by exact id can still be cleared.
+	projectRoot = pathsafe.CanonicalRoot(projectRoot)
+	snap, err := testcase.NewSnapshot(projectRoot)
+	if err != nil {
+		return nil, err
+	}
+
+	var selection []string
+	if tcID != "" {
+		// ADR-024 s3 / REV-158 CLAUDE-001: a folder-qualified single-TC reset
+		// requires MUTATION AUTHORITY under that folder, not mere reachability --
+		// reset clears state attributed to the owner, so a spec symlink must not
+		// make an out-of-scope test case resettable through it.
+		if scope != nil {
+			if err := snap.RequireMutationAuthorityUnderScope(scopeRelFor(projectRoot, scope), tcID); err != nil {
+				return nil, err
+			}
+		}
+		selection = []string{tcID}
+	} else {
+		scopeRel := deriveResetScopeRel(projectRoot, scope)
+		// REV-160 CLAUDE-002 / CODEX-003: a nil scope means "the whole cases
+		// tree", so it must select RECURSIVELY. deriveResetScopeRel already
+		// returns the cases root for nil, but pairing that root with a shallow
+		// scan selected only specs sitting directly under gtms/test/cases/ and
+		// reported success, silently skipping every nested spec. At b524c9b5 the
+		// same input went through scanTestCases(projectRoot, nil), which walked
+		// the whole tree. ResetExecuteResults is exported, so an out-of-CLI
+		// caller that used to clear the whole project would have been told it
+		// succeeded after clearing only the root level.
+		ids, inScopeUnprovable := snap.SelectFolder(scopeRel, scope == nil || scope.Recursive)
+		if len(inScopeUnprovable) > 0 {
+			return nil, testcase.UnprovableInScope(scopeRel, inScopeUnprovable[0])
+		}
+		selection = ids
+	}
+	for _, id := range selection {
+		res := snap.Resolve(id)
+		if res.Outcome == testcase.OutcomeAmbiguous || res.Outcome == testcase.OutcomeUnprovable {
+			return nil, testcase.OwnershipErrorFor(res)
+		}
+	}
+
 	if tcID != "" {
 		return resetSingleTC(projectRoot, tcID, dryRun, result)
 	}
+	return resetSelection(projectRoot, selection, dryRun, result)
+}
 
-	return resetByScope(projectRoot, scope, dryRun, result)
+// deriveResetScopeRel returns the canonical project-relative scope directory for
+// a reset scope (the whole cases tree when scope is nil).
+func deriveResetScopeRel(projectRoot string, scope *ScopeInfo) string {
+	if scope == nil {
+		return filepath.ToSlash(layout.Current().TestCases)
+	}
+	return scopeRelFor(projectRoot, scope)
 }
 
 // resetSingleTC clears execute results for a single test case by ID.
@@ -54,21 +112,18 @@ func resetSingleTC(projectRoot, tcID string, dryRun bool, result *ResetResult) (
 	return result, nil
 }
 
-// resetByScope clears execute results for all test cases within the given scope.
-func resetByScope(projectRoot string, scope *ScopeInfo, dryRun bool, result *ResetResult) (*ResetResult, error) {
-	testCases, err := scanTestCases(projectRoot, scope)
-	if err != nil {
-		return nil, fmt.Errorf("scanning test cases: %w", err)
-	}
-
-	for _, tc := range testCases {
-		cleared, err := clearAutomationRecords(projectRoot, tc.ID, dryRun)
+// resetSelection clears execute results for the snapshot-selected owner ids.
+// Selection and the ownership preflight already ran in ResetExecuteResults, so
+// every id here is a proven unique (or not-found) owner.
+func resetSelection(projectRoot string, selection []string, dryRun bool, result *ResetResult) (*ResetResult, error) {
+	for _, id := range selection {
+		cleared, err := clearAutomationRecords(projectRoot, id, dryRun)
 		if err != nil {
 			return nil, err
 		}
 		result.AutomationRecordsCleared += cleared
 
-		removed, err := removeExecuteTaskFiles(projectRoot, tc.ID, dryRun)
+		removed, err := removeExecuteTaskFiles(projectRoot, id, dryRun)
 		if err != nil {
 			return nil, err
 		}

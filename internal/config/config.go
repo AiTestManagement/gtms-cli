@@ -57,15 +57,90 @@ const ConfigFileName = "gtms.config"
 
 // Config represents the parsed gtms.config file.
 type Config struct {
-	Project     ProjectConfig                        `yaml:"project"`
-	Adapters    map[string]map[string]*AdapterConfig `yaml:"adapters"`
-	Defaults    map[string]string                    `yaml:"defaults"`
-	Guidance    bool                                  `yaml:"guidance"`
-	DemoSeeded  bool                                 `yaml:"demo_seeded,omitempty"`
+	Project    ProjectConfig                        `yaml:"project"`
+	Adapters   map[string]map[string]*AdapterConfig `yaml:"adapters"`
+	Defaults   map[string]string                    `yaml:"defaults"`
+	Guidance   bool                                 `yaml:"guidance"`
+	DemoSeeded bool                                 `yaml:"demo_seeded,omitempty"`
+
+	// Triage holds the ENH-200 / CON-040 triage-classification configuration.
+	// It is a pointer so the loader can tell an absent `triage` block (nil)
+	// apart from a present-but-empty one, which have different meanings for
+	// which classification values are permitted. See ResolveTriageValues.
+	Triage *TriageConfig `yaml:"triage,omitempty"`
 
 	// Warnings holds non-fatal load-time notices surfaced by validate().
 	// Not serialized; the CLI prints them to stderr after Load returns.
 	Warnings []string `yaml:"-"`
+}
+
+// TriageConfig configures the permitted triage classification values
+// (ENH-200 / CON-040).
+//
+// Values is a pointer-to-map so the loader can distinguish four YAML
+// spellings a plain map would collapse:
+//
+//	triage: {}                 -> Values == nil          (built-in defaults)
+//	triage: { values: null }   -> Values == nil          (built-in defaults)
+//	triage: { values: {} }     -> Values != nil, len 0   (no permitted writes)
+//	triage: { values: {...} }  -> Values != nil, len >0  (replaces defaults)
+type TriageConfig struct {
+	Values *map[string]string `yaml:"values,omitempty"`
+}
+
+// triageKeyRegex validates a triage value key: lowercase letter first, then
+// lowercase letters, digits, and hyphens (CON-040). Spaces are not allowed;
+// labels (the map values) are unrestricted and may be empty.
+var triageKeyRegex = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
+
+// defaultTriageValues is the built-in classification set used when the config
+// has no triage block or a nil values map. gtms init scaffolds exactly this
+// set so old and new projects behave identically (CON-040 / ENH-200 item 2).
+// Ordering is irrelevant; the map is the contract.
+var defaultTriageValues = map[string]string{
+	"app-wrong":        "",
+	"test-wrong":       "Test definition problem",
+	"automation-wrong": "Automation implementation problem",
+	"environment":      "Environment failure",
+	"intermittent":     "Intermittent or order-dependent failure",
+	"blocked":          "",
+}
+
+// DefaultTriageValues returns a fresh copy of the built-in triage values so
+// callers cannot mutate the package-level default.
+func DefaultTriageValues() map[string]string {
+	out := make(map[string]string, len(defaultTriageValues))
+	for k, v := range defaultTriageValues {
+		out[k] = v
+	}
+	return out
+}
+
+// ResolveTriageValues returns the permitted triage classification values for
+// this project, applying the CON-040 presence semantics:
+//
+//	no triage block / triage: / triage: {} / values: null  -> built-in defaults
+//	values: {}                                             -> error (none permitted)
+//	non-empty values map                                   -> that map (replaces defaults)
+//
+// A configured key that violates the key pattern is rejected by name. An empty
+// label is a valid entry. The returned map is safe for the caller to keep.
+func (c *Config) ResolveTriageValues() (map[string]string, error) {
+	if c == nil || c.Triage == nil || c.Triage.Values == nil {
+		return DefaultTriageValues(), nil
+	}
+	values := *c.Triage.Values
+	if len(values) == 0 {
+		return nil, fmt.Errorf("gtms.config: 'triage.values' is empty, so no triage classification is permitted. Add at least one 'key: label' entry under triage.values, or remove the triage block to use the built-in defaults.")
+	}
+	out := make(map[string]string, len(values))
+	for k, v := range values {
+		if !triageKeyRegex.MatchString(k) {
+			return nil, fmt.Errorf("gtms.config: invalid triage value key '%s'. Keys must match %s (a lowercase letter followed by lowercase letters, digits, or hyphens; no spaces).", k, triageKeyRegex.String())
+		}
+		out[k] = v
+	}
+	return out, nil
 }
 
 // ProjectConfig holds project-level metadata.
@@ -94,9 +169,9 @@ type AdapterConfig struct {
 	PromptTemplate string `yaml:"prompt-template,omitempty"`
 	StatusScript   string `yaml:"status-script,omitempty"`
 	GuideDir       string `yaml:"guide-dir,omitempty"`
-	Framework      string `yaml:"framework,omitempty"`  // Test framework identifier (e.g. "bats", "pester", "playwright")
-	SpecDir        string `yaml:"spec-dir,omitempty"`   // Deprecated: use output-dir instead. Normalized to OutputDir at load time.
-	OutputDir      string `yaml:"output-dir,omitempty"` // Where adapter output files are written
+	Framework      string `yaml:"framework,omitempty"`   // Test framework identifier (e.g. "bats", "pester", "playwright")
+	SpecDir        string `yaml:"spec-dir,omitempty"`    // Deprecated: use output-dir instead. Normalized to OutputDir at load time.
+	OutputDir      string `yaml:"output-dir,omitempty"`  // Where adapter output files are written
 	WorkingDir     string `yaml:"working-dir,omitempty"` // ENH-168: run the adapter (Tier 1/2) from this project-relative dir (cwd)
 	Timeout        string `yaml:"timeout,omitempty"`
 

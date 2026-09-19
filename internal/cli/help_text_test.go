@@ -160,12 +160,40 @@ func TestHelpText_TriageLowercaseUsage(t *testing.T) {
 		"triage Usage should not use uppercase '<test-case-ID>'")
 }
 
-// TestHelpText_TriageExactlyOneConstraint verifies triage help mentions the constraint.
-func TestHelpText_TriageExactlyOneConstraint(t *testing.T) {
+// TestHelpText_TriagePrimaryOperationConstraint verifies the triage long help
+// states the operation rule the code actually enforces (DOC-046).
+//
+// newTriageCmd's stage-4 check computes
+// valueSet := cmd.Flags().Changed("value") && !listMode, so under --list the
+// --value flag is a filter on the stored key and never counts as a second
+// operation. The retired flat sentence ("exactly one of --value, --resolve,
+// --show, or --list") contradicted the shipped
+// 'gtms triage --list --value environment --json' example, so it must not
+// come back.
+func TestHelpText_TriagePrimaryOperationConstraint(t *testing.T) {
 	cmd := newTriageCmd()
 	long := cmd.Long
-	assert.Contains(t, long, "exactly one of",
-		"triage Long should note that exactly one category flag is required")
+
+	// The rule is stated in terms of a PRIMARY operation, not an exclusive flag set.
+	assert.Contains(t, long, "exactly one primary operation",
+		"triage Long should require exactly one primary operation, not an exclusive flag set")
+
+	// The --list exception is explained, so the rule does not contradict the
+	// '--list --value environment' example printed a few lines below it.
+	assert.Contains(t, long, "--value is not a second operation",
+		"triage Long should say --value is not a second operation under --list")
+	assert.Contains(t, long, "filters the listed records",
+		"triage Long should explain that under --list, --value filters by stored key")
+
+	// The retired flat sentence must not survive anywhere in the long help.
+	assert.NotContains(t, long, "exactly one of --value",
+		"triage Long must not restate the retired flat exactly-one-of sentence")
+
+	// All four primary operations are still named.
+	for _, op := range []string{"--value", "--resolve", "--show", "--list"} {
+		assert.Contains(t, long, op,
+			"triage Long should name the %s primary operation", op)
+	}
 }
 
 // TestHelpText_StatusFolderSummaryCaption verifies the default status caption is accurate.

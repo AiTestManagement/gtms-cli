@@ -407,7 +407,8 @@ green. Treat stale as "the file moved under me", not as a behaviour guarantee.
 **Deleting one test case does not remove the shared file.** `gtms delete`
 preserves referenced artefacts by default and names each one it left behind, and
 `--force-artefact-deletion` is share-aware: it removes the file only when no
-test case outside the deletion set still references it. So retiring an adopted
+test case outside the deletion set still references it, keyed on each record's
+declared `testcase:` identity rather than on a filename match. So retiring an adopted
 test case is just `gtms delete <tc>` -- the test itself stays in the shared file,
 and you strip its injected ID when you want it gone for good.
 

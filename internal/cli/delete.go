@@ -12,6 +12,7 @@ import (
 	"github.com/aitestmanagement/gtms-cli/internal/pathsafe"
 	"github.com/aitestmanagement/gtms-cli/internal/reader"
 	targetpkg "github.com/aitestmanagement/gtms-cli/internal/target"
+	"github.com/aitestmanagement/gtms-cli/internal/testcase"
 	"github.com/spf13/cobra"
 )
 
@@ -49,7 +50,18 @@ Referenced test artefacts (from wiring and manual record artefact fields) are
 PRESERVED by default and named in the summary -- a wiring reference is not a
 claim of exclusive ownership. Pass --force-artefact-deletion to delete them
 too; even then, an artefact referenced by a test case OUTSIDE the deletion set
-is preserved and the surviving test case is named in a warning.`,
+is preserved and the surviving test case is named in a warning. That check
+reads each record's declared testcase: identity, so a same-ID test case in
+another folder, or a longer tc-xxxxxxxx--variant sibling, counts as an outside
+reference. A record that cannot be parsed, or whose declared identity
+disagrees with its filename, makes the forced delete refuse rather than risk
+removing a file that is still shared.
+
+A test case ID that exists in more than one folder is refused, not guessed:
+delete names the candidates and exits non-zero. Qualify the target as
+folder/tc-xxxxxxxx to choose one. Naming a folder grants authority only over
+specs that physically live in it, so a spec symlinked in from another folder
+is not deletable through the link.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			root := GetProjectRoot()
@@ -75,7 +87,16 @@ is preserved and the surviving test case is named in a warning.`,
 					output.Errorf(err.Error(), "")
 					return output.AsDisplayed(err)
 				}
-				return runDelete(os.Stdout, root, nil, res.TCID, keepSpec, forceArtefactDeletion, dry)
+				// ADR-024 s3 / REV-158 CLAUDE-001: carry the folder qualifier into the
+				// core so the destructive plan can require MUTATION AUTHORITY under it,
+				// not just reachability. requireScopedSpec above stays as the earlier
+				// diagnostic; the refusal that protects data lives in the plan.
+				qualifiedScope, qerr := qualifiedTargetScope(root, res)
+				if qerr != nil {
+					output.Errorf(qerr.Error(), "")
+					return output.AsDisplayed(qerr)
+				}
+				return runDelete(os.Stdout, root, qualifiedScope, res.TCID, keepSpec, forceArtefactDeletion, dry)
 			}
 
 			// Folder mode
@@ -116,6 +137,31 @@ func runDelete(w io.Writer, projectRoot string, scope *reader.ScopeInfo, tcID st
 			msg := fmt.Sprintf("Refusing to delete: artefact path %q resolves outside the project-owned allowlist.", pse.Path)
 			hint := "Fix the offending path in the automation record before retrying, or remove the record manually."
 			output.Errorf(msg, hint)
+			return output.AsDisplayed(err)
+		}
+		// ADR-024 / BUG-185: ownership is not uniquely proven for a selected id
+		// (ambiguous or unprovable). Refuse the whole plan visibly -- non-zero exit
+		// AND an actionable diagnostic on stderr -- before any filesystem mutation.
+		var oe *testcase.OwnershipError
+		if errors.As(err, &oe) {
+			output.Errorf(oe.Error(), "")
+			return output.AsDisplayed(err)
+		}
+		// ADR-024 s3 / REV-158 CLAUDE-001: the target was reachable through a link
+		// but its spec lives outside the named folder, so the qualifier does not
+		// grant authority to remove it.
+		var sae *testcase.ScopeAuthorityError
+		if errors.As(err, &sae) {
+			output.Errorf(sae.Error(), "")
+			return output.AsDisplayed(err)
+		}
+		// ADR-024 s1 / F2, REV-160 CLAUDE-007: a wiring record attributed to a
+		// selected id is corrupt or declares a foreign identity. It used to fall
+		// through to the bare `return err` below, so it exited non-zero but
+		// printed without the established error shape the refusals above use.
+		var cwe *reader.CorruptWiringError
+		if errors.As(err, &cwe) {
+			output.Errorf(cwe.Error(), "Fix or remove the wiring record, then retry.")
 			return output.AsDisplayed(err)
 		}
 		return err

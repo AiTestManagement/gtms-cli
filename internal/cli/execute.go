@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -14,6 +15,7 @@ import (
 	"github.com/aitestmanagement/gtms-cli/internal/result"
 	targetpkg "github.com/aitestmanagement/gtms-cli/internal/target"
 	"github.com/aitestmanagement/gtms-cli/internal/task"
+	"github.com/aitestmanagement/gtms-cli/internal/testcase"
 	"github.com/aitestmanagement/gtms-cli/internal/wiring"
 	"github.com/spf13/cobra"
 )
@@ -111,10 +113,33 @@ Adapter execution:
 				return output.AsDisplayed(fmt.Errorf(msg))
 			}
 
-			// BUG-059 (REV-113): a folder-qualified single-TC target must resolve
-			// SCOPED to that folder before any flat wiring op runs.
-			if err := requireScopedSpec(root, res); err != nil {
-				output.Errorf(err.Error(), "Check the folder qualifier, or drop it to match the TC anywhere.")
+			// ADR-024 s5: resolve identity ONCE and pass the resolved owner forward.
+			// The scope guard (BUG-059 / REV-113) and the ownership refusal (BUG-185 /
+			// BUG-188) run inside it against one snapshot.
+			//
+			// REV-159 CODEX-001: NotFound is a REFUSAL here, as it already is for
+			// automate and prime. It used to be ignored, on the reasoning that a
+			// missing spec would surface through the wiring lookup below -- but that is
+			// not true on every branch. A Mode-3 execute adapter (manual-execute,
+			// agent-execute, ...) BYPASSES wiring lookup entirely, so an orphan id
+			// reached adapter resolution with a nil owner, created task and result
+			// state, and invoked external code for a test case that does not exist.
+			// Even on the wiring branch the nil owner silently disabled the
+			// testcase-hash half of the drift preflight, since checkWiringDrift skips
+			// the comparison when it has no spec to hash.
+			//
+			// ADR-024's consumer matrix is explicit for this row: Automate / execute /
+			// prime refuse before mutation or invocation on Not found, and adapter
+			// invocation requires a uniquely proven owner. Execute was the only one of
+			// the three not doing so. The wording matches automate's.
+			owner, hint, err := resolveTargetOwner(root, res, "Check the folder qualifier, or drop it to match the TC anywhere.")
+			if err != nil {
+				if errors.Is(err, testcase.ErrOwnerNotFound) {
+					msg := fmt.Sprintf("Test case '%s' not found in gtms/test/cases/", res.Target)
+					output.Errorf(msg, "Create the test case first with 'gtms create'.")
+					return output.AsDisplayed(fmt.Errorf(msg))
+				}
+				output.Errorf(err.Error(), hint)
 				return output.AsDisplayed(err)
 			}
 
@@ -122,8 +147,8 @@ Adapter execution:
 			target := res.TCID
 
 			// ENH-150: Post-fill validation gate -- catches frontmatter corruption
-			// before the adapter is invoked.
-			if violations := adapter.ValidateTestCasePostFill(root, target); len(violations) > 0 {
+			// before the adapter is invoked. It validates the RESOLVED OWNER.
+			if violations := adapter.ValidateTestCaseOwner(root, owner); len(violations) > 0 {
 				summary := adapter.FormatValidationErrors(violations)
 				output.Errorf(summary, "Fix the test case frontmatter and try again.")
 				return output.AsDisplayed(fmt.Errorf(summary))
@@ -282,7 +307,7 @@ Adapter execution:
 				// No task is created, no result file is written, wiring is
 				// unchanged.
 				if !allowStaleFlag {
-					if diag := checkWiringDrift(root, wiringRec, resolvedArtefact); diag != "" {
+					if diag := checkWiringDrift(root, wiringRec, resolvedArtefact, owner); diag != "" {
 						// ENH-156: remediation hint leads with safest-first order.
 						hint := fmt.Sprintf(
 							"To refresh wiring (preserves artefact): gtms link --refresh %s\n"+
@@ -316,6 +341,7 @@ Adapter execution:
 
 			// Invoke adapter with the wiring-resolved artefact / framework.
 			flags := adapter.CommandFlags{
+				Owner:        owner,
 				Adapter:      resolved.Name,
 				ArtefactFile: resolvedArtefact,
 				Environment:  environmentFlag,
@@ -411,13 +437,15 @@ func bootstrapPendingWiring(root string, wiringRec *wiring.WiringRecord, absArte
 // CON-023 / ENH-145: drift is a CLI preflight error -- no task is created,
 // no result file is written, and the wiring file is not touched. Pass
 // --allow-stale at the CLI to bypass this check for a single run.
-func checkWiringDrift(root string, w *wiring.WiringRecord, resolvedArtefact string) string {
+func checkWiringDrift(root string, w *wiring.WiringRecord, resolvedArtefact string, owner *testcase.Owner) string {
 	var staleFields []string
 	var expectedTC, currentTC, expectedArt, currentArt string
 
-	specPath, specErr := pipeline.ResolveTestCaseSpec(root, w.TestCase)
-	if specErr == nil {
-		if h, hErr := pipeline.HashFile(filepath.Join(root, filepath.FromSlash(specPath))); hErr == nil {
+	// ADR-024 s5: drift compares the wiring's recorded hash against the spec the
+	// command RESOLVED. Re-deriving the spec here would let drift be judged against
+	// a different file than the one execute is about to run.
+	if specAbs := testcase.OwnerAbsFor(root, owner); specAbs != "" {
+		if h, hErr := pipeline.HashFile(specAbs); hErr == nil {
 			currentTC = h
 			expectedTC = w.TestCaseHash
 			if h != w.TestCaseHash {
@@ -498,8 +526,18 @@ func runBulkExecute(cmd *cobra.Command, root string, folder string, adapterFlag,
 	ctx := cmd.Context()
 	cfg := GetConfig()
 
-	tcIDs, err := DiscoverTestCases(root, folder, recursive)
+	// ADR-024 / BUG-185 (tc-dbc64e99) + BUG-188: the work-set is the project-wide
+	// body-identity OWNERS under the folder; the whole run refuses before any
+	// adapter is invoked on an Ambiguous or Unprovable id. Body-id owners (not the
+	// filename-truncated DiscoverTestCases set) keep an extended-id sibling from
+	// being truncated, skipped, and the wrong id invoked against an adapter.
+	owners, err := resolveBulkOwners(root, folder, recursive)
 	if err != nil {
+		var oe *testcase.OwnershipError
+		if errors.As(err, &oe) {
+			output.Errorf(oe.Error(), "")
+			return output.AsDisplayed(err)
+		}
 		output.Errorf(err.Error(), "Check that gtms/test/cases/"+folder+"/ contains tc-*.md files.")
 		return output.AsDisplayed(err)
 	}
@@ -541,7 +579,7 @@ func runBulkExecute(cmd *cobra.Command, root string, folder string, adapterFlag,
 		}
 	}
 
-	total := len(tcIDs)
+	total := len(owners)
 	recursiveLabel := ""
 	if recursive {
 		recursiveLabel = " (recursive)"
@@ -558,7 +596,8 @@ func runBulkExecute(cmd *cobra.Command, root string, folder string, adapterFlag,
 	failed := 0       // assertion failures (ENH-130: result.Result == "fail")
 	errored := 0      // infrastructure errors (result.Status == "error" or result.Result == "error")
 
-	for i, tcID := range tcIDs {
+	for i, owner := range owners {
+		tcID := owner.ID()
 		idx := i + 1
 
 		var resolved *adapter.ResolvedAdapter
@@ -640,7 +679,7 @@ func runBulkExecute(cmd *cobra.Command, root string, folder string, adapterFlag,
 
 			// Drift preflight (bulk: skip rather than abort).
 			if !allowStale {
-				if diag := checkWiringDrift(root, wiringRec, resolvedArtefact); diag != "" {
+				if diag := checkWiringDrift(root, wiringRec, resolvedArtefact, owner); diag != "" {
 					reason := "stale wiring"
 					if strings.Contains(diag, "Missing artefact") {
 						reason = "missing artefact"
@@ -671,7 +710,14 @@ func runBulkExecute(cmd *cobra.Command, root string, folder string, adapterFlag,
 			artefactHash, _ = pipeline.HashFile(absArtefact)
 		}
 
+		// REV-158 CODEX-002: Owner is REQUIRED here. The loop resolves an owner
+		// and uses it for the drift check, but the flags used to omit it, so
+		// InvokeWithRoot exposed an empty TestCaseFile and OutputSubdir to execute
+		// adapters and manual execution could not compute its current test-case
+		// hash. Bulk and single-TC execution gave different, incorrect adapter
+		// contracts for the same test case (ADR-024 s5).
 		flags := adapter.CommandFlags{
+			Owner:        owner,
 			Adapter:      resolved.Name,
 			ArtefactFile: resolvedArtefact,
 			Environment:  environmentFlag,

@@ -661,7 +661,8 @@ Preserved referenced artefacts (not deleted):
 
 `--force-artefact-deletion` opts into removing the artefact, and it is
 share-aware: it deletes only when no test case outside the deletion set still
-references that file. So retiring an adopted test case is just
+references that file. That check reads each record's declared `testcase:`
+identity, so a same-ID test case in another folder still protects the file. So retiring an adopted test case is just
 `gtms delete <tc>`; the scenario stays in the shared file, and you remove its
 `@tc-` tag when you want it gone. `--dry-run` previews either form.
 

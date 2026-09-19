@@ -15,6 +15,7 @@ import (
 	"github.com/aitestmanagement/gtms-cli/internal/layout"
 	"github.com/aitestmanagement/gtms-cli/internal/pathsafe"
 	"github.com/aitestmanagement/gtms-cli/internal/result"
+	"github.com/aitestmanagement/gtms-cli/internal/testcase"
 )
 
 // RecordOptions carries caller-provided values for record creation.
@@ -104,8 +105,12 @@ func CreateAutomationRecord(projectRoot string, opts RecordOptions) error {
 
 	// ENH-117: compute testcase-hash from the resolved spec file. Best-effort:
 	// a missing spec or hash error leaves the field empty (omitempty drops it).
-	if specPath, specErr := ResolveTestCaseSpec(projectRoot, opts.TestCase); specErr == nil {
-		if hash, hashErr := HashFile(filepath.Join(projectRoot, filepath.FromSlash(specPath))); hashErr == nil {
+	//
+	// ADR-024 5a: row 1 by the effects test -- hashes a resolved spec and writes a
+	// record -- so it resolves through the snapshot API and hashes the file the
+	// proven Owner points at, not the first filename match.
+	if owner, ownerErr := testcase.ResolveOwner(projectRoot, opts.TestCase); ownerErr == nil {
+		if hash, hashErr := HashFile(testcase.OwnerAbsFor(projectRoot, owner)); hashErr == nil {
 			record.TestCaseHash = hash
 		}
 	}

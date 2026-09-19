@@ -18,6 +18,7 @@ import (
 	"github.com/aitestmanagement/gtms-cli/internal/pathsafe"
 	"github.com/aitestmanagement/gtms-cli/internal/result"
 	"github.com/aitestmanagement/gtms-cli/internal/task"
+	"github.com/aitestmanagement/gtms-cli/internal/testcase"
 )
 
 // summarySizeCapBytes is the maximum number of bytes retained in the committed
@@ -141,8 +142,15 @@ func BuildAutomationRecord(projectRoot string, tf *task.TaskFile, rc *result.Res
 
 	// ENH-117: compute testcase-hash from the resolved spec file. Best-effort:
 	// a missing spec or hash error leaves the field empty (omitempty drops it).
-	if specPath, specErr := ResolveTestCaseSpec(projectRoot, tf.Target); specErr == nil {
-		if hash, hashErr := HashFile(filepath.Join(projectRoot, filepath.FromSlash(specPath))); hashErr == nil {
+	//
+	// ADR-024 5a: this is a row-1 (first-half) consumer by the effects test -- it
+	// hashes a resolved spec and writes a record -- so it resolves through the
+	// snapshot API and hashes the file the proven Owner points at. Resolving by
+	// filename here was "Lenient mutation": a read-friendly resolver reaching a
+	// writer, so a prefix sibling or an unprovable candidate could decide which
+	// bytes got hashed into a committed record.
+	if owner, ownerErr := testcase.ResolveOwner(projectRoot, tf.Target); ownerErr == nil {
+		if hash, hashErr := HashFile(testcase.OwnerAbsFor(projectRoot, owner)); hashErr == nil {
 			record.TestCaseHash = hash
 		}
 	}

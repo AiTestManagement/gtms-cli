@@ -213,6 +213,44 @@ func Gaps(projectRoot string, scope *ScopeInfo, defaultFramework string, strictF
 		}
 	}
 
+	// ENH-202: partition the currently-failing population into triaged and
+	// untriaged. A failing TC is triaged only when it carries an active
+	// classification on a framework whose latest result is fail -- the same
+	// framework/result that put it into CurrentlyFailing (item 10). Resolved
+	// records are not active and fall on the untriaged side. Strict --framework
+	// filtering matches how CurrentlyFailing itself was gated above.
+	failingIDs := make([]string, 0, len(report.CurrentlyFailing))
+	for _, e := range report.CurrentlyFailing {
+		failingIDs = append(failingIDs, e.ID)
+	}
+	activeTriage, atErr := activeTriageByTC(projectRoot, failingIDs)
+	if atErr != nil {
+		return nil, atErr
+	}
+	for _, e := range report.CurrentlyFailing {
+		byFramework := activeTriage[e.ID]
+		failingTriaged := false
+		for _, ar := range autoRecords[e.ID] {
+			if ar.Framework == "manual" || ar.Result != "fail" {
+				continue
+			}
+			if strictFramework && defaultFramework != "" && ar.Framework != defaultFramework {
+				continue
+			}
+			if byFramework != nil {
+				if _, ok := byFramework[ar.Framework]; ok {
+					failingTriaged = true
+					break
+				}
+			}
+		}
+		if failingTriaged {
+			report.CurrentlyFailingTriaged++
+		} else {
+			report.CurrentlyFailingUntriaged++
+		}
+	}
+
 	// Sort all categories by ID for deterministic output
 	sortGapEntries(report.NoTests)
 	sortGapEntries(report.NoAutomation)
@@ -281,6 +319,16 @@ func GapsFolderSummary(projectRoot string, defaultFramework string) ([]GapsFolde
 		return nil, fmt.Errorf("scanning automation records: %w", err)
 	}
 
+	// ENH-202: shared triage-record enumeration (active only) for the folder-wide
+	// triaged/untriaged partition. Reuses the ENH-201 machinery (triage.ListAll
+	// + triage.Read via activeTriageByTC); no second triage-directory scan.
+	// This is the root summary, so scope is nil: every record is read and
+	// validated, including one whose test case no longer exists.
+	activeTriage, err := activeTriageByTC(projectRoot, nil)
+	if err != nil {
+		return nil, err
+	}
+
 	tcDir := layout.TestCasesDir(projectRoot)
 
 	type folderAccum struct {
@@ -288,6 +336,8 @@ func GapsFolderSummary(projectRoot string, defaultFramework string) ([]GapsFolde
 		notAutomated int
 		failing      int
 		skipped      int
+		// ENH-202: count of TCs with an applicable active classification.
+		triaged int
 		// BUG-043: TCs with records under other frameworks but not the requested one.
 		frameworkMismatch int
 		// ENH-134: manual-coverage sub-state counts.
@@ -310,6 +360,14 @@ func GapsFolderSummary(projectRoot string, defaultFramework string) ([]GapsFolde
 		}
 
 		acc.created++
+
+		// ENH-202: folder-wide triage partition, computed independently of
+		// execution result and framework gating below. A TC with one or more
+		// applicable active classifications counts once as triaged (resolved
+		// records are not active); framework-aware when --framework is set.
+		if tcIsTriaged(activeTriage[tc.ID], defaultFramework) {
+			acc.triaged++
+		}
 
 		records := autoRecords[tc.ID]
 
@@ -425,6 +483,9 @@ func GapsFolderSummary(projectRoot string, defaultFramework string) ([]GapsFolde
 			ManualRecorded:    acc.manualRecorded,
 			StaleTestCaseHash: acc.staleTestCaseHash,
 			DriftDetected:     acc.driftDetected,
+			// ENH-202: Triaged + Untriaged == Created for every folder row.
+			Triaged:   acc.triaged,
+			Untriaged: acc.created - acc.triaged,
 		})
 	}
 	sort.Slice(entries, func(i, j int) bool {

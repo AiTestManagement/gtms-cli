@@ -123,13 +123,18 @@ func runGapsFolderSummary(w io.Writer, projectRoot string, jsonOut bool, default
 	// dropped from the folder-summary human surface. The `not_executed`
 	// JSON field is kept on GapsFolderSummaryEntry for shape stability but
 	// is no longer populated.
-	tbl := output.NewTable("FOLDER", "CREATED", "NOT AUTOMATED", "FAILING")
+	// ENH-202: TRIAGED / UNTRIAGED partition the created population and are shown
+	// unconditionally (no --show-triage gate on gaps). For every row,
+	// TRIAGED + UNTRIAGED == CREATED, independent of execution result.
+	tbl := output.NewTable("FOLDER", "CREATED", "NOT AUTOMATED", "FAILING", "TRIAGED", "UNTRIAGED")
 	for _, e := range entries {
 		tbl.AddRow(
 			e.Folder,
 			fmt.Sprintf("%d", e.Created),
 			fmt.Sprintf("%d", e.NotAutomated),
 			fmt.Sprintf("%d", e.Failing),
+			fmt.Sprintf("%d", e.Triaged),
+			fmt.Sprintf("%d", e.Untriaged),
 		)
 	}
 	tbl.Render(w)
@@ -196,7 +201,10 @@ func runGaps(w io.Writer, projectRoot string, scope *reader.ScopeInfo, jsonOut b
 	// category was never populated (no requirements-inventory source).
 	// The JSON "no_tests" key is kept for shape stability (see writeGapsJSON).
 	printGapCategory(w, "Test cases without automation", report.NoAutomation)
-	printGapCategoryWithSince(w, "Currently failing", report.CurrentlyFailing)
+	// ENH-202: the currently-failing heading carries the triaged/untriaged split
+	// so a failure campaign can see how much classification work remains; the
+	// entry lines below are unchanged (the split is not a per-entry annotation).
+	printCurrentlyFailing(w, report.CurrentlyFailing, report.CurrentlyFailingTriaged, report.CurrentlyFailingUntriaged)
 	printGapCategory(w, "Execution errors", report.ExecutionErrors)
 	printGapCategory(w, "Runtime-skipped tests", report.RuntimeSkipped)
 	printGapCategory(w, "Stale wiring (testcase)", report.StaleTestCaseHash)
@@ -216,9 +224,14 @@ func printGapCategory(w io.Writer, title string, entries []reader.GapEntry) {
 	fmt.Fprintln(w)
 }
 
-// printGapCategoryWithSince prints a gap category where entries may have a Since date.
-func printGapCategoryWithSince(w io.Writer, title string, entries []reader.GapEntry) {
-	fmt.Fprintf(w, "%s: %d\n", title, len(entries))
+// printCurrentlyFailing prints the currently-failing category with the ENH-202
+// triaged/untriaged split in the heading. The entry lines keep the pre-ENH-202
+// format exactly -- the split is carried by the heading, not by turning the list
+// into a per-entry triage report (tc-716af7e0 step 2). This replaced the older
+// printGapCategoryWithSince, which was removed as dead code (REV-148
+// CLAUDE-004); `go vet` does not flag unused functions but `make lint` does.
+func printCurrentlyFailing(w io.Writer, entries []reader.GapEntry, triaged, untriaged int) {
+	fmt.Fprintf(w, "Currently failing: %d (%d triaged, %d untriaged)\n", len(entries), triaged, untriaged)
 	for _, e := range entries {
 		if e.Since != "" {
 			fmt.Fprintf(w, "  %s  %s (fail since %s)\n", e.ID, e.Title, e.Since)

@@ -989,18 +989,9 @@ status: ready
 	// CON-023: SpecButNoRecord category retired.
 }
 
-// --- Triage backward-compat test ---
-
-func TestTriage_NoAutomationRecord(t *testing.T) {
-	root := t.TempDir()
-	writeFile(t, root, "gtms.config", "project:\n  name: x\n  repo: x\n")
-
-	info, err := Triage(root, "tc-none")
-	assert.Nil(t, info)
-	assert.Error(t, err)
-	// CON-023 / ENH-145: triage now reads wiring; error wording reflects that.
-	assert.Contains(t, err.Error(), "no wiring record found")
-}
+// ENH-200: the retired reader.Triage read-info model is gone. Its "no wiring
+// -> error" regression intent is preserved by ClassifyTriage's no-wiring
+// refusal, covered in triage_test.go.
 
 // --- Edge cases ---
 

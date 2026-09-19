@@ -1,9 +1,15 @@
 package adapter
 
+import "github.com/aitestmanagement/gtms-cli/internal/testcase"
+
 // AdapterContext holds all context information passed to an adapter invocation.
 // For Tier 1: fields are substituted as {variable} in command templates.
 // For Tier 2: fields are exported as GTMS_ environment variables.
 type AdapterContext struct {
+	// Owner carries the resolved spec owner through context population so the
+	// manual-prime and manual-execute helpers read and hash the owning spec they
+	// were GIVEN, rather than re-deriving it from TestCase (ADR-024 s5).
+	Owner              *testcase.Owner
 	TaskID             string
 	Command            string
 	Reference          string
@@ -56,6 +62,29 @@ type AdapterContext struct {
 	// divergence. Equals ProjectRoot when working-dir is unset (no regression). Internal
 	// carrier, not exported to adapters; do NOT overload WorkDir / {work_dir} / GTMS_WORK_DIR.
 	RunDir string
+	// PlannedArtefact is the absolute path a Tier 0 automate run WILL write. It is
+	// planned from the RESOLVED OWNER at the invocation boundary
+	// (planTier0AutomateArtefact, checked and reserved by enforceArtefactOwnership)
+	// and then carried here AS THAT SAME VALUE, read off the reservation
+	// (ArtefactReservation.PlannedPath) rather than planned again, so the adapter
+	// writes exactly where the boundary checked instead of re-deciding the name
+	// from the source filename.
+	//
+	// Empty on every non-automate path. On a Tier 0 automate path it is MANDATORY:
+	// BuiltinAutomate returns an error rather than recomputing it. There is
+	// deliberately no fallback -- a fallback made the carrier redundant, so
+	// deleting the whole carrier mechanism left the suite green and the invariant
+	// unpinned. TestPlannedArtefactCarrier_IsMandatoryForTier0 fails if the
+	// fallback is reintroduced. Internal carrier, not exported to adapters.
+	PlannedArtefact string
+	// Claims is the OPERATION-SCOPED artefact ownership state (see
+	// artefact_claim.go). It is threaded from CommandFlags so the adapter's own
+	// last-gate ownership check reads the same set the invocation boundary
+	// reserved against, instead of re-reading every wiring record -- which for a
+	// bulk run is the O(test cases x wiring records) shape. Nil only when a
+	// caller builds the context by hand; BuiltinAutomate then builds a set for
+	// its single invocation. Internal carrier, not exported to adapters.
+	Claims *ArtefactClaimSet
 }
 
 // InvocationResult holds the output from an adapter invocation.
@@ -97,6 +126,19 @@ type InvocationResult struct {
 
 // CommandFlags holds the parsed command-line flags for action commands.
 type CommandFlags struct {
+	// Owner is the resolved physical owner of the target test case, proved ONCE by
+	// the command's orchestration (ADR-024 s5). The adapter layer uses it as the
+	// source of the spec path and hash; it does not resolve the bare id itself.
+	// Nil means the command established there is no owner -- adapter source
+	// selection then yields "", exactly as the old resolver did on a miss.
+	Owner *testcase.Owner
+	// Claims is the operation-scoped artefact ownership state, built ONCE before
+	// a bulk operation mutates anything and passed to every invocation it makes
+	// (see NewArtefactClaimSet). Leave nil for a single-item invocation: the
+	// boundary then builds a set for that one invocation, through the same
+	// abstraction. It is deliberately not a process-global cache -- a bulk run
+	// writes wiring as it goes, so the set is UPDATED per item rather than frozen.
+	Claims       *ArtefactClaimSet
 	Adapter      string
 	Framework    string // automate only: test framework (e.g. "playwright")
 	ArtefactFile string // execute only: path to automation artefact file

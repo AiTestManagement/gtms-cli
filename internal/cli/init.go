@@ -52,7 +52,11 @@ Examples:
   gtms init --preset bats            -- BATS shell testing with local runner
   gtms init --preset playwright      -- Playwright browser testing
   gtms init --name "My Project"      -- specify project name (default: directory name)
-  gtms init --force --preset bats    -- overwrite existing gtms.config
+  gtms init --force --preset bats    -- overwrite gtms.config and upgrade a pristine bats-runner.sh shipped by v0.3.0 to v0.3.2
+                                        (current runner skipped; an edited one, or the unrecognised v0.2.0 runner, is kept
+                                        with the shipped version written beside it as .gtms-new)
+  gtms init --force --preset playwright -- overwrite gtms.config and upgrade a pristine recognised OLDER shipped playwright-runner.sh
+                                        (current runner skipped; an edited one is kept, the shipped version written beside it as .gtms-new)
   gtms init --demo                   -- seed demo data for learning the pipeline
   gtms init --guidance-off           -- disable post-command guidance messages
   gtms init --guidance-on            -- re-enable post-command guidance messages
@@ -385,7 +389,7 @@ re-run init.`,
 	cmd.Flags().StringVar(&repoFlag, "repo", "", "Repository path, e.g. org/repo (default: inferred from the origin remote; stores no-origin-remote when origin is unavailable)")
 	cmd.Flags().StringVar(&presetFlag, "preset", "", "Workflow preset: manual, bats, playwright")
 	cmd.Flags().BoolVar(&presetsFlag, "presets", false, "List available presets and exit")
-	cmd.Flags().BoolVar(&forceFlag, "force", false, "Overwrite existing config or allow nested project creation")
+	cmd.Flags().BoolVar(&forceFlag, "force", false, "Overwrite existing config or allow nested project creation; with --preset bats or --preset playwright also upgrade a pristine recognised older shipped bats-runner.sh (v0.3.0 to v0.3.2; the v0.2.0 runner is not recognised) or playwright-runner.sh (the current one is skipped; an edited or unrecognised one is kept, the shipped version written beside it as .gtms-new)")
 	cmd.Flags().BoolVar(&guidanceOffFlag, "guidance-off", false, "Disable post-command guidance messages (updates gtms.config)")
 	cmd.Flags().BoolVar(&guidanceOnFlag, "guidance-on", false, "Re-enable post-command guidance messages (updates gtms.config)")
 	cmd.Flags().BoolVar(&demoFlag, "demo", false, "Seed demo data for learning the GTMS pipeline (not combinable with --preset)")

@@ -1,6 +1,7 @@
 package adapter
 
 import (
+	"github.com/aitestmanagement/gtms-cli/internal/testcase"
 	"os"
 	"path/filepath"
 	"strings"
@@ -242,94 +243,146 @@ func TestBuiltinExecute_DetectsDrift(t *testing.T) {
 	assert.Contains(t, content, "test_case_hash_at_execute: 1111111111111111")
 }
 
-func TestValidateTestCasePostFill_ValidFile(t *testing.T) {
+// --- ENH-150 post-fill validation, ADR-024 s5 ---
+//
+// The gate now validates the RESOLVED OWNER rather than walking the cases tree
+// for a filename that claims the target. Three of these fixtures no longer have
+// an owner to validate, because the resolution upstream now REFUSES them
+// outright -- earlier, and more strictly, than the old walk did. Each test below
+// therefore asserts both halves: that the fixture is refused at resolution, and
+// that the gate itself is correct for whatever it is handed.
+
+func TestValidateTestCaseOwner_ValidFile(t *testing.T) {
 	dir := t.TempDir()
 
-	// Set up layout for test
 	casesDir := filepath.Join(dir, "gtms", "test", "cases", "test-folder")
 	require.NoError(t, os.MkdirAll(casesDir, 0755))
-
-	// Write sentinel
 	gtmsDir := filepath.Join(dir, "gtms")
 	require.NoError(t, os.WriteFile(filepath.Join(gtmsDir, ".gtms-root"), []byte(""), 0644))
 
-	// Write a valid TC file
-	tcContent := `---
-test_case_id: tc-aabbccdd
-title: "Test case"
-status: draft
----
-## Test Objective
-`
+	tcContent := "---\ntest_case_id: tc-aabbccdd\ntitle: \"Test case\"\nstatus: draft\n---\n## Test Objective\n"
 	require.NoError(t, os.WriteFile(filepath.Join(casesDir, "tc-aabbccdd-test.md"), []byte(tcContent), 0644))
 
-	violations := ValidateTestCasePostFill(dir, "tc-aabbccdd")
-	assert.Empty(t, violations)
+	owner, err := testcase.ResolveOwner(dir, "tc-aabbccdd")
+	require.NoError(t, err, "a valid unique spec must resolve to an owner")
+	assert.Empty(t, ValidateTestCaseOwner(dir, owner))
 }
 
-func TestValidateTestCasePostFill_IDMismatch(t *testing.T) {
+// Filename/body ID mismatch. The old gate walked to tc-aabbccdd-test.md and
+// reported "does not match filename ID". Under ADR-024 s1 that file declares
+// tc-99999999 and therefore does not OWN tc-aabbccdd at all, so the id resolves
+// to NotFound and the command refuses before the gate. The refusal is preserved;
+// what changed is which layer states it, and that the reason is now accurate.
+func TestValidateTestCaseOwner_IDMismatchHasNoOwner(t *testing.T) {
 	dir := t.TempDir()
 	casesDir := filepath.Join(dir, "gtms", "test", "cases", "test-folder")
 	require.NoError(t, os.MkdirAll(casesDir, 0755))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "gtms", ".gtms-root"), []byte(""), 0644))
 
-	tcContent := `---
-test_case_id: tc-99999999
-title: "Mismatched ID"
----
-`
+	tcContent := "---\ntest_case_id: tc-99999999\ntitle: \"Mismatched ID\"\n---\n"
 	require.NoError(t, os.WriteFile(filepath.Join(casesDir, "tc-aabbccdd-test.md"), []byte(tcContent), 0644))
 
-	violations := ValidateTestCasePostFill(dir, "tc-aabbccdd")
-	require.NotEmpty(t, violations)
-	assert.Contains(t, violations[0].Reason, "does not match filename ID")
+	_, err := testcase.ResolveOwner(dir, "tc-aabbccdd")
+	require.Error(t, err, "a spec declaring another id must not own tc-aabbccdd")
+	assert.ErrorIs(t, err, testcase.ErrOwnerNotFound)
+
+	// The file that DOES own tc-99999999 validates cleanly -- a filename that
+	// disagrees with a valid body id is not an integrity error for a spec
+	// (ADR-024 s1/s4: renamed owners are expressly permitted).
+	owner, ownErr := testcase.ResolveOwner(dir, "tc-99999999")
+	require.NoError(t, ownErr)
+	assert.Empty(t, ValidateTestCaseOwner(dir, owner))
 }
 
-func TestValidateTestCasePostFill_MissingFrontmatter(t *testing.T) {
+// Missing test_case_id. The old gate walked to the file and reported the missing
+// field. Now the candidate is Unprovable, which refuses the whole operation --
+// a strictly stronger outcome than a violation list, and it names the same file.
+func TestValidateTestCaseOwner_MissingFrontmatterIsUnprovable(t *testing.T) {
 	dir := t.TempDir()
 	casesDir := filepath.Join(dir, "gtms", "test", "cases", "test-folder")
 	require.NoError(t, os.MkdirAll(casesDir, 0755))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "gtms", ".gtms-root"), []byte(""), 0644))
 
-	tcContent := `---
-title: "No test_case_id"
----
-`
+	tcContent := "---\ntitle: \"No test_case_id\"\n---\n"
 	require.NoError(t, os.WriteFile(filepath.Join(casesDir, "tc-aabbccdd-test.md"), []byte(tcContent), 0644))
 
-	violations := ValidateTestCasePostFill(dir, "tc-aabbccdd")
-	require.NotEmpty(t, violations)
-	assert.Contains(t, violations[0].Reason, "missing required field")
+	_, err := testcase.ResolveOwner(dir, "tc-aabbccdd")
+	require.Error(t, err)
+	var oe *testcase.OwnershipError
+	require.ErrorAs(t, err, &oe)
+	assert.Equal(t, testcase.OutcomeUnprovable, oe.Outcome)
+	assert.Equal(t, testcase.ReasonMissingID, oe.Reason)
+	assert.Contains(t, oe.Error(), "tc-aabbccdd-test.md", "the refusal must name the offending file")
 }
 
-func TestValidateTestCasePostFill_DuplicateIDs(t *testing.T) {
+// Duplicate test_case_id. The old gate scanned the TC's own folder and reported
+// a duplicate. Now two specs declaring one id are two physical owners, which
+// resolves Ambiguous and refuses -- and the check is project-wide, so it also
+// catches the cross-folder duplicate the folder-scoped scan could not see.
+func TestValidateTestCaseOwner_DuplicateIDsAreAmbiguous(t *testing.T) {
 	dir := t.TempDir()
 	casesDir := filepath.Join(dir, "gtms", "test", "cases", "test-folder")
 	require.NoError(t, os.MkdirAll(casesDir, 0755))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "gtms", ".gtms-root"), []byte(""), 0644))
 
-	tc1 := `---
-test_case_id: tc-aabbccdd
-title: "First"
----
-`
-	tc2 := `---
-test_case_id: tc-aabbccdd
-title: "Duplicate"
----
-`
+	tc1 := "---\ntest_case_id: tc-aabbccdd\ntitle: \"First\"\n---\n"
+	tc2 := "---\ntest_case_id: tc-aabbccdd\ntitle: \"Duplicate\"\n---\n"
 	require.NoError(t, os.WriteFile(filepath.Join(casesDir, "tc-aabbccdd-first.md"), []byte(tc1), 0644))
 	require.NoError(t, os.WriteFile(filepath.Join(casesDir, "tc-aabbccdd-duplicate.md"), []byte(tc2), 0644))
 
-	// Validate either file — should catch the duplicate
-	violations := ValidateTestCasePostFill(dir, "tc-aabbccdd")
-	found := false
-	for _, v := range violations {
-		if strings.Contains(v.Reason, "duplicate") {
-			found = true
-		}
+	_, err := testcase.ResolveOwner(dir, "tc-aabbccdd")
+	require.Error(t, err, "a duplicated id must refuse, not pick one")
+	var oe *testcase.OwnershipError
+	require.ErrorAs(t, err, &oe)
+	assert.Equal(t, testcase.OutcomeAmbiguous, oe.Outcome)
+	assert.Len(t, oe.Owners, 2, "both owners must be named")
+}
+
+// Cross-folder duplicate: the shape the old FOLDER-scoped duplicate scan missed
+// entirely. It is now refused for the same reason as the same-folder case.
+func TestValidateTestCaseOwner_CrossFolderDuplicateIsAmbiguous(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "gtms"), 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "gtms", ".gtms-root"), []byte(""), 0644))
+	for _, folder := range []string{"alpha", "beta"} {
+		d := filepath.Join(dir, "gtms", "test", "cases", folder)
+		require.NoError(t, os.MkdirAll(d, 0755))
+		body := "---\ntest_case_id: tc-aabbccdd\ntitle: " + folder + "\n---\n"
+		require.NoError(t, os.WriteFile(filepath.Join(d, "tc-aabbccdd-spec.md"), []byte(body), 0644))
 	}
-	assert.True(t, found, "should detect duplicate test_case_id")
+
+	_, err := testcase.ResolveOwner(dir, "tc-aabbccdd")
+	require.Error(t, err)
+	var oe *testcase.OwnershipError
+	require.ErrorAs(t, err, &oe)
+	assert.Equal(t, testcase.OutcomeAmbiguous, oe.Outcome)
+}
+
+// The gate's own remaining job: an owner whose spec became unreadable between
+// resolution and validation must produce a violation, not a silent pass. This is
+// what stops the gate degrading into a no-op now that it trusts a resolved owner.
+func TestValidateTestCaseOwner_ReportsUnparseableOwner(t *testing.T) {
+	dir := t.TempDir()
+	casesDir := filepath.Join(dir, "gtms", "test", "cases", "test-folder")
+	require.NoError(t, os.MkdirAll(casesDir, 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "gtms", ".gtms-root"), []byte(""), 0644))
+	spec := filepath.Join(casesDir, "tc-aabbccdd-test.md")
+	require.NoError(t, os.WriteFile(spec, []byte("---\ntest_case_id: tc-aabbccdd\n---\nok\n"), 0644))
+
+	owner, err := testcase.ResolveOwner(dir, "tc-aabbccdd")
+	require.NoError(t, err)
+
+	// The spec loses its identity after the owner was resolved.
+	require.NoError(t, os.WriteFile(spec, []byte("---\ntitle: gone\n---\n"), 0644))
+
+	violations := ValidateTestCaseOwner(dir, owner)
+	require.NotEmpty(t, violations, "the gate must read the owner, not trust the resolution")
+	assert.Contains(t, violations[0].Reason, "missing required field")
+}
+
+// A nil owner is not a violation: the command owns the not-found wording.
+func TestValidateTestCaseOwner_NilOwnerIsNotAViolation(t *testing.T) {
+	assert.Empty(t, ValidateTestCaseOwner(t.TempDir(), nil))
 }
 
 func TestYamlEscape(t *testing.T) {
@@ -461,7 +514,7 @@ func TestBuiltinAutomate_StampsBATSSkeleton(t *testing.T) {
 		OutputSubdir: "my-feature/",
 	}
 
-	result, err := BuiltinAutomate(ctx, cfg)
+	result, err := BuiltinAutomate(planFor(ctx), cfg)
 	require.NoError(t, err)
 	assert.Equal(t, 0, result.ExitCode)
 	require.Len(t, result.SavedFiles, 1)
@@ -497,7 +550,7 @@ func TestBuiltinAutomate_WritesWiringWithPendingHash(t *testing.T) {
 		OutputSubdir: "my-feature/",
 	}
 
-	_, err = BuiltinAutomate(ctx, cfg)
+	_, err = BuiltinAutomate(planFor(ctx), cfg)
 	require.NoError(t, err)
 
 	// Read wiring record and verify
@@ -539,7 +592,7 @@ func TestBuiltinAutomate_HonorsConfiguredOutputDir(t *testing.T) {
 		OutputDirConfigured: true,
 	}
 
-	result, err := BuiltinAutomate(ctx, cfg)
+	result, err := BuiltinAutomate(planFor(ctx), cfg)
 	require.NoError(t, err)
 	require.Len(t, result.SavedFiles, 1)
 
@@ -576,7 +629,7 @@ func TestBuiltinAutomate_UnsetOutputDirUsesFrameworkDefault(t *testing.T) {
 		// OutputDir / OutputDirConfigured deliberately left zero.
 	}
 
-	result, err := BuiltinAutomate(ctx, cfg)
+	result, err := BuiltinAutomate(planFor(ctx), cfg)
 	require.NoError(t, err)
 	require.Len(t, result.SavedFiles, 1)
 
@@ -601,7 +654,7 @@ func TestBuiltinAutomate_RejectsUnsupportedFramework(t *testing.T) {
 			TestCaseFile: "gtms/test/cases/my-feature/tc-auto0001-test-skeleton.md",
 			OutputSubdir: "my-feature/",
 		}
-		_, err = BuiltinAutomate(ctx, cfg)
+		_, err = BuiltinAutomate(planFor(ctx), cfg)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "no automate support found")
 		assert.Contains(t, err.Error(), fw)
@@ -620,7 +673,7 @@ func TestBuiltinAutomate_RejectsNoFramework(t *testing.T) {
 		TestCaseFile: "gtms/test/cases/my-feature/tc-auto0001-test-skeleton.md",
 	}
 
-	_, err = BuiltinAutomate(ctx, cfg)
+	_, err = BuiltinAutomate(planFor(ctx), cfg)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no --framework specified")
 }
@@ -640,7 +693,7 @@ func TestBuiltinAutomate_RejectsManualFramework(t *testing.T) {
 		OutputSubdir: "my-feature/",
 	}
 
-	_, err = BuiltinAutomate(ctx, cfg)
+	_, err = BuiltinAutomate(planFor(ctx), cfg)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "does not require automate")
 	assert.Contains(t, err.Error(), "gtms prime")
@@ -690,7 +743,7 @@ func TestBuiltinAutomate_BareSpecFallback(t *testing.T) {
 		OutputSubdir: "my-feature/",
 	}
 
-	result, err := BuiltinAutomate(ctx, cfg)
+	result, err := BuiltinAutomate(planFor(ctx), cfg)
 	require.NoError(t, err)
 	assert.Equal(t, 0, result.ExitCode)
 	require.Len(t, result.SavedFiles, 1)
@@ -710,6 +763,21 @@ func TestBuiltinAutomate_BareSpecFallback(t *testing.T) {
 }
 
 // loadTestConfig loads a gtms.config from the given root directory.
+// planFor supplies the planned artefact path that the invocation boundary
+// carries in production. BuiltinAutomate refuses to run without it (the carrier
+// is load-bearing, not a hint), so a test driving the adapter directly has to
+// plan the same way Invoke does -- through the one shared planner, never by
+// spelling a path of its own.
+//
+// A framework with no registered support plans nothing; BuiltinAutomate then
+// still reports the unsupported-framework failure first, as it always has.
+func planFor(ctx *AdapterContext) *AdapterContext {
+	support := LookupFrameworkSupport(ctx.Framework)
+	ctx.PlannedArtefact = PlanArtefactPath(ctx.ProjectRoot, support, ctx.OutputDir,
+		ctx.OutputDirConfigured, ctx.OutputSubdir, ctx.TestCaseFile, ctx.TestCase)
+	return ctx
+}
+
 func loadTestConfig(root string) (*config.Config, error) {
 	return config.LoadFromFile(filepath.Join(root, "gtms.config"))
 }
@@ -1074,7 +1142,7 @@ teardown() { :; }
 		OutputSubdir: "my-feature/",
 	}
 
-	result, err := BuiltinAutomate(ctx, cfg)
+	result, err := BuiltinAutomate(planFor(ctx), cfg)
 	require.NoError(t, err)
 	assert.Equal(t, 0, result.ExitCode)
 	assert.Empty(t, result.Stderr, "no warning when template exists")
@@ -1101,7 +1169,7 @@ func TestBuiltinAutomate_FallbackOnMissingTemplate(t *testing.T) {
 		OutputSubdir: "my-feature/",
 	}
 
-	result, err := BuiltinAutomate(ctx, cfg)
+	result, err := BuiltinAutomate(planFor(ctx), cfg)
 	require.NoError(t, err)
 	assert.Equal(t, 0, result.ExitCode, "missing template is non-fatal")
 	assert.Contains(t, result.Stderr, "warning:")
@@ -1136,7 +1204,7 @@ func TestBuiltinAutomate_NonMissingReadErrorSurfaces(t *testing.T) {
 		OutputSubdir: "my-feature/",
 	}
 
-	_, err = BuiltinAutomate(ctx, cfg)
+	_, err = BuiltinAutomate(planFor(ctx), cfg)
 	require.Error(t, err, "directory-at-template-path must error")
 	assert.Contains(t, err.Error(), "reading bats automate template")
 }
@@ -1161,7 +1229,7 @@ func TestBuiltinAutomate_FallbackByteIdenticalToTemplateRead(t *testing.T) {
 	}
 
 	// root1: no template -> fallback path
-	result1, err := BuiltinAutomate(ctx1, cfg1)
+	result1, err := BuiltinAutomate(planFor(ctx1), cfg1)
 	require.NoError(t, err)
 	assert.Contains(t, result1.Stderr, "warning:", "fallback path should warn")
 
@@ -1178,7 +1246,7 @@ func TestBuiltinAutomate_FallbackByteIdenticalToTemplateRead(t *testing.T) {
 		TestCaseFile: "gtms/test/cases/my-feature/tc-auto0001-test-skeleton.md",
 		OutputSubdir: "my-feature/",
 	}
-	result2, err := BuiltinAutomate(ctx2, cfg2)
+	result2, err := BuiltinAutomate(planFor(ctx2), cfg2)
 	require.NoError(t, err)
 	assert.Empty(t, result2.Stderr, "template-read path should not warn")
 

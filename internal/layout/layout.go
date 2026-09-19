@@ -56,6 +56,10 @@ type Paths struct {
 
 	// Schemas is the directory containing JSON Schema files (ENH-132).
 	Schemas string
+
+	// Triage is the directory containing structured triage classification
+	// records (ENH-200 / CON-040): {tc-id}--{framework}.triage.yaml.
+	Triage string
 }
 
 // defaultPaths holds the current directory names. All production code must read
@@ -109,6 +113,7 @@ func pathsForParent(parentDirName string) Paths {
 		Scripts:       parentDirName + "/scripts",
 		Manual:        parentDirName + "/manual",
 		Schemas:       parentDirName + "/schemas",
+		Triage:        parentDirName + "/triage",
 	}
 }
 
@@ -243,4 +248,14 @@ func AutomationTemplatesDir(projectRoot string) string {
 func SchemasDir(projectRoot string) string {
 	paths := Current()
 	return filepath.Join(projectRoot, paths.Schemas)
+}
+
+// TriageDir returns the absolute path to the structured triage-record
+// directory (ENH-200 / CON-040). Files follow the pattern
+// {tc-id}--{framework}.triage.yaml. Like every other layout helper it
+// resolves through the current (possibly renamed) parent so a project that
+// renames its GTMS parent keeps its triage store under the renamed parent.
+func TriageDir(projectRoot string) string {
+	paths := Current()
+	return filepath.Join(projectRoot, paths.Triage)
 }

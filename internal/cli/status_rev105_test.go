@@ -29,7 +29,7 @@ title: Multi-framework runner provenance
 
 	var buf bytes.Buffer
 	// Text detail (jsonOut=false), selecting the bats framework.
-	require.NoError(t, runStatusDetail(&buf, root, "tc-mf000001", false, "bats", false))
+	require.NoError(t, runStatusDetail(&buf, root, "tc-mf000001", false, "bats", false, false, "", nil))
 	out := buf.String()
 
 	assert.Contains(t, out, "Runner: bats-runner",

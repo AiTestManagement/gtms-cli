@@ -11,6 +11,7 @@ import (
 	"github.com/aitestmanagement/gtms-cli/internal/output"
 	"github.com/aitestmanagement/gtms-cli/internal/result"
 	"github.com/aitestmanagement/gtms-cli/internal/task"
+	"github.com/aitestmanagement/gtms-cli/internal/testcase"
 )
 
 // checkAsyncStatus runs the status-script for an async in-progress task to poll for completion.
@@ -124,8 +125,18 @@ func checkAsyncStatus(ctx context.Context, projectRoot string, cfg *config.Confi
 		// immutable on the execute path.
 		switch command {
 		case "automate":
+			// ADR-024 s5: the async finalise is its own operation in its own process,
+			// so it resolves the owner here, ONCE, and hands it to the wiring writer.
+			// The writer never sees the bare id. A failure to prove ownership is a
+			// refusal to stamp a testcase-hash against an identity we cannot pin down,
+			// not a licence to write wiring from whatever the id happens to match now.
+			owner, ownErr := testcase.ResolveOwner(projectRoot, tf.Target)
+			if ownErr != nil {
+				output.Warnf(fmt.Sprintf("Wiring not written for %s: %v", tf.ID, ownErr))
+				break
+			}
 			// ENH-191: WriteAutomateWiring now returns (adapterName, warnings, error).
-			wiringAdapter, wireWarns, pErr := adapter.WriteAutomateWiring(projectRoot, GetConfig(), tf, rc)
+			wiringAdapter, wireWarns, pErr := adapter.WriteAutomateWiring(projectRoot, GetConfig(), tf, rc, owner)
 			for _, w := range wireWarns {
 				output.Warnf(w)
 			}

@@ -1,6 +1,7 @@
 package reader
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/aitestmanagement/gtms-cli/internal/layout"
 	"github.com/aitestmanagement/gtms-cli/internal/pipeline"
+	"github.com/aitestmanagement/gtms-cli/internal/testcase"
 	"github.com/aitestmanagement/gtms-cli/internal/wiring"
 )
 
@@ -254,23 +256,34 @@ func deriveFolderName(tcDir, sourceFile string) string {
 // the --json shape is the per-TC ENH-146 contract with the selected
 // framework's overlay fields surfaced inside frameworks[].
 func PipelineDetail(projectRoot, testCaseID, defaultFramework string, strictFramework bool) (*PipelineDetailEntry, error) {
-	testCases, err := scanTestCases(projectRoot, nil)
+	// ADR-024: direct single-TC read is in the first-half scope. It must refuse an
+	// Ambiguous id (naming its owners) and surface an Unprovable candidate with its
+	// repair, rather than presenting the first scan candidate as fact -- so a user
+	// refused a delete can ask `status <id>` why and get the same answer. Bulk
+	// read/list keeps its degraded policy (ENH-205).
+	snap, err := testcase.NewSnapshot(projectRoot)
 	if err != nil {
-		return nil, fmt.Errorf("scanning test cases: %w", err)
+		return nil, err
+	}
+	owner, err := snap.RequireOwner(testCaseID)
+	if err != nil {
+		if errors.Is(err, testcase.ErrOwnerNotFound) {
+			return nil, fmt.Errorf("test case '%s' not found", testCaseID)
+		}
+		return nil, err
 	}
 
-	// Find the requested test case
-	var tc *testCaseFrontmatter
-	for _, candidate := range testCases {
-		if candidate.ID == testCaseID {
-			c := candidate
-			tc = &c
-			break
-		}
+	// ADR-024 s5: read the OWNER's spec directly. The previous
+	// scanTestCases(projectRoot, nil) walked the whole cases tree a SECOND time
+	// purely to find the file the resolution above had already located, then picked
+	// the first row whose id matched -- an independent identity decision sitting
+	// downstream of the authoritative one. With the owner in hand there is nothing
+	// to search for.
+	tc, err := parseTestCaseFile(owner.SpecAbs())
+	if err != nil {
+		return nil, fmt.Errorf("reading test case '%s' at %s: %w", testCaseID, owner.SpecRel(), err)
 	}
-	if tc == nil {
-		return nil, fmt.Errorf("test case '%s' not found", testCaseID)
-	}
+	tc.SourceFile = owner.SpecAbs()
 
 	wiringByTC, err := wiringScan(projectRoot)
 	if err != nil {
@@ -289,7 +302,7 @@ func PipelineDetail(projectRoot, testCaseID, defaultFramework string, strictFram
 	detail := &PipelineDetailEntry{
 		TestCaseID:        pe.TestCaseID,
 		Slug:              pe.Slug,
-		Title:              pe.Title,
+		Title:             pe.Title,
 		Requirement:       tc.Requirement,
 		CreateStatus:      pe.CreateStatus,
 		Wired:             pe.Wired,
@@ -301,18 +314,18 @@ func PipelineDetail(projectRoot, testCaseID, defaultFramework string, strictFram
 		CreateDate: tc.Created,
 
 		// Legacy carriers driving the CLI text renderer (json:"-").
-		AutomateStatus:      pe.AutomateStatus,
-		ExecuteStatus:       pe.ExecuteStatus,
-		LastResult:          pe.LastResult,
-		LastResultDate:      pe.LastResultDate,
-		Framework:           pe.Framework,
-		LastRunAt:           pe.LastRunAt,
-		Stale:               pe.Stale,
-		StaleTestCaseHash:   pe.StaleTestCaseHash,
-		ManualCoverage:      pe.ManualCoverage,
-		AvailableFrameworks: pe.AvailableFrameworks,
-		DriftDetected:       pe.DriftDetected,
-		DriftDetectedAt:     pe.DriftDetectedAt,
+		AutomateStatus:        pe.AutomateStatus,
+		ExecuteStatus:         pe.ExecuteStatus,
+		LastResult:            pe.LastResult,
+		LastResultDate:        pe.LastResultDate,
+		Framework:             pe.Framework,
+		LastRunAt:             pe.LastRunAt,
+		Stale:                 pe.Stale,
+		StaleTestCaseHash:     pe.StaleTestCaseHash,
+		ManualCoverage:        pe.ManualCoverage,
+		AvailableFrameworks:   pe.AvailableFrameworks,
+		DriftDetected:         pe.DriftDetected,
+		DriftDetectedAt:       pe.DriftDetectedAt,
 		TestCaseHashAtExecute: pe.TestCaseHashAtExecute,
 	}
 	// Default to "none" for the CLI label vocabulary when nothing has been
@@ -544,7 +557,7 @@ var wiringScanFn = defaultWiringScan
 //  2. If strictFramework && defaultFramework != "" (ENH-082):
 //     - Return the first record matching defaultFramework, or empty if no match.
 //     - Bypasses the single-record short-circuit so a single non-matching
-//       record still yields empty (caller wants strict per-TC filtering).
+//     record still yields empty (caller wants strict per-TC filtering).
 //  3. If only one record -> use it (no framework check).
 //  4. If defaultFramework matches a record -> use it.
 //  5. Fallback: pick the record with the highest cycle count, with manual

@@ -38,7 +38,7 @@ func TestInvokeWithRoot_MissingExecuteAdapter_TypedErrorSurvives(t *testing.T) {
 	}
 	flags := CommandFlags{Framework: "bats"}
 
-	_, err := InvokeWithRoot(context.Background(), root, cfg, resolved, "tc-auto", flags)
+	_, err := InvokeWithRoot(context.Background(), root, cfg, resolved, "tc-auto", withOwner(t, root, "tc-auto", flags))
 	require.Error(t, err)
 
 	// Typed identity survives the invoker.

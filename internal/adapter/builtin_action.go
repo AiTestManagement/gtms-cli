@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/aitestmanagement/gtms-cli/internal/config"
 	"github.com/aitestmanagement/gtms-cli/internal/layout"
 	"github.com/aitestmanagement/gtms-cli/internal/pipeline"
+	"github.com/aitestmanagement/gtms-cli/internal/testcase"
 	"github.com/aitestmanagement/gtms-cli/internal/wiring"
 )
 
@@ -145,26 +147,113 @@ func BuiltinCreate(ctx *AdapterContext) (*InvocationResult, error) {
 	}, nil
 }
 
-// DeriveArtefactBasename extracts the extension-stripped basename from a
-// test-case spec path. When the source spec is slugged (e.g.
-// "gtms/test/cases/my-feature/tc-aaa-login-happy.md"), the result preserves the
-// slug ("tc-aaa-login-happy"). When testCaseFile is empty or the extracted
-// basename would be empty after stripping the extension, fallbackID is
-// returned (typically ctx.TestCase, e.g. "tc-aaa").
+// artefactSlugUnsafe matches every character not allowed to survive into a
+// derived descriptive slug. The slug is only ever appended to an already-proven
+// owner id, but it originates in a filename, so it is narrowed to a
+// conservative alphabet.
+var artefactSlugUnsafe = regexp.MustCompile(`[^A-Za-z0-9._]+`)
+
+// DeriveArtefactBasename returns the extension-less basename for an automate
+// artefact: the RESOLVED OWNER ID followed by a descriptive slug.
 //
-// The function is framework-neutral: callers append their own extension
-// (.bats, .spec.ts, .Tests.ps1, etc.) after calling. BUG-107.
-func DeriveArtefactBasename(testCaseFile, fallbackID string) string {
+// IDENTITY IS NOT PARSED, IT IS SUPPLIED. The owner id is already proven by the
+// time this runs, so the basename is constructed as ownerID + slug and the slug
+// step is never allowed to decide how much of the source filename is identity.
+// That distinction is the whole fix. An earlier version stripped a leading
+// "id-shaped token" from the filename, which cannot be done correctly: the TC-ID
+// grammar (tcIDGrammar, internal/testcase/snapshot.go) admits SINGLE dashes, so
+// "tc-aaaa-bbbb" is a legitimate id and "tc-aaaa-bbbb-checkout" is genuinely
+// ambiguous -- tc-aaaa with slug "bbbb-checkout", or tc-aaaa-bbbb with slug
+// "checkout". Any parser that answers that question answers it wrongly half the
+// time, and an artefact name is an ownership statement.
+//
+// The rule, given the source spec's basename with its extension stripped ("the
+// stem"):
+//
+//  1. The slug is the stem with the OWNER'S OWN ID removed from the front -- an
+//     exact literal match on a value that is already proven, not a pattern --
+//     then leading separators trimmed and the remainder sanitised. No other
+//     text is ever removed from the stem.
+//  2. The basename is ownerID, plus "-" and the slug when the slug is non-empty.
+//
+// There is no fast path and no special case. A normally named spec keeps its
+// current artefact name because the CONSTRUCTED answer happens to equal the
+// existing stem, which is a computed result rather than a pattern match:
+// "tc-cccccccc-checkout.md" owned by tc-cccccccc yields slug "checkout" and
+// basename "tc-cccccccc-checkout", the name it already has.
+//
+// A renamed owner therefore keeps the whole foreign-looking stem as descriptive
+// text: "tc-aaaaaaaa-file.md" owned by tc-bbbbbbbb yields
+// "tc-bbbbbbbb-tc-aaaaaaaa-file". That is deliberate. The name is deterministic,
+// owner-prefixed and descriptive, and -- unlike any stripped variant -- it
+// cannot be confused with an artefact tc-aaaaaaaa would itself produce.
+//
+// ownerID empty is a defensive fallback only (automate cannot reach this without
+// a proven owner: requireCarriedOwner) and preserves the filename stem so the
+// function is never a source of empty names.
+//
+// The function is framework-neutral: callers append their own extension (.bats,
+// .spec.ts, .Tests.ps1, etc.). BUG-107 introduced the descriptive slug; this
+// revision takes identity away from it.
+func DeriveArtefactBasename(testCaseFile, ownerID string) string {
+	stem := specFileStem(testCaseFile)
+	if ownerID == "" {
+		// F9: defensive only -- automate cannot reach this without a proven owner
+		// (requireCarriedOwner), and the Tier 0 path refuses without a planned
+		// path anyway. It still goes through the SAME sanitiser as the slug: this
+		// was the one branch that returned raw filename text, and a branch that
+		// skips the sanitiser is a branch someone later reaches. It carries no
+		// identity authority; it exists so the function is never a source of
+		// empty or unsanitised names.
+		return sanitiseArtefactText(stem)
+	}
+	slug := descriptiveSlug(stem, ownerID)
+	if slug == "" {
+		return ownerID
+	}
+	return ownerID + "-" + slug
+}
+
+// descriptiveSlug reduces a spec filename stem to descriptive text. The ONLY
+// thing it removes is the owner's own id, matched as an exact literal prefix.
+// Everything else in the stem survives as description, because nothing else in
+// the stem can be known to be identity.
+func descriptiveSlug(stem, ownerID string) string {
+	rest := stem
+	// The owner id is stripped only at a TOKEN BOUNDARY -- the id must be
+	// followed by a separator or be the whole stem. A bare TrimPrefix also
+	// matched a longer word that merely starts with the id, so owner tc-aaaa on
+	// the stem "tc-aaaabbbb-x" yielded "tc-aaaa-bbbb-x": a name that looks like
+	// it belongs to some other identity's slug space, widening the collision
+	// surface for nothing. Refusing to strip there costs only a longer name.
+	if after, ok := strings.CutPrefix(rest, ownerID); ok && (after == "" || isArtefactSeparator(after[0])) {
+		rest = after
+	}
+	rest = strings.TrimLeft(rest, "-_.")
+	return sanitiseArtefactText(rest)
+}
+
+// isArtefactSeparator reports whether b ends an identity token in a filename.
+func isArtefactSeparator(b byte) bool {
+	return b == '-' || b == '_' || b == '.'
+}
+
+// sanitiseArtefactText narrows filename-derived text to the conservative
+// alphabet an artefact basename is allowed to carry. It is the single
+// definition, so no branch can produce a name the others would have rejected.
+func sanitiseArtefactText(text string) string {
+	return strings.Trim(artefactSlugUnsafe.ReplaceAllString(text, "-"), "-")
+}
+
+// specFileStem returns a spec path's basename with its extension stripped, or
+// "" when there is no path. It carries no identity meaning on its own.
+func specFileStem(testCaseFile string) string {
 	if testCaseFile == "" {
-		return fallbackID
+		return ""
 	}
 	base := filepath.Base(testCaseFile)
-	ext := filepath.Ext(base)
-	if ext != "" {
+	if ext := filepath.Ext(base); ext != "" {
 		base = strings.TrimSuffix(base, ext)
-	}
-	if base == "" {
-		return fallbackID
 	}
 	return base
 }
@@ -224,24 +313,77 @@ func BuiltinAutomate(ctx *AdapterContext, cfg *config.Config) (*InvocationResult
 		return nil, &UnsupportedAutomateFrameworkError{Framework: framework}
 	}
 
-	// Compute output path using framework support.
-	// BUG-107: derive artefact basename from the source spec filename to
-	// preserve the human-readable slug (e.g. tc-aaa-login-happy.bats).
-	subdir := ctx.OutputSubdir // e.g. "my-feature/" or ""
-	var outDir string
-	if ctx.OutputDirConfigured {
-		// BUG-125: an explicit output-dir wins over the framework-native default so
-		// brownfield projects can redirect specs into their harness testDir. ctx.OutputDir
-		// is already absolute (joined with ProjectRoot in invoker); group per work-item by
-		// appending the source subdir (trailing slash trimmed; "" leaves the dir unchanged).
-		outDir = filepath.Join(ctx.OutputDir, filepath.FromSlash(strings.TrimRight(subdir, "/")))
-	} else {
-		// Unset: fall back to the framework-native default (ADR-022 / ADR-004 amendment
-		// 2026-06-24). support.OutputDir returns a project-relative path.
-		outDir = filepath.Join(ctx.ProjectRoot, filepath.FromSlash(support.OutputDir(subdir)))
+	// Output path. The path is PLANNED from the resolved owner at the invocation
+	// boundary and CARRIED here. It is a hard precondition, not a hint: without
+	// it this adapter refuses rather than re-deriving a destination of its own.
+	//
+	// That is what makes the carrier load-bearing. A recomputing fallback would
+	// leave the boundary's planning free to be deleted without any test noticing,
+	// because the adapter would silently arrive at the same answer by a path that
+	// no ownership check had ever inspected. The write must land where the
+	// boundary looked, or not happen.
+	if ctx.PlannedArtefact == "" {
+		return nil, fmt.Errorf(
+			"no planned artefact path was supplied for %s: the built-in automate adapter writes only to the path planned and ownership-checked at the invocation boundary",
+			ctx.TestCase)
 	}
-	artefactBase := DeriveArtefactBasename(ctx.TestCaseFile, ctx.TestCase)
-	outFile := filepath.Join(outDir, artefactBase+support.Extension())
+	outFile := ctx.PlannedArtefact
+	outDir := filepath.Dir(outFile)
+
+	// Overwrite authority, re-asserted at the point of writing. The boundary
+	// already refused this run when it was reached through Invoke; this is the
+	// same refusal for a direct caller, and it is deliberately kept -- it is the
+	// last gate before a file is created, and a gate that exists only upstream is
+	// one a future caller can walk around.
+	//
+	// It fails CLOSED. An unreadable or unparseable wiring record does not mean
+	// "unclaimed"; it means the claim that would have vetoed this write may be
+	// the one that could not be read. Blocking only the --force sweep would be
+	// insufficient: the adapter could still overwrite an artefact whose claim the
+	// corrupt record was hiding -- the same data loss, reached by writing rather
+	// than deleting.
+	// The set is the OPERATION's live state, threaded from the boundary that
+	// reserved this path. It is not re-scanned here: re-reading every wiring
+	// record per item is the O(test cases x wiring records) shape, and it would
+	// also be BLIND to what earlier items in this same batch have claimed. A
+	// caller that built the context by hand gets a set for its one invocation.
+	claims := ctx.Claims
+	if claims == nil {
+		var claimsErr error
+		if claims, claimsErr = NewArtefactClaimSet(ctx.ProjectRoot); claimsErr != nil {
+			return nil, claimsErr
+		}
+	}
+	holder, inFlight, foreign, holderErr := claims.foreignHolder(ctx.TestCase, outFile)
+	if holderErr != nil {
+		return nil, holderErr
+	}
+	if foreign {
+		return nil, &ForeignArtefactClaimError{
+			Owner:    ctx.TestCase,
+			Claimant: holder,
+			Artefact: claims.display(outFile),
+			InFlight: inFlight,
+		}
+	}
+
+	// The same last-gate argument, applied to the other refusal. The invocation
+	// boundary also rejects a planned path occupied by a file NOTHING accounts
+	// for, and checking only the foreign-claim half here left a direct caller
+	// able to overwrite exactly the unaccounted-for occupant the boundary
+	// protects. "A gate that exists only upstream is one a future caller can
+	// walk around" is why this file re-asserts the foreign check at all; it
+	// applies to both halves or it applies to neither.
+	occupied, occErr := claims.pathOccupiedByStranger(ctx.TestCase, outFile)
+	if occErr != nil {
+		return nil, occErr
+	}
+	if occupied {
+		return nil, &OccupiedArtefactPathError{
+			Owner:    ctx.TestCase,
+			Artefact: claims.display(outFile),
+		}
+	}
 
 	// Resolve canonical execute adapter FIRST -- a missing execute adapter
 	// for the framework is a hard precondition failure; we must not produce
@@ -261,9 +403,12 @@ func BuiltinAutomate(ctx *AdapterContext, cfg *config.Config) (*InvocationResult
 		}
 	}
 	if testCaseHash == "" {
-		// Fallback: try pipeline.ResolveTestCaseSpec
-		if specPath, err := pipeline.ResolveTestCaseSpec(ctx.ProjectRoot, ctx.TestCase); err == nil {
-			if h, err := pipeline.HashFile(filepath.Join(ctx.ProjectRoot, filepath.FromSlash(specPath))); err == nil {
+		// Fallback: the owner carried on the context (ADR-024 s5). ctx.TestCaseFile
+		// is derived from the same owner, so this differs only when that field was
+		// not populated -- it must not become a second, independent lookup of the
+		// bare id, which could hash a different spec than the run is about.
+		if absTC := testcase.OwnerAbsFor(ctx.ProjectRoot, ctx.Owner); absTC != "" {
+			if h, err := pipeline.HashFile(absTC); err == nil {
 				testCaseHash = h
 			}
 		}
@@ -515,117 +660,102 @@ func yamlQuotedScalarOrEmpty(s string) string {
 	return `"` + yamlEscape(s) + `"`
 }
 
-// ValidateTestCasePostFill validates a test case file after the operator has
-// filled it. Called at the entry point of downstream commands (automate, prime,
-// execute) to catch frontmatter corruption introduced during editing (ENH-150).
+// ValidateTestCaseOwner is the ENH-150 post-fill gate, applied to the spec that
+// orchestration already PROVED owns the target (ADR-024 s5). It reads the owner it
+// was handed. It does not walk the cases tree, and it is not given an id it could
+// walk for.
 //
-// Checks:
-//  1. Frontmatter test_case_id matches filename ID
-//  2. Required frontmatter fields present (test_case_id)
-//  3. No duplicate IDs in the same folder (folder-scoped)
+// It validates that the owning spec is readable and STILL declares exactly the id
+// the resolution proved it owns.
 //
-// Returns a slice of SpecValidationError for each violation. Empty slice = valid.
-func ValidateTestCasePostFill(projectRoot, target string) []SpecValidationError {
-	casesDir := layout.TestCasesDir(projectRoot)
-
-	// Find the TC file
-	var tcPath string
-	_ = filepath.Walk(casesDir, func(path string, info os.FileInfo, err error) error {
-		if err != nil || info.IsDir() {
-			return nil
-		}
-		base := filepath.Base(path)
-		if strings.HasPrefix(base, target+"-") || strings.HasPrefix(base, target+".") {
-			tcPath = path
-			return filepath.SkipAll
-		}
-		return nil
-	})
-
-	if tcPath == "" {
-		// TC not found -- not a validation error (other code handles missing TCs)
+// REV-158 CODEX-003: the check used to accept any non-empty test_case_id. Between
+// the resolution and this gate the file can change -- an adapter, an editor, or a
+// concurrent command can rewrite it -- and a spec that now declares a DIFFERENT
+// (or shell-unsafe) id was still waved through. The command then invoked external
+// code and hashed or wrote wiring under the stale original identity. Requiring an
+// EXACT match against owner.ID() closes that window and, as a side effect, catches
+// a caller that passed an Owner for a different target than the one it is acting
+// on. The comparison is byte-exact: this is persisted body identity, so it is
+// never trimmed or case-folded (ADR-024 s1).
+//
+// Exact equality also covers the execution grammar without a second check.
+// owner.ID() only ever comes from a resolution that already validated it against
+// the positive grammar, so an id equal to it is grammar-valid by construction and
+// any id that is not -- including a shell-unsafe one written into the file after
+// resolution -- fails the equality test first. A separate ValidExecutionID branch
+// here would be unreachable, and unreachable guards are how a codebase comes to
+// read as if a rule were enforced when it is not (REV-158 CLAUDE-008).
+//
+// Two checks the old filename-walking version made are deliberately NOT repeated
+// here, because the ownership resolution upstream now answers both, earlier and
+// more strictly:
+//
+//   - Filename/body ID mismatch. A file named tc-aaaa.md whose body declares
+//     tc-bbbb does not OWN tc-aaaa, so resolving tc-aaaa yields NotFound and the
+//     command refuses before reaching this gate. ADR-024 s1 and s4 also make this
+//     the correct reading for a spec: body identity is authoritative and a renamed
+//     owner is expressly permitted, so filename divergence is not itself an
+//     integrity error (that rule is for WIRING, whose filename must reconstruct
+//     from its body).
+//   - Duplicate test_case_id. Two specs declaring the same id are two physical
+//     owners, which resolves as Ambiguous and refuses the command. That check is
+//     now project-wide rather than the old folder-scoped scan, so it also catches
+//     the cross-folder duplicate the folder scan missed.
+//
+// A nil owner means the command established there is no owner; there is nothing to
+// validate and not-found is handled by the command's own wording.
+func ValidateTestCaseOwner(projectRoot string, owner *testcase.Owner) []SpecValidationError {
+	abs := testcase.OwnerAbsFor(projectRoot, owner)
+	if abs == "" {
 		return nil
 	}
 
-	var violations []SpecValidationError
-
-	// Parse frontmatter
-	f, openErr := os.Open(tcPath)
+	f, openErr := os.Open(abs)
 	if openErr != nil {
-		return nil // skip unreadable files
+		return []SpecValidationError{{
+			File:   filepath.Base(abs),
+			Reason: fmt.Sprintf("could not read the test case spec: %v", openErr),
+		}}
 	}
 	defer f.Close()
 
 	var fm specFrontmatter
-	_, parseErr := frontmatter.Parse(f, &fm)
-	if parseErr != nil {
-		violations = append(violations, SpecValidationError{
-			File:   filepath.Base(tcPath),
+	if _, parseErr := frontmatter.Parse(f, &fm); parseErr != nil {
+		return []SpecValidationError{{
+			File:   filepath.Base(abs),
 			Reason: fmt.Sprintf("could not parse frontmatter: %v", parseErr),
-		})
-		return violations
+		}}
 	}
-
-	// Check 1: test_case_id is present
 	if fm.TestCaseID == "" {
-		violations = append(violations, SpecValidationError{
-			File:   filepath.Base(tcPath),
+		return []SpecValidationError{{
+			File:   filepath.Base(abs),
 			Reason: "frontmatter is missing required field 'test_case_id'",
-		})
-		return violations
+		}}
 	}
+	if fm.TestCaseID != owner.ID() {
+		return []SpecValidationError{{
+			File: filepath.Base(abs),
+			Reason: fmt.Sprintf(
+				"frontmatter now declares test_case_id '%s' but this spec was resolved as the owner of '%s' -- the file changed after ownership was proved; re-run the command",
+				sanitizeIdentityForError(fm.TestCaseID), sanitizeIdentityForError(owner.ID())),
+		}}
+	}
+	return nil
+}
 
-	// Check 2: test_case_id matches filename ID
-	base := filepath.Base(tcPath)
-	filenameMatch := validShapePattern.FindStringSubmatch(base)
-	if filenameMatch != nil {
-		filenameID := filenameMatch[1]
-		if fm.TestCaseID != filenameID {
-			violations = append(violations, SpecValidationError{
-				File:   base,
-				Reason: fmt.Sprintf("frontmatter test_case_id '%s' does not match filename ID '%s'", fm.TestCaseID, filenameID),
-			})
+// sanitizeIdentityForError replaces control characters (C0 + DEL) with '?' so an
+// identity read from a file that changed underneath us cannot manipulate the
+// terminal when it is echoed in a diagnostic (ADR-024 s7).
+func sanitizeIdentityForError(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		if r < 0x20 || r == 0x7F {
+			b.WriteRune('?')
+		} else {
+			b.WriteRune(r)
 		}
 	}
-
-	// Check 3: duplicate IDs in the same folder (folder-scoped)
-	tcDir := filepath.Dir(tcPath)
-	entries, readErr := os.ReadDir(tcDir)
-	if readErr == nil {
-		for _, entry := range entries {
-			if entry.IsDir() {
-				continue
-			}
-			entryBase := entry.Name()
-			entryPath := filepath.Join(tcDir, entryBase)
-			if entryPath == tcPath {
-				continue // skip self
-			}
-			if !strings.HasSuffix(entryBase, ".md") {
-				continue
-			}
-
-			ef, err := os.Open(entryPath)
-			if err != nil {
-				continue
-			}
-			var efm specFrontmatter
-			_, err = frontmatter.Parse(ef, &efm)
-			ef.Close()
-			if err != nil {
-				continue
-			}
-			if efm.TestCaseID != "" && efm.TestCaseID == fm.TestCaseID {
-				violations = append(violations, SpecValidationError{
-					File:   base,
-					Reason: fmt.Sprintf("duplicate test_case_id '%s' (also in %s)", fm.TestCaseID, entryBase),
-				})
-				break // one duplicate is enough to report
-			}
-		}
-	}
-
-	return violations
+	return b.String()
 }
 
 // BuiltinPrimeFromTC reimplements the manual-prime context population in Go
@@ -633,12 +763,12 @@ func ValidateTestCasePostFill(projectRoot, target string) []SpecValidationError 
 // This is called from buildAdapterContext for the "prime" command when
 // the resolved adapter is a built-in.
 func populateBuiltinPrimeFields(ctx *AdapterContext, projectRoot, target string) {
-	tcSource := findTestCaseSource(projectRoot, target)
+	tcSource := ownerSource(ctx.Owner)
 	if tcSource == "" {
 		return
 	}
 
-	absTC := filepath.Join(projectRoot, tcSource)
+	absTC := testcase.OwnerAbsFor(projectRoot, ctx.Owner)
 
 	// Hash
 	if hash, hashErr := pipeline.HashFile(absTC); hashErr == nil {

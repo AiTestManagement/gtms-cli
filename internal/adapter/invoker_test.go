@@ -10,13 +10,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 	"github.com/aitestmanagement/gtms-cli/internal/config"
 	"github.com/aitestmanagement/gtms-cli/internal/prompt"
 	"github.com/aitestmanagement/gtms-cli/internal/result"
 	"github.com/aitestmanagement/gtms-cli/internal/task"
+	"github.com/aitestmanagement/gtms-cli/internal/testcase"
 	"github.com/aitestmanagement/gtms-cli/internal/wiring"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // setupTestProject creates a minimal project structure for invoker tests.
@@ -923,13 +924,13 @@ func TestInvokeWithRoot_Tier1_FailExitCodes(t *testing.T) {
 	skipIfShort(t)
 
 	cases := []struct {
-		name           string
-		failExitCodes  []int
-		exitCode       int
-		expectStatus   string // result-contract status field
-		expectResult   string // result-contract result field (ENH-130)
-		expectInvoke   string // InvokeResult.Status
-		expectTaskDir  string // "complete" or "error"
+		name          string
+		failExitCodes []int
+		exitCode      int
+		expectStatus  string // result-contract status field
+		expectResult  string // result-contract result field (ENH-130)
+		expectInvoke  string // InvokeResult.Status
+		expectTaskDir string // "complete" or "error"
 	}{
 		{
 			name:          "unset list — exit 1 still produces error",
@@ -1093,7 +1094,7 @@ func TestInvokeWithRoot_AutomateWithOutputDir(t *testing.T) {
 		Mode:    "sync",
 	}
 
-	res, err := InvokeWithRoot(context.Background(), root, cfg, resolved, "tc-001", CommandFlags{})
+	res, err := InvokeWithRoot(context.Background(), root, cfg, resolved, "tc-001", withOwner(t, root, "tc-001", CommandFlags{}))
 	require.NoError(t, err)
 	assert.Equal(t, "complete", res.Status)
 	assert.Contains(t, res.Summary, filepath.Join(root, "tests/e2e/"))
@@ -1115,7 +1116,7 @@ func TestInvokeWithRoot_AutomateWithoutOutputDir(t *testing.T) {
 		Mode:    "sync",
 	}
 
-	res, err := InvokeWithRoot(context.Background(), root, cfg, resolved, "tc-002", CommandFlags{})
+	res, err := InvokeWithRoot(context.Background(), root, cfg, resolved, "tc-002", withOwner(t, root, "tc-002", CommandFlags{}))
 	require.NoError(t, err)
 	assert.Equal(t, "complete", res.Status)
 	assert.Contains(t, res.Summary, filepath.Join(root, "gtms/automation", "specs", "my-auto"))
@@ -1137,7 +1138,7 @@ func TestInvokeWithRoot_ExecuteWithoutOutputDir(t *testing.T) {
 		Mode:    "sync",
 	}
 
-	res, err := InvokeWithRoot(context.Background(), root, cfg, resolved, "tc-003", CommandFlags{})
+	res, err := InvokeWithRoot(context.Background(), root, cfg, resolved, "tc-003", withOwner(t, root, "tc-003", CommandFlags{}))
 	require.NoError(t, err)
 	assert.Equal(t, "complete", res.Status)
 	assert.Contains(t, res.Summary, filepath.Join(root, "results"))
@@ -1159,7 +1160,7 @@ func TestInvokeWithRoot_ExecuteWithOutputDir(t *testing.T) {
 		Mode:    "sync",
 	}
 
-	res, err := InvokeWithRoot(context.Background(), root, cfg, resolved, "tc-001", CommandFlags{})
+	res, err := InvokeWithRoot(context.Background(), root, cfg, resolved, "tc-001", withOwner(t, root, "tc-001", CommandFlags{}))
 	require.NoError(t, err)
 	assert.Equal(t, "complete", res.Status)
 	assert.Contains(t, res.Summary, filepath.Join(root, "test-results/bats/"))
@@ -1194,7 +1195,7 @@ func TestEnvironment_PromptTemplateSubstitution(t *testing.T) {
 	}
 
 	flags := CommandFlags{Environment: "staging"}
-	res, err := InvokeWithRoot(context.Background(), root, cfg, resolved, "tc-envtest", flags)
+	res, err := InvokeWithRoot(context.Background(), root, cfg, resolved, "tc-envtest", withOwner(t, root, "tc-envtest", flags))
 	require.NoError(t, err)
 	assert.Equal(t, "complete", res.Status)
 	// The assembled prompt (piped to cat via stdin) should contain the substituted value
@@ -1369,7 +1370,7 @@ echo "SOURCE=${GTMS_REFERENCE} TESTCASE=${GTMS_TESTCASE}"
 		Tier:    2,
 		Mode:    "sync",
 	}
-	res, err := InvokeWithRoot(context.Background(), root, cfg, resolved, "tc-test1", CommandFlags{})
+	res, err := InvokeWithRoot(context.Background(), root, cfg, resolved, "tc-test1", withOwner(t, root, "tc-test1", CommandFlags{}))
 	require.NoError(t, err)
 	assert.Equal(t, "complete", res.Status)
 	assert.Contains(t, res.Summary, "SOURCE= ")
@@ -1378,36 +1379,51 @@ echo "SOURCE=${GTMS_REFERENCE} TESTCASE=${GTMS_TESTCASE}"
 
 // --- BUG-006 Tests ---
 
-// --- findTestCaseSource prefix matching tests (ENH-014 Item 5) ---
+// --- adapter source selection tests (ENH-014 Item 5) ---
+//
+// ADR-024 s5 moved the resolution itself out of the adapter layer: orchestration
+// proves the owner and the adapter layer reads it. These keep the original
+// fixtures and expectations, exercised through the boundary that now decides --
+// resolve the owner, then ask the adapter layer what source it would use.
 
-func TestFindTestCaseSource_ExactMatch(t *testing.T) {
+// sourceForTarget resolves target and returns the source path the adapter layer
+// would use, or "" when nothing owns the target.
+func sourceForTarget(root, target string) string {
+	owner, err := testcase.ResolveOwner(root, target)
+	if err != nil {
+		return ""
+	}
+	return ownerSource(owner)
+}
+
+func TestAdapterSource_ExactMatch(t *testing.T) {
 	root := t.TempDir()
 	tcDir := filepath.Join(root, "gtms/test/cases")
 	require.NoError(t, os.MkdirAll(tcDir, 0755))
-	require.NoError(t, os.WriteFile(filepath.Join(tcDir, "tc-a1b2c3d-description.md"), []byte("test"), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(tcDir, "tc-a1b2c3d-description.md"), []byte("---\ntest_case_id: tc-a1b2c3d\n---\ntest"), 0644))
 
-	result := findTestCaseSource(root, "tc-a1b2c3d")
+	result := sourceForTarget(root, "tc-a1b2c3d")
 	assert.Equal(t, "gtms/test/cases/tc-a1b2c3d-description.md", result)
 }
 
-func TestFindTestCaseSource_NoPartialMatch(t *testing.T) {
+func TestAdapterSource_NoPartialMatch(t *testing.T) {
 	root := t.TempDir()
 	tcDir := filepath.Join(root, "gtms/test/cases")
 	require.NoError(t, os.MkdirAll(tcDir, 0755))
-	require.NoError(t, os.WriteFile(filepath.Join(tcDir, "tc-a1b2c3d-description.md"), []byte("test"), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(tcDir, "tc-a1b2c3d-description.md"), []byte("---\ntest_case_id: tc-a1b2c3d\n---\ntest"), 0644))
 
 	// tc-a1b should NOT match tc-a1b2c3d-description.md
-	result := findTestCaseSource(root, "tc-a1b")
+	result := sourceForTarget(root, "tc-a1b")
 	assert.Equal(t, "", result)
 }
 
-func TestFindTestCaseSource_DotExtension(t *testing.T) {
+func TestAdapterSource_DotExtension(t *testing.T) {
 	root := t.TempDir()
 	tcDir := filepath.Join(root, "gtms/test/cases")
 	require.NoError(t, os.MkdirAll(tcDir, 0755))
-	require.NoError(t, os.WriteFile(filepath.Join(tcDir, "tc-a1b2c3d.md"), []byte("test"), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(tcDir, "tc-a1b2c3d.md"), []byte("---\ntest_case_id: tc-a1b2c3d\n---\ntest"), 0644))
 
-	result := findTestCaseSource(root, "tc-a1b2c3d")
+	result := sourceForTarget(root, "tc-a1b2c3d")
 	assert.Equal(t, "gtms/test/cases/tc-a1b2c3d.md", result)
 }
 
@@ -1511,7 +1527,7 @@ func TestBUG006_S3_PipelineRecordFailureWarns(t *testing.T) {
 	// step and reaches the MkdirAll on the (blocked) wiring directory.
 	require.NoError(t, os.WriteFile(
 		filepath.Join(root, "gtms/test/cases/tc-s3test-spec.md"),
-		[]byte("---\nid: tc-s3test\n---\nbody\n"),
+		[]byte("---\ntest_case_id: tc-s3test\n---\nbody\n"),
 		0644,
 	))
 
@@ -1535,7 +1551,7 @@ func TestBUG006_S3_PipelineRecordFailureWarns(t *testing.T) {
 		Mode:    "sync",
 	}
 
-	res, err := InvokeWithRoot(context.Background(), root, cfg, resolved, "tc-s3test", CommandFlags{Framework: "playwright"})
+	res, err := InvokeWithRoot(context.Background(), root, cfg, resolved, "tc-s3test", withOwner(t, root, "tc-s3test", CommandFlags{Framework: "playwright"}))
 	require.NoError(t, err)
 	assert.Equal(t, "complete", res.Status, "task should still complete despite pipeline failure")
 
@@ -1664,7 +1680,7 @@ func TestAutomate_TestCaseContentInjected(t *testing.T) {
 		Mode: "sync",
 	}
 
-	flags := CommandFlags{Framework: "playwright"}
+	flags := CommandFlags{Framework: "playwright", Owner: ownerForTest(t, root, "tc-auto")}
 	res, err := InvokeWithRoot(context.Background(), root, cfg, resolved, "tc-auto", flags)
 	require.NoError(t, err)
 	assert.Equal(t, "complete", res.Status)
@@ -1680,16 +1696,29 @@ func TestAutomate_TestCaseContentInjected(t *testing.T) {
 	// The test case file created by setupAutomateTestProject has "## Steps" and "Do something"
 	assert.Contains(t, promptContent, "## Steps")
 	assert.Contains(t, promptContent, "Do something")
-	assert.Contains(t, promptContent, "Automate Test Case") // title from frontmatter
+	assert.Contains(t, promptContent, "Automate Test Case")    // title from frontmatter
 	assert.NotContains(t, promptContent, "{testcase_content}") // placeholder must be resolved
-	assert.Contains(t, promptContent, "playwright") // framework substituted too
+	assert.Contains(t, promptContent, "playwright")            // framework substituted too
 }
 
-func TestAutomate_MissingTestCaseContentIsEmpty(t *testing.T) {
+// REV-160 CODEX-002 replaces TestAutomate_MissingTestCaseContentIsEmpty.
+//
+// That test asserted the OLD boundary behaviour: automate a TC ID with no spec
+// on disk, and the invoker proceeded -- generating a task id, writing the task
+// file and result contract, assembling a prompt with an empty
+// {testcase_content}, and invoking the adapter, all attributed to an identity
+// nothing proved. That is the defect, not a contract to preserve: ADR-024's
+// consumer matrix requires a uniquely proven owner before automate invokes
+// anything, and the CLI already refuses an orphan id one layer up.
+//
+// The one still-valid behaviour it also covered -- an empty testcase_content
+// substituting cleanly, leaving no unresolved {testcase_content} placeholder --
+// is asserted at the assembly layer by TestBUG136_PromptCreateStandardResolvesCleanly
+// (prompt.AssembleString with testcase_content: ""), so nothing is lost.
+func TestAutomate_MissingSpecIsRefusedAtTheInvocationBoundary(t *testing.T) {
 	skipIfShort(t)
 	root := setupTestProject(t)
 
-	// Create prompt template that uses {testcase_content}
 	tmplDir := filepath.Join(root, "prompts")
 	require.NoError(t, os.MkdirAll(tmplDir, 0755))
 	tmpl := "Content: [{testcase_content}]\nID: {testcase}"
@@ -1711,22 +1740,21 @@ func TestAutomate_MissingTestCaseContentIsEmpty(t *testing.T) {
 		Mode: "sync",
 	}
 
-	// Use a test case ID with no matching file
-	flags := CommandFlags{Framework: "playwright"}
-	res, err := InvokeWithRoot(context.Background(), root, cfg, resolved, "tc-nonexistent", flags)
-	require.NoError(t, err)
-	assert.Equal(t, "complete", res.Status) // Should not fail
+	// A test case ID with no matching file, and so no owner to carry.
+	_, err := InvokeWithRoot(context.Background(), root, cfg, resolved, "tc-nonexistent", CommandFlags{Framework: "playwright"})
+	require.Error(t, err, "automate for an id nothing owns must be refused, not run with empty content")
 
-	// Verify prompt file has empty content (placeholder resolved to "")
-	matches, _ := filepath.Glob(filepath.Join(root, ".gtms", "tmp", "*-prompt.md"))
-	require.Len(t, matches, 1)
+	var coe *CarriedOwnerError
+	require.ErrorAs(t, err, &coe)
+	assert.Equal(t, "automate", coe.Command)
 
-	content, err := os.ReadFile(matches[0])
-	require.NoError(t, err)
-
-	promptContent := string(content)
-	assert.Contains(t, promptContent, "Content: []") // empty content
-	assert.Contains(t, promptContent, "ID: tc-nonexistent") // {testcase} still holds ID
+	// Refused before ANY state: no prompt, no task file, no result contract.
+	prompts, _ := filepath.Glob(filepath.Join(root, ".gtms", "tmp", "*-prompt.md"))
+	assert.Empty(t, prompts, "no prompt may be assembled for an unowned id")
+	tasks, _ := filepath.Glob(filepath.Join(root, "gtms", "tasks", "*", "*.md"))
+	assert.Empty(t, tasks, "no task file may be created for an unowned id")
+	contracts, _ := filepath.Glob(filepath.Join(root, ".gtms", "results", "*"))
+	assert.Empty(t, contracts, "no result contract may be created for an unowned id")
 }
 
 func TestAutomate_Tier2TestCaseContentEnvVar(t *testing.T) {
@@ -1748,7 +1776,7 @@ echo "CONTENT_START=${GTMS_TESTCASE_CONTENT}CONTENT_END"
 		Mode:    "sync",
 	}
 
-	flags := CommandFlags{Framework: "playwright"}
+	flags := CommandFlags{Framework: "playwright", Owner: ownerForTest(t, root, "tc-auto")}
 	res, err := InvokeWithRoot(context.Background(), root, cfg, resolved, "tc-auto", flags)
 	require.NoError(t, err)
 	assert.Equal(t, "complete", res.Status)
@@ -2027,7 +2055,7 @@ func TestBuildAdapterContext_SetsTestCaseIDs_ForCreate(t *testing.T) {
 	}
 	flags := CommandFlags{}
 
-	ac := buildAdapterContext(root, "task-test123", resolved, "REQ-001", flags, "feature/test", cfg, root, "/tmp/result.yaml")
+	ac := buildAdapterContext(root, "task-test123", resolved, "REQ-001", flags, "feature/test", cfg, root, "/tmp/result.yaml", "")
 
 	// TestCaseIDs should be populated
 	require.NotEmpty(t, ac.TestCaseIDs, "TestCaseIDs should be set for create command")
@@ -2062,7 +2090,7 @@ func TestBuildAdapterContext_NoTestCaseIDs_ForAutomate(t *testing.T) {
 	}
 	flags := CommandFlags{}
 
-	ac := buildAdapterContext(root, "task-test456", resolved, "tc-abc1234", flags, "feature/test", cfg, root, "/tmp/result.yaml")
+	ac := buildAdapterContext(root, "task-test456", resolved, "tc-abc1234", flags, "feature/test", cfg, root, "/tmp/result.yaml", "")
 	assert.Empty(t, ac.TestCaseIDs, "TestCaseIDs should be empty for automate command")
 }
 
@@ -2080,7 +2108,7 @@ func TestBuildAdapterContext_NoTestCaseIDs_ForExecute(t *testing.T) {
 	}
 	flags := CommandFlags{}
 
-	ac := buildAdapterContext(root, "task-test789", resolved, "tc-def5678", flags, "feature/test", cfg, root, "/tmp/result.yaml")
+	ac := buildAdapterContext(root, "task-test789", resolved, "tc-def5678", flags, "feature/test", cfg, root, "/tmp/result.yaml", "")
 	assert.Empty(t, ac.TestCaseIDs, "TestCaseIDs should be empty for execute command")
 }
 
@@ -2104,7 +2132,7 @@ func TestBUG023_PassAfterFailUpdatesPipelineRecord(t *testing.T) {
 		Mode:    "sync",
 	}
 
-	res, err := InvokeWithRoot(context.Background(), root, cfg, resolved, "tc-bug023b", CommandFlags{})
+	res, err := InvokeWithRoot(context.Background(), root, cfg, resolved, "tc-bug023b", withOwner(t, root, "tc-bug023b", CommandFlags{}))
 	require.NoError(t, err)
 	assert.Equal(t, "error", res.Status)
 
@@ -2116,7 +2144,7 @@ func TestBUG023_PassAfterFailUpdatesPipelineRecord(t *testing.T) {
 
 	// Second: execute that succeeds
 	resolved.Config.Command = `echo "all tests passed"`
-	res, err = InvokeWithRoot(context.Background(), root, cfg, resolved, "tc-bug023b", CommandFlags{})
+	res, err = InvokeWithRoot(context.Background(), root, cfg, resolved, "tc-bug023b", withOwner(t, root, "tc-bug023b", CommandFlags{}))
 	require.NoError(t, err)
 	assert.Equal(t, "complete", res.Status)
 
@@ -2151,7 +2179,7 @@ func TestENH080_AutomateMultiFileFails_Tier1(t *testing.T) {
 		Mode:    "sync",
 	}
 
-	res, err := InvokeWithRoot(context.Background(), root, cfg, resolved, "tc-enh080", CommandFlags{})
+	res, err := InvokeWithRoot(context.Background(), root, cfg, resolved, "tc-enh080", withOwner(t, root, "tc-enh080", CommandFlags{}))
 	require.NoError(t, err)
 
 	// Task result: error status (not complete)
@@ -2235,7 +2263,7 @@ exit 0
 		Mode:    "sync",
 	}
 
-	res, err := InvokeWithRoot(context.Background(), root, cfg, resolved, "tc-enh080b", CommandFlags{})
+	res, err := InvokeWithRoot(context.Background(), root, cfg, resolved, "tc-enh080b", withOwner(t, root, "tc-enh080b", CommandFlags{}))
 	require.NoError(t, err)
 
 	// Guard must override the script's status=complete.
@@ -2275,7 +2303,7 @@ func TestENH080_AutomateSingleFileStillWorks(t *testing.T) {
 	// Seed a TC spec so testcase-hash can be computed.
 	require.NoError(t, os.WriteFile(
 		filepath.Join(root, "gtms/test/cases/tc-enh080c-spec.md"),
-		[]byte("---\nid: tc-enh080c\n---\nbody\n"),
+		[]byte("---\ntest_case_id: tc-enh080c\n---\nbody\n"),
 		0644,
 	))
 
@@ -2301,7 +2329,7 @@ func TestENH080_AutomateSingleFileStillWorks(t *testing.T) {
 		Mode:    "sync",
 	}
 
-	res, err := InvokeWithRoot(context.Background(), root, cfg, resolved, "tc-enh080c", CommandFlags{})
+	res, err := InvokeWithRoot(context.Background(), root, cfg, resolved, "tc-enh080c", CommandFlags{Owner: ownerForTest(t, root, "tc-enh080c")})
 	require.NoError(t, err)
 
 	assert.Equal(t, "complete", res.Status, "single-file automate must still succeed")

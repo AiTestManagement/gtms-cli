@@ -125,7 +125,7 @@ Prompt your AI coding agent to run the command `gtms.exe --help`. It reads the c
 | `gtms execute <tc-id>` | Validate automated tests during development |
 | `gtms status [folder]` | Pipeline overview or detail for one test case |
 | `gtms gaps [folder]` | Coverage gap analysis |
-| `gtms triage <tc-id>` | Classify a failure and trigger follow-on action |
+| `gtms triage <tc-id>` | Classify a result, resolve a classification, or read classifications back |
 
 ## How It Works
 

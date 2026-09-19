@@ -82,8 +82,9 @@ func TestInvokeBuiltin_Gaps(t *testing.T) {
 func TestInvokeBuiltin_Triage(t *testing.T) {
 	_, err := InvokeBuiltin(context.Background(), "triage", []string{"tc-001"}, "/fake/path", []string{}, "")
 	assert.Error(t, err)
-	// CON-023 / ENH-145: triage reads wiring; error wording reflects that.
-	assert.Contains(t, err.Error(), "no wiring record found")
+	// ENH-200 / CON-040: triage is a mutation command handled by the CLI RunE,
+	// not a built-in reader dispatch; the built-in path reports that.
+	assert.Contains(t, err.Error(), "mutation command")
 }
 
 func TestInvokeBuiltin_UnknownCommand(t *testing.T) {

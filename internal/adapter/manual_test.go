@@ -404,7 +404,7 @@ func TestInvoke_ManualDeferredError_PersistsToFailed(t *testing.T) {
 		Mode: "sync",
 	}
 
-	res, err := InvokeWithRoot(context.Background(), root, cfg, resolved, target, CommandFlags{})
+	res, err := InvokeWithRoot(context.Background(), root, cfg, resolved, target, withOwner(t, root, target, CommandFlags{}))
 	require.NoError(t, err, "deferred manual error should be returned via InvokeResult, not as a Go error")
 	require.NotNil(t, res)
 
@@ -469,7 +469,7 @@ func TestBuildAdapterContext_ManualExecute_AdapterNameOnly_PopulatesManualFields
 		Mode:    "sync",
 	}
 
-	ac := buildAdapterContext(root, "task-test001", resolved, "tc-cafef00d", CommandFlags{}, "feature/test", cfg, root, "/tmp/result.yaml")
+	ac := buildAdapterContext(root, "task-test001", resolved, "tc-cafef00d", CommandFlags{}, "feature/test", cfg, root, "/tmp/result.yaml", "")
 
 	require.NotNil(t, ac, "buildAdapterContext must not return nil")
 	require.Error(t, ac.ManualExecuteError,
@@ -495,7 +495,7 @@ func TestBuildAdapterContext_NonManualExecute_DoesNotPopulateManualFields(t *tes
 		Mode:    "sync",
 	}
 
-	ac := buildAdapterContext(root, "task-test002", resolved, "tc-cafef00d", CommandFlags{}, "feature/test", cfg, root, "/tmp/result.yaml")
+	ac := buildAdapterContext(root, "task-test002", resolved, "tc-cafef00d", CommandFlags{}, "feature/test", cfg, root, "/tmp/result.yaml", "")
 
 	require.NotNil(t, ac)
 	assert.NoError(t, ac.ManualExecuteError,

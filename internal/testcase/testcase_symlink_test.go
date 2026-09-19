@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -105,13 +106,20 @@ func TestMatchesSpecFile(t *testing.T) {
 		base, tcID string
 		want       bool
 	}{
-		{"tc-abc12345.md", "tc-abc12345", true},          // exact form
+		{"tc-abc12345.md", "tc-abc12345", true},            // exact form
 		{"tc-abc12345-login-test.md", "tc-abc12345", true}, // slug form
-		{"tc-abc12345-notes.txt", "tc-abc12345", false},  // non-.md decoy
-		{"tc-abc12345.txt", "tc-abc12345", false},        // non-.md
-		{"tc-abc12345.bak.md", "tc-abc12345", false},     // not exact, no "-" separator
-		{"tc-abc12345other.md", "tc-abc12345", false},    // no separator -> different id
-		{"tc-abc123.md", "tc-abc12345", false},           // different id
+		{"tc-abc12345-notes.txt", "tc-abc12345", false},    // non-.md decoy
+		{"tc-abc12345.txt", "tc-abc12345", false},          // non-.md
+		{"tc-abc12345.bak.md", "tc-abc12345", false},       // not exact, no "-" separator
+		{"tc-abc12345other.md", "tc-abc12345", false},      // no separator -> different id
+		{"tc-abc123.md", "tc-abc12345", false},             // different id
+		// REV-158 CLAUDE-003: an EXTENDED id is a different test case, in both
+		// directions. "tc-x--legacy*.md" is never a file of "tc-x".
+		{"tc-abc12345--legacy.md", "tc-abc12345", false},          // extended id, exact form
+		{"tc-abc12345--legacy-sibling.md", "tc-abc12345", false},  // extended id, slug form
+		{"tc-abc12345--legacy.md", "tc-abc12345--legacy", true},   // the extended id's own file
+		{"tc-abc12345--legacy-x.md", "tc-abc12345--legacy", true}, // ...with a slug
+		{"tc-abc12345-login.md", "tc-abc12345--legacy", false},    // shorter sibling is not the longer id's
 	}
 	for _, c := range cases {
 		assert.Equalf(t, c.want, MatchesSpecFile(c.base, c.tcID), "MatchesSpecFile(%q, %q)", c.base, c.tcID)
@@ -200,7 +208,7 @@ func TestSpecResolvers_NonCanonicalRoot_CleanProjectRelativePaths(t *testing.T) 
 	real := t.TempDir()
 	foo := filepath.Join(real, "gtms", "test", "cases", "foo")
 	require(t, os.MkdirAll(foo, 0o755))
-	require(t, os.WriteFile(filepath.Join(foo, "tc-abc12345-real.md"), []byte("---\nspec\n---\n"), 0o644))
+	require(t, os.WriteFile(filepath.Join(foo, "tc-abc12345-real.md"), []byte("---\ntest_case_id: tc-abc12345\ntitle: t\n---\nspec\n"), 0o644))
 
 	// A symlink to the real root -- a non-canonical projectRoot.
 	link := filepath.Join(t.TempDir(), "linkroot")
@@ -254,10 +262,29 @@ func mustSymlink(t *testing.T, target, link string) {
 	}
 }
 
+// writeSpec writes a real spec whose body test_case_id is derived from the
+// filename (ADR-024: identity is decided by the parsed body, so a fixture must
+// carry a valid test_case_id to be a provable owner). The id is the leading
+// "tc-<run>" token of the filename before the slug separator.
 func writeSpec(t *testing.T, dir, name string) {
 	t.Helper()
 	require(t, os.MkdirAll(dir, 0o755))
-	require(t, os.WriteFile(filepath.Join(dir, name), []byte("---\nspec\n---\n"), 0o644))
+	body := "---\ntest_case_id: " + idFromSpecName(name) + "\ntitle: \"t\"\n---\n\nspec\n"
+	require(t, os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644))
+}
+
+// idFromSpecName extracts the leading tc-id token from a spec filename such as
+// "tc-abc12345-slug.md" -> "tc-abc12345" or "tc-abc12345.md" -> "tc-abc12345".
+func idFromSpecName(name string) string {
+	stem := strings.TrimSuffix(name, ".md")
+	if !strings.HasPrefix(stem, "tc-") {
+		return stem
+	}
+	rest := stem[len("tc-"):]
+	if i := strings.IndexAny(rest, "-."); i >= 0 {
+		rest = rest[:i]
+	}
+	return "tc-" + rest
 }
 
 // REV-116 CODEX-001: the cases directory ITSELF is validated under the project

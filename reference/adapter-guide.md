@@ -8,8 +8,6 @@
 
 This document is the practical reference for anyone building a GTMS adapter. It describes the adapter interface contract, configuration format, environment variables, result reporting, and file output conventions.
 
-It replaces the original [Command & Adapter Pattern](./archive/gtms-command-adapter-pattern.md) (archived); this guide is the current contract.
-
 **This is a living document.** Sections are marked with their implementation status:
 - **Implemented** — working in the current codebase
 - **Planned** — designed but not yet implemented (with reference to the relevant enhancement or issue)
@@ -1022,7 +1020,7 @@ These variables are exported to Tier 2 scripts:
 
 > **Note:** `GTMS_WORK_DIR` carries the task's working-directory base (the worktree path when the command created one, else the project root) and is distinct from `GTMS_PROJECT_ROOT`. It is not the process cwd -- the cwd is set independently from the resolved run directory (the project root, or the configured `working-dir` subdir). To run an adapter from a subdirectory, set `working-dir` on the adapter (see the Config Fields table); do not rely on `GTMS_WORK_DIR` for that.
 
-> **Security note:** Tier 2 scripts receive only a minimal allowlist of system variables (`PATH`, `HOME`, `TMPDIR`, `USER`, `SHELL`, `LANG`, `LC_ALL` + Windows vars) plus all `GTMS_*` variables. Parent process secrets are no longer inherited. See [Security Considerations](#tier-2-environment-isolation) for details.
+> **Security note:** Tier 2 scripts receive only a minimal allowlist of system variables (`PATH`, `HOME`, `TMPDIR`, `USER`, `SHELL`, `LANG`, `LC_ALL` + Windows vars) plus the `GTMS_*` variables GTMS itself generates (the documented set above). Parent process secrets are no longer inherited, and a caller-defined variable is not forwarded merely because its name begins with `GTMS_`. See [Security Considerations](#tier-2-environment-isolation) for details.
 
 ### Output Directory by Command
 
@@ -1091,6 +1089,16 @@ EOF
 > **Note:** `status: complete` requires a `result:` field. For a create/automate adapter that completed its stage, write `result: pass`; the orthogonal `result:` axis carries the outcome while `status:` carries adapter execution state. The `created` field is the timestamp when GTMS originally invoked the adapter. If you overwrite the full file, carry this value through rather than replacing it. The `completed` field is the one your script should set to the current time.
 
 If your script doesn't update the result contract, GTMS falls back to exit code handling (exit 0 = complete, non-zero = error). This means simple scripts that just need pass/fail don't need to touch the result contract at all.
+
+That fallback applies only while the contract is still readable. GTMS reads the handoff after the script exits and acts on what it finds. A readable contract still in its initial `pending` state means the script did not report, so the exit code decides. A contract GTMS cannot use at all is different: if the file is not valid YAML, is missing, or cannot be read, the outcome is unknown, and GTMS resolves unknown to error, never to pass. It writes a valid replacement handoff carrying `status: error` and no `result:`, files the task under `gtms/tasks/error/`, and names the contract failure in the diagnostic. Bulk `gtms execute` counts the test case as errored rather than passed. This fail-closed handling applies to Tier 2 `execute`, `automate`, `create` and `prime` alike; Tier 1 adapters are unaffected. The process exit code stays per command and did not change:
+
+| Command | Exit on an unusable contract |
+|---------|------------------------------|
+| `execute`, `create`, `prime` | non-zero |
+| `automate`, single target | renders the error, exits 0 |
+| `automate`, bulk | counts the item as failed, exits non-zero |
+
+The most common way a contract becomes unusable is a `log:` block whose indentation YAML infers from the tool's own output. See [Diagnostic log payload](#diagnostic-log-payload) for the `log: |2` form that avoids it.
 
 ### How GTMS Discovers Tier 2 Output Files
 
@@ -1338,10 +1346,10 @@ The manual result file never carries `error`. The automation record maps `skip` 
 
 Migrating ~35 BATS fixtures off the legacy `--result` setup-shortcut surfaced a class of pitfalls. These apply whenever you're writing a fixture that exercises the manual pipeline or any test asserting on pipeline-written fields.
 
-- **Direct file seeds do NOT substitute for pipeline writes when the assertion is about a pipeline-written field.** A fixture that writes an automation record by hand (`cat > gtms/automation/records/tc-X--manual.automation.md`) can verify reader behaviour (`gtms status`, `gtms gaps`, `gtms map` against a known-shape record), but cannot verify writer behaviour. If the test asserts on a pipeline-written field, the fixture must drive the full pipeline: `gtms init` → `gtms create` → `gtms prime --framework manual` → `perl -i -pe 's/^result:.*$/result: pass/' "gtms/manual/records/${TC_ID}--manual.result.yaml"` → `gtms execute "$TC_ID" --adapter manual-execute`. Reference fixtures: `test/acceptance/legacy-manual-bypass-removal/tc-0fab489d` (manual_coverage), `tc-1a084ff8` (handoff `completed:`), `tc-c5d6e7f8` (environment from `--env`). The `executed_at:` seed pattern verifies READ tolerance only; the writer assertion now reads from `.gtms/results/<task>.handoff.yaml` `completed:` because `pipeline.UpdateExecutionResult` no longer runs on the execute path after the wiring cutover.
+- **Direct file seeds do NOT substitute for pipeline writes when the assertion is about a pipeline-written field.** A fixture that writes an automation record by hand (`cat > gtms/automation/records/tc-X--manual.automation.md`) can verify reader behaviour (`gtms status`, `gtms gaps`, `gtms map` against a known-shape record), but cannot verify writer behaviour. If the test asserts on a pipeline-written field, the fixture must drive the full pipeline: `gtms init` -> `gtms create` -> `gtms prime --framework manual` -> `perl -i -pe 's/^result:.*$/result: pass/' "gtms/manual/records/${TC_ID}--manual.result.yaml"` -> `gtms execute "$TC_ID" --adapter manual-execute`. The `executed_at:` seed pattern verifies READ tolerance only; the writer assertion now reads from `.gtms/results/<task>.handoff.yaml` `completed:` because `pipeline.UpdateExecutionResult` no longer runs on the execute path after the wiring cutover.
 - **Legacy record shapes don't round-trip as `manual_coverage: recorded`.** Direct seeds carrying the legacy bypass-writer shape (`status: accepted`, `adapter: manual`, no `executed_at:`) are recognised by the reader as a manual record but classified as `manual_coverage: prepared`, NOT `recorded`. If a fixture needs `recorded`, either use the full pipeline (above) or seed the current shape: `status: complete`, `adapter: manual-execute`, `executed_at: <RFC3339>`.
 - **`selectAutomationRecord` preference order matters in fixtures.** Seeding both a bats automation record (with `artefact:` set) AND a manual record for the same TC lets the reader pick the bats one; the manual record's `result:` is masked. Either drop the bats stub or use the canonical pipeline.
-- **Pure bypass-feature tests have no forward analogue.** A test whose entire product assertion was that `--result` works (e.g. "`gtms execute --result skip` is accepted", "`gtms execute --result unknown` is rejected", "`gtms execute --result pass` overrides skip on a BATS spec") has no equivalent after the bypass removal. Delete it, including the matching spec under `gtms/test/cases/`. Replacement coverage of the post-removal state lives in `test/acceptance/legacy-manual-bypass-removal/`.
+- **Pure bypass-feature tests have no forward analogue.** A test whose entire product assertion was that `--result` works (e.g. "`gtms execute --result skip` is accepted", "`gtms execute --result unknown` is rejected", "`gtms execute --result pass` overrides skip on a BATS spec") has no equivalent after the bypass removal. Delete it, including the matching spec under `gtms/test/cases/`.
 - **Lock deletions in with a Go source-shape guard.** When a feature-removal slice deletes named CLI flags or exported functions, add an `internal/cli/source_shape_test.go` (or sibling) that reads the relevant source files via `os.ReadFile` and asserts the symbols are absent. This is a Go test (stays inside the BATS-boundary rule), runs in the standard suite, and catches re-introduction during refactors. Reference: `TestSourceShape_NoLegacyManualBypass` covers `runManualResult`, `WriteManualResult`, `RecordManualResult`.
 - **Adapter-first dispatch survived the bypass removal unchanged.** `adapter.IsManualFramework(resolved)` keys on the resolved adapter, not on CLI flags or on-disk framework strings — removing the `--result` bypass did not require any change to the predicate. This is the lesson: when designing manual-aware behaviour, key it on the resolved adapter, never on flag presence or record metadata. Removing a flag then becomes a deletion of CLI surface, not a re-think of dispatch.
 
@@ -1384,7 +1392,6 @@ A six-week gap in the manual pipeline: the `manual-execute` adapter had been sta
 `gtms prime` ships its own command identity (the user thinks "prime", not "automate the manual-prime adapter"). Keeping that identity intact end-to-end across output rendering, guidance, and status hints requires four explicit contracts. Skip any one and the implementation reality of "manual-prime is internally an automate-stage adapter" leaks back into the user-facing surface.
 
 - **Sibling renderer, not shared.** Each user-facing command gets its own `format{Command}Output` helper in `internal/cli/`. `gtms prime` initially reused `formatAutomateOutput`, which baked "Automated" / "Automation created" wording into prime output. The fix introduces `formatPrimeOutput` alongside it. Cost of duplication is low; cost of mutating a shared renderer to suit two callers later is high. Companion: a `whatHappened{Command}` text builder in `internal/cli/guidance.go` for the Next-block body.
-- **Two guidance defaults must stay in sync.** Adding a `prime:` guidance key requires both `internal/scaffold/templates.go` `DefaultGuidanceYAML` (scaffolded into `.gtms/guidance.yaml` by `gtms init`, covers fresh projects) and `internal/config/guidance.go` `DefaultGuidance()` (the Go map returned when the user file is missing/malformed, covers projects with no file). Forgetting either silently drops the `Next:` block on the affected command.
 - **Per-key fallback in `LoadGuidance`.** Existing projects with a hand-customised `.gtms/guidance.yaml` would lose `Next:` text for any newly-added command unless `LoadGuidance` merges in defaults for missing keys. The merge policy: user file wins on every key it sets; `DefaultGuidance()` fills any missing keys. New pipeline commands inherit this for free as long as both default sources include their key.
 - **Status-hint resolver matches the real resolver.** Any helper that previews "what command would the user run next" (`statusHint`, `adapterHint`, `shouldRewriteToPrime`) must resolve adapters using the rules in `internal/adapter/resolver.go` `Resolve()` — or a strict subset. If `Resolve()` would error out (no default, no `--adapter`, non-visibility command), the hint helper must fall through to a generic suggestion rather than picking a "first registered" via map iteration. The canonical guard shape is `shouldRewriteToPrime()` (`internal/cli/status.go`): rewrite fires only when `defaults.{command} == <target>`, OR there is exactly one registered adapter under that command group and it is the target. Anything looser produces non-deterministic hints (Go map iteration order is unstable) in ambiguous multi-adapter projects.
 
@@ -1577,7 +1584,7 @@ One file per task, keyed by task ID. The `.gtms/` directory is gitignored — ha
 | `artefact-hash` | Adapter or GTMS | No | SHA-256 hash of the artefact file at completion. Used for stale detection — if the artefact changes after execution, the result is marked stale. |
 | `attempts` | Adapter | No | Number of attempts (defaults to 1) |
 | `summary` | Adapter | No | Human-readable outcome description |
-| `log` | Adapter / GTMS | No | Raw adapter output (stdout + stderr) or a pointer (URL/path) to it. On the contract the adapter-facing field is `log:`; when the pipeline builds the committed record it lands in the record's `notes:` field (renamed from `log:`). Surfaced via `gtms status <tc-id>` for fail/error results. Capped at 64 KB in the committed record -- oversize logs spill to `.gtms/logs/{task-id}.log` (transient, gitignored) and the record stores the spill path in `notes-spill:`. Tier 1 failure paths get this filled in automatically; Tier 2 scripts should write a `log: \|` block (see the canonical shape in `adapters/remote-pester-lean.sh`). |
+| `log` | Adapter / GTMS | No | Raw adapter output (stdout + stderr) or a pointer (URL/path) to it. On the contract the adapter-facing field is `log:`; when the pipeline builds the committed record it lands in the record's `notes:` field (renamed from `log:`). Surfaced via `gtms status <tc-id>` for fail/error results. Capped at 64 KB in the committed record -- oversize logs spill to `.gtms/logs/{task-id}.log` (transient, gitignored) and the record stores the spill path in `notes-spill:`. Tier 1 failure paths get this filled in automatically; Tier 2 scripts should write a `log: \|` block -- the canonical heredoc shape is given under Result Reporting. |
 | `warnings` | Adapter | No | List of non-fatal warning strings the adapter wants surfaced to the user. GTMS merges these into the CLI output alongside any internally-generated warnings. Example: `warnings:\n  - "prompt template missing guides section"`. Adapters that don't populate this field see zero behaviour change. **Note:** anything an adapter writes to stderr is also surfaced via the same warning channel on sync invocations -- see "Adapter Stderr -> Warnings" below. Both channels can be used together; contract warnings render before stderr-derived ones with no collision. |
 | `completed` | Adapter | No | Timestamp when work finished |
 
@@ -1651,7 +1658,7 @@ fi
 
 #### Canonical classification pattern (remote Tier 2, TAP + SSH)
 
-For remote adapters, exit code alone is ambiguous — SSH layers its own exit codes on top of the framework's. The shipped `remote-bats-lean.sh` uses a three-way decision: inspect the **TAP output** to count genuine assertion failures, and use the **process exit code** to detect transport failures. Copy this pattern for any remote BATS adapter:
+For remote adapters, exit code alone is ambiguous — SSH layers its own exit codes on top of the framework's. A remote BATS adapter needs a three-way decision: inspect the **TAP output** to count genuine assertion failures, and use the **process exit code** to detect transport failures. Copy this pattern for any remote BATS adapter:
 
 ```bash
 # Run remotely; capture stdout (TAP) and exit code
@@ -1674,23 +1681,25 @@ else
 fi
 ```
 
-The same shape works for Pester + JUnit XML: count `<failure>` elements under `<testcase>`; treat missing/malformed XML as `error`. The key principle -- **don't conflate transport/infra exit codes with assertion outcomes** -- is enforced across all shipped BATS/Pester adapters.
+The same shape works for Pester, whose result document is NUnit, not JUnit: read the counter attributes on the root `<test-results>` element (`total`, `failures`, `errors`, `skipped`, plus `not-run`, `inconclusive`, `ignored`, `invalid`), demote a skipped aggregate to `skip` (any skip without a failure or error, matching BATS), and record `error` for a document that is missing, unreadable, without a usable `<test-results>` root opening tag, incomplete or internally inconsistent in its counters, or that carries a non-zero `inconclusive`, `ignored` or `invalid` counter. Three further rules keep the document itself from being trusted too far. Read the counters only from the first `<test-results>` root tag; NUnit writes captured output and failure messages inside CDATA, so later tag-shaped text is data, not a result. Treat a root tag with a duplicated counter attribute as unusable, since a naive read takes the last copy. Accept a counter only as a plain non-negative decimal of at most 18 digits, stripping leading zeros before arithmetic (so `08` reads as 8), and record `error` for anything else. The two Pester runners under this repository's `adapters/` directory implement all of this; they are worked examples, not a scaffolded preset. The key principle -- **don't conflate transport/infra exit codes with assertion outcomes** -- holds across the repository's BATS and Pester runners.
 
 #### Diagnostic log payload
 
 On a `result: fail` or `status: error` result, the adapter's raw output is persisted to the committed record's `notes:` field (written by the adapter as the contract's `log:` field) and rendered under `gtms status <tc-id>` so a human or AI agent can diagnose the failure from one command -- no hunt through NUnit XML, no re-run with verbose flags, no `.gtms/results/` excavation.
 
-- **Tier 2 adapters** should write a `log: |` block in the result contract. Use the canonical heredoc shape below — the two-space indent on every content line is YAML-significant (defines the block scalar's indentation). See `adapters/remote-pester-lean.sh` and `adapters/pester-runner.sh` for real examples.
+- **Tier 2 adapters** should write a `log: |2` block in the result contract. Use the canonical heredoc shape below. The `2` is the block indentation indicator: it states that content lines are indented by two spaces, which is exactly what the `sed 's/^/  /'` pipeline adds. Without it, YAML infers the indent from the first content line -- and when that line already carries leading whitespace from the tool's own output, a later line with less indentation closes the block early, the rest parses as a mapping, and the whole contract stops being valid YAML. Ordinary runner output triggers this; it is not a malformed adapter. Before v0.3.3 that produced a silent pass. It is now recorded as an adapter-contract error (see [Updating the Result Contract](#updating-the-result-contract)).
 
   ```bash
   cat > "${GTMS_RESULT_FILE}" <<EOF
   ...
   summary: "${SUMMARY}"
-  log: |
+  log: |2
   $(echo "${OUTPUT}" | sed 's/^/  /')
   completed: $(date -u +%Y-%m-%dT%H:%M:%SZ)
   EOF
   ```
+
+  The runners that `gtms init` ships (`bats-runner.sh`, `playwright-runner.sh`) write this exact shape from v0.3.3. Releases v0.2.0 through v0.3.2 shipped the bare `log: |` form. In an existing project, either change the runner's two `log: |` lines to `log: |2` (this fixes only the log block; an older runner keeps every other pre-v0.3.3 behaviour, including the Playwright exit-code classification), or run `gtms init --force` with the preset: that refreshes a pristine recognised older runner in place and writes a `.gtms-new` companion beside an edited or unrecognised one, but it also rewrites `gtms.config` with no backup, so copy the config aside first and re-apply your customisations afterwards. For the bats preset the recognised older runner is the one shipped by v0.3.0 through v0.3.2; the v0.2.0 bats runner is not recognised. See the user guide's `gtms init` section for the full contract.
 
 - **Tier 1 adapters** get `log:` filled in automatically on failure. GTMS captures stdout + stderr from the process and writes them into the result contract (stderr leads when both are present — most frameworks emit the error line to stderr). The mechanism fires for both the `fail` and `error` branches of the `fail-exit-codes:` mapping.
 
@@ -1770,7 +1779,9 @@ Files that don't match the `tc-{8hex}-*.md` naming pattern (e.g. `notes.txt`, `c
 
 **On success** the invocation proceeds to the normal result-contract handling path with no behavioural change.
 
-**Why this matters.** The contract exists because the dashboard's source-of-truth guarantee depends on filename IDs and frontmatter IDs agreeing. A single mismatched spec silently splits the downstream join keys (filename vs. frontmatter) and produces em-dashes in `gtms status` for tests that actually ran and passed. The validator closes that gap at write time rather than trying to detect it at display time.
+**Why this matters.** GTMS pre-generates the IDs and hands them to the adapter. This validator is how GTMS proves the adapter used them. Without it an adapter that invents an ID, reuses one, or writes a filename disagreeing with the frontmatter it just emitted produces a test case the operator never asked for, with no signal until something downstream behaves oddly.
+
+Note what the contract is NOT. It is not a downstream join key. Every command that ACTS ON a specific existing test case -- `automate`, `prime`, `execute`, `triage --value` -- resolves it through the frontmatter `test_case_id`, so a spec whose filename later diverges from its body ID is a valid, working test case (ADR-024). The bulk listing views are the exception and still discover specs BY FILENAME: `gtms status <folder>`, `gtms gaps`, and `gtms map` (see ENH-205, which owns migrating them). This validator is a contract with the adapter about a file being born, not a rule about files already on disk.
 
 ### Spec-Authored Command Hallucinations (beyond ID integrity)
 
@@ -1796,30 +1807,46 @@ These are all **spec-quality** defects, not ID-integrity defects. They slip thro
 | Tier 2 (`script:`) | Read `$GTMS_TC_IDS` (comma-separated). Write each spec to `$GTMS_OUTPUT_DIR`. Use the IDs in order. |
 | Built-in | N/A — core handles this without adapter involvement. |
 
-**Common failure modes observed in the wild (all rejected by the validator):**
+**Common failure modes observed in the wild (rejected by the validator except where noted):**
 
 - Adapter invents a fresh ID instead of using the pre-generated batch. Violates #4.
 - Adapter uses the same batch ID for two files. Violates #5.
 - Adapter writes a filename like `tc-AAAAAAAA-slug.md` with `test_case_id: tc-bbbbbbbb` in the frontmatter. Violates #3.
-- Adapter emits a spec whose frontmatter YAML is missing `test_case_id` entirely. Violates #1.
+- Adapter emits a spec whose frontmatter YAML is missing `test_case_id` entirely, or whose frontmatter cannot be parsed at all. These DEGRADE rather than violate (BUG-106): the file is recorded as degraded, listed by filename only, and the create task still succeeds. Only a PARSED-but-invalid `test_case_id`, or a malformed filename shape, is a hard violation.
 
 Whatever the trigger — prompt drift, context compaction, model quirk — the validator treats all of them the same way: fail the task, name the file, leave the evidence.
 
-**Scope boundary.** The validator runs **only** on the `create` command path. It does *not* run on `automate`, `execute`, `status`, `gaps`, `map`, or `triage`. Pre-existing mismatched specs (from before the validator shipped) are not auto-corrected — rename them manually, or wait for a future `gtms doctor` command.
+**Scope boundary.** The validator runs **only** on the `create` command path. It does *not* run on `automate`, `execute`, `status`, `gaps`, `map`, or `triage`. Pre-existing specs whose filename ID and frontmatter ID disagree are not auto-corrected, and they do not need to be: downstream commands address a test case by its frontmatter `test_case_id`, so such a file is a working test case under its body ID. Do not tell users to rename them.
+
+**Whose files are examined.** When the adapter's output arrives through the streaming protocol -- Tier 0 built-ins and Tier 1 adapters that use the file delimiters -- `SavedFiles` is populated and ONLY those files enter the check, so a concurrent sibling invocation's specs in the same `outputDir` are skipped. A Tier 2 direct-write adapter populates no `SavedFiles`, and the validator falls back to scanning every newly present file in the directory. Under that fallback a sibling invocation's new file CAN enter the validation set and fail the run. If you write a Tier 2 create adapter, either give each invocation its own `outputDir` or do not run two concurrently against one directory.
 
 **Walk depth.** The validator scans `outputDir` **top-level only** (`os.ReadDir`, not `filepath.Walk`) -- matching `snapshotDir` and `scanOutputDir`, which have always been flat. Files in subdirectories of `outputDir` are **never inspected**. This matches the GTMS contract: create outputs land flat in `outputDir`. If an adapter writes a spec into a subdirectory of `outputDir`, that file is invisible to the validator, invisible to artefact detection, and will not be counted in the result contract. Don't do it -- write directly into `outputDir`. Sub-folder invocations like `gtms create parent/child` get their own `outputDir` scoped to the leaf folder; validation and artefact detection happen flat at that leaf. (A past re-opening: before the fix, the validator walked recursively while the snapshot was flat, so nested pre-existing files from sibling invocations were wrongly rejected by parent-level invocations.)
 
-### Post-Fill Validation Gate
+### Ownership Resolution Before Automate, Prime, Execute, and Triage --value
 
-The create validator runs at the *end* of `gtms create` (post-write). A complementary **post-fill validation gate** runs at the *entry* of `gtms automate`, `gtms prime`, and `gtms execute` -- before any adapter is invoked. It catches frontmatter corruption introduced during manual editing or by an upstream adapter.
+The create validator above runs at the *end* of `gtms create`. What runs at the *entry* of `gtms automate`, `gtms prime`, `gtms execute`, and `gtms triage --value` is not a second validator -- it is an ownership decision, and it asks a different question: which test case spec owns the ID this command was given?
 
-The gate calls `adapter.ValidateTestCasePostFill(projectRoot, target)` and checks:
+The answer comes from parsed frontmatter `test_case_id`, project-wide, and it produces one of four outcomes:
 
-1. **Frontmatter `test_case_id` matches the filename ID** -- the same invariant the create validator enforces at write time, re-checked because a user or editor may have modified the file since creation.
-2. **Required frontmatter fields present** — `test_case_id` must exist and be non-empty.
-3. **No duplicate IDs in the same folder** — folder-scoped scan rejects two specs sharing a `test_case_id` in the same `gtms/test/cases/` subfolder.
+| Outcome | What the command does |
+|---------|-----------------------|
+| Exactly one spec declares the ID | Proceeds, and passes the resolved owner down to the adapter -- the adapter is never handed a bare ID to resolve again. |
+| More than one spec declares it, anywhere in the project | Refuses, names the candidates, exits non-zero. Folders do not partition this: two specs in different folders still collide. |
+| A candidate cannot be read, or carries no usable `test_case_id` | Refuses. An unreadable file is not a file that can be ruled out. |
+| No spec declares it | All three refuse. `execute` used to continue, on the reasoning that a missing spec would surface through the wiring lookup -- REV-159 CODEX-001 closed that: a Mode-3 execute adapter bypasses wiring lookup entirely, so an orphan id reached adapter resolution with a nil owner and created task and result state for a test case that does not exist. Do not restore the continue. |
 
-The gate is **not tier-gated** — it runs identically for Tier 0, 1, and 2 adapters. On any violation the command exits non-zero with a `✗` error naming the file and reason. No adapter is invoked, no task file is created.
+Two things this is NOT, both of which the previous contract asserted and neither of which holds:
+
+- **A filename that disagrees with the frontmatter `test_case_id` is not an error, and is not warned about.** It is a renamed test case, addressed by the ID in its body. The gate that rejected such a file at `automate` / `prime` / `execute` was removed (ADR-024 clause 1a) and must not be reintroduced -- including as a warning from a mutating command.
+- **Duplicate detection here is not folder-scoped.** It is project-wide. The folder-scoped phrasing belonged to the retired gate, and the create-time validator above is narrower still: it sees only the files the current invocation emitted.
+
+The decision is **not tier-gated** -- identical for Tier 0, 1, and 2 adapters. On a refusal the command exits non-zero with a `✗` error naming the file and reason. No adapter is invoked, no task file is created.
+
+`gtms triage --value` runs the same guard, and is easy to miss because it lives in a reader package. It is a MUTATING consumer by effect: it writes a record attributed to an identity and hashes that identity's spec, so it refuses an ambiguous or unprovable id before hashing and before writing anything (`ClassifyTriage`, `internal/reader/triage.go`). `--resolve`, `--show`, and `--list` do not resolve ownership this way -- they select an existing record by path.
+
+**Automate has a second, separate check on the OUTPUT file.** Resolving the test case says who owns the spec; it says nothing about who owns the file the artefact will land on. Before writing or deleting anything, `gtms automate` requires positive proof of artefact ownership -- a wiring record whose parsed `testcase` is the target and whose `artefact` names that file. A foreign claim, or an occupant no wiring record accounts for, refuses the run; so does a wiring record that cannot be read, since the record GTMS could not read may be the one holding the veto. This is not gated on `--force`.
+
+Adapter authors need two consequences of that. First, the planned-output-path half of the check only covers Tier 0 built-in automate, because that is the only case where GTMS chooses the path: a Tier 1 or Tier 2 adapter picks its own destination and GTMS learns it after the write, so **your adapter must not write outside its own test case's artefact** -- GTMS cannot stop you. Second, the cleanup half applies to every tier: `--force` cleanup removes only files the target's own wiring record names, never a file that resembles the target's by name.
 
 ---
 
@@ -2236,7 +2263,9 @@ When the `{context}` variable contains documentation that itself shows `<gtms-fi
 AI models reuse hex values from context rather than generating unique ones. If the source material contains `tc-a1b2c3d` as an example, the adapter may use it as a real test case ID, colliding with existing test cases. Use the `{tc_ids}` variable (create command) — GTMS pre-generates 20 unique IDs via `crypto/rand` and the prompt template should instruct the adapter to use them.
 
 **Filename-to-frontmatter ID integrity is enforced:**
-GTMS hands the adapter the batch of pre-generated IDs and the prompt template carries the contract ("use these IDs in order, do not invent, filename ID must match frontmatter `test_case_id`"). GTMS now **verifies it**: the create-path validator (see [Create Validation Contract](#create-validation-contract)) runs after the files land and **fails the task**, naming the file, if a filename ID and its frontmatter `test_case_id` diverge or the field is missing. The [Post-Fill Validation Gate](#post-fill-validation-gate) re-checks the same invariant at the entry of `automate` / `prime` / `execute`. There is no silent-corruption window on the shipped path -- a mismatch stops the pipeline instead of quietly producing a TC that never joins.
+GTMS hands the adapter the batch of pre-generated IDs and the prompt template carries the contract ("use these IDs in order, do not invent, filename ID must match frontmatter `test_case_id`"). GTMS **verifies it at create time**: the create-path validator (see [Create Validation Contract](#create-validation-contract)) runs after the files land and **fails the task**, naming the file, if a filename ID and its frontmatter `test_case_id` diverge or the field is missing.
+
+That is a producer contract on a file your adapter is emitting, and it is the only place the rule applies. It is NOT re-checked downstream: `automate`, `prime` and `execute` address a test case by its frontmatter `test_case_id`, so a file whose name later diverges keeps working. Write the contract into your prompt template anyway -- an adapter that invents or reuses an ID fails the create task, and a filename that agrees with the body is what makes a folder listing readable.
 
 Adapter authors should still make the prompt rule emphatic so the AI gets it right the first time rather than failing the task:
 
@@ -2249,7 +2278,7 @@ Adapter authors should still make the prompt rule emphatic so the AI gets it rig
 </output_rules>
 ```
 
-If a mismatch does slip through an out-of-band edit, rename the spec file to match the frontmatter ID -- frontmatter is the canonical key for the pipeline join, so frontmatter wins.
+If a mismatch arrives later through an out-of-band edit, leave it alone. Frontmatter is the identity, so the file is a working test case under its body ID and nothing downstream rejects it. Rename it only if you want the folder listing to read cleanly, and never tell a user they must.
 
 **Multi-file automate output:**
 `gtms automate` expects exactly one `<gtms-file>` tag per invocation. An AI that emits a second tag for a helper or fixture file (instead of using the framework's shared-helper module) will cause the task to fail with `status: error` at automate time — no automation record is written. Make the one-file rule explicit in automate prompt templates, not implicit. Example:
@@ -2400,7 +2429,7 @@ mode: sync
 status: ${STATUS}
 result: ${RESULT}
 summary: "${SUMMARY}"
-log: |
+log: |2
 $(echo "${OUTPUT}" | sed 's/^/  /')
 completed: $(date -u +%Y-%m-%dT%H:%M:%SZ)
 EOF
@@ -2413,7 +2442,7 @@ adapter: bats-runner
 mode: sync
 status: ${STATUS}
 summary: "${SUMMARY}"
-log: |
+log: |2
 $(echo "${OUTPUT}" | sed 's/^/  /')
 completed: $(date -u +%Y-%m-%dT%H:%M:%SZ)
 EOF
@@ -2442,52 +2471,56 @@ Check: task file in `gtms/tasks/complete/` (any completed run, including a
 
 **What GTMS does behind the scenes:** Resolve adapter -> generate task ID -> create task file -> create result contract -> build context (`GTMS_ARTEFACT_FILE` from the wiring record) -> invoke `sh gtms/adapters/bats-runner.sh` with `GTMS_*` env vars -> adapter writes the contract -> GTMS reads it, persists `status`/`result` without override, maps to the pipeline record and moves the task file.
 
-### Tier 2 Example: playwright-runner Execute Adapter (deliberately minimal)
+### Tier 2 Example: playwright-runner Execute Adapter (classifies from the report)
 
-The shipped `playwright-runner.sh` (from `gtms init --preset playwright`) is
-intentionally skeletal: it runs a single TC-specific `.spec.ts` and maps
-the exit code, with no JUnit parse and no append mode. It is the reference
-for a *minimal* runner -- and for the missing-tooling diagnostic pattern:
+The shipped `playwright-runner.sh` (from `gtms init --preset playwright`) runs a
+single TC-specific `.spec.ts` with Playwright's JSON reporter and chooses the
+recorded outcome from that report, never from the process exit code. Playwright
+exits 0 both when every test passed and when every test was skipped, so the exit
+code cannot tell those apart; it still appears in the recorded `summary:` as
+diagnostic context. Both `npx` and `node` are required (Playwright to run, Node
+to read the report); the runner fails closed with a `status: error` handoff and
+an install hint if either is missing, because `gtms init` does not install Node,
+Playwright, or browsers.
+
+What the report maps to:
+
+| Report says | Recorded as |
+|---|---|
+| Tests ran and passed | `status: complete`, `result: pass` |
+| A test failed (including a timeout) | `status: complete`, `result: fail` |
+| Every selected test skipped | `status: complete`, `result: skip` |
+| Some passed, some skipped, none failed | `status: complete`, `result: skip` |
+| No tests discovered | `status: error`, no result |
+| Run interrupted, or the report is missing, malformed or unrecognised | `status: error`, no result |
+
+Mixed pass-and-skip demoting to `skip` is the rule BATS already applies: a
+failure wins, otherwise any skip demotes the aggregate. A flaky test that passed
+on retry, and an expected failure that failed as expected, both count as passes,
+with the detail carried in the summary. An untouched `gtms automate` skeleton
+therefore records `skip`, which is the intended signal that the test is unwritten.
+
+The shape, reduced to its decision points (the shipped script is longer; do not
+copy this as a runner):
 
 ```sh
-#!/bin/sh
-# playwright-runner.sh -- Tier 2 sync execute adapter. Single TC-specific spec,
-# no JUnit parse, no append mode.
-set -e
-
-# Missing-tooling diagnostic. gtms init does NOT install Node/Playwright. The
-# diagnostic is DUPLICATED into the result contract summary because the adapter's
-# own stderr is captured but not threaded to the parent gtms process --
-# writing it to the contract is how it surfaces via the execute output.
-if ! command -v npx >/dev/null 2>&1; then
-  DIAG="Playwright or Node not found -- gtms init does not install Node, Playwright, browsers, or third-party tooling. Install Node and run 'npx playwright install', then re-run."
-  echo "$DIAG" >&2
-  cat > "${GTMS_RESULT_FILE}" <<EOF
-task: ${GTMS_TASK_ID}
-command: execute
-target: ${GTMS_ARTEFACT_FILE}
-adapter: playwright-runner
-mode: sync
-status: error
-summary: "${DIAG}"
-completed: $(date -u +%Y-%m-%dT%H:%M:%SZ)
-EOF
-  exit 1
-fi
-
-set +e
-OUTPUT=$(npx playwright test "${GTMS_ARTEFACT_FILE}" 2>&1)
+# 1. Run with the JSON reporter to a file; keep the exit code for diagnostics only.
+npx playwright test "${GTMS_ARTEFACT_FILE}" --reporter=json > "${REPORT}" 2>"${STDERR}"
 EXIT_CODE=$?
-set -e
 
-# Simple exit-code mapping. A minimal runner omits JUnit parsing, so it cannot
-# distinguish "5 passed, 1 failed" from a clean fail: exit 0 -> pass, else fail.
-if [ "$EXIT_CODE" -eq 0 ]; then
-  STATUS="complete"; RESULT="pass"; SUMMARY="Playwright test passed"
-else
-  STATUS="complete"; RESULT="fail"; SUMMARY="Playwright test failed (exit ${EXIT_CODE})"
-fi
+# 2. Read the report's counters. A missing, truncated or unexpected document is
+#    an error, never a pass: "could not classify" resolves to status: error.
+#    (The shipped runner does this with a small node script; any JSON reader works.)
+#    counters: expected (passed), unexpected (failed), skipped, flaky, interrupted
 
+# 3. Decide from the counters, not from EXIT_CODE.
+#    interrupted > 0 or no tests            -> STATUS=error  RESULT=""
+#    unexpected  > 0                        -> STATUS=complete RESULT=fail
+#    skipped     > 0 and unexpected == 0    -> STATUS=complete RESULT=skip
+#    otherwise                              -> STATUS=complete RESULT=pass
+
+# 4. Write the contract. Emit result: only when non-empty (orthogonal contract);
+#    use log: |2 so the report's own indentation cannot break the YAML.
 cat > "${GTMS_RESULT_FILE}" <<EOF
 task: ${GTMS_TASK_ID}
 command: execute
@@ -2495,23 +2528,18 @@ target: ${GTMS_ARTEFACT_FILE}
 adapter: playwright-runner
 mode: sync
 status: ${STATUS}
-result: ${RESULT}
-summary: "${SUMMARY}"
-log: |
-$(echo "${OUTPUT}" | sed 's/^/  /')
+${RESULT:+result: ${RESULT}}
+summary: "Playwright: ${EXPECTED} passed, ${UNEXPECTED} failed, ${SKIPPED} skipped (exit ${EXIT_CODE})"
+log: |2
+$(cat "${STDERR}" | sed 's/^/  /')
 completed: $(date -u +%Y-%m-%dT%H:%M:%SZ)
 EOF
-
-echo "${OUTPUT}"
-exit 0
 ```
 
 Config (the `playwright` preset): `script: gtms/adapters/playwright-runner.sh`,
 `framework: playwright`, `output-dir: gtms/scripts/playwright`, `artefact-glob:
-"gtms/scripts/playwright/**/{testcase}*.spec.ts"`. What a minimal runner omits: a
-JUnit parse (so no per-test tally in the `summary:`) and append mode (so one
-spec file per TC, not multiple TCs sharing a file). To distinguish a partial fail or
-extract counts, add JUnit parsing -- see the pattern below.
+"gtms/scripts/playwright/**/{testcase}*.spec.ts"`. One spec file per TC; the
+runner does not use append mode.
 
 > **Why Tier 2 for BATS specifically?** Exit code alone can't distinguish "all tests skipped" from "all tests passed" -- bats exits 0 in both cases. The earlier Tier 1 form (`command: 'bats {artefact_file}'`) needed core to sniff stdout for `# skip` markers. That core sniff was retired and the classification pushed into the adapter; Tier 2 is where the classification logic lives. **General lesson**: when your tool's exit code under-determines the outcome (skip/pass conflated, partial success, conditional pass), reach for Tier 2 with explicit `status:` writes.
 
@@ -2604,7 +2632,7 @@ The key insight: if the XML contains a `tests` count > 0, the framework ran — 
 | **Playwright** (`--reporter=junit`) | JUnit | `tests="N"` | `failures="N"` | `errors="N"` |
 | **pytest** (`--junitxml`) | JUnit | `tests="N"` | `failures="N"` | `errors="N"` |
 | **Jest** (`jest-junit`) | JUnit | `tests="N"` | `failures="N"` | `errors="N"` |
-| **Pester** (`-CI` or NUnitXml) | NUnit | `total="N"` | `failed="N"` | — |
+| **Pester** (`-CI` or NUnitXml) | NUnit | `total="N"` | `failures="N"` | — |
 | **Go test** (`-json` + gotestsum) | JUnit | `tests="N"` | `failures="N"` | `errors="N"` |
 | **Newman/Postman** | JUnit | `tests="N"` | `failures="N"` | `errors="N"` |
 
@@ -2787,15 +2815,19 @@ See the [execute fixture checklist](#cross-framework) for the three things that 
 GTMS is a single Go binary with no runtime dependencies (no Go installation required on the target machine).
 
 ```bash
-go build -o gtms ./cmd/gtms       # Linux/macOS
-go build -o gtms.exe ./cmd/gtms   # Windows (including Git Bash / MINGW)
+go build -o gtms-linux ./cmd/gtms   # Linux/macOS
+go build -o gtms.exe ./cmd/gtms     # Windows (including Git Bash / MINGW)
 ```
+
+Do not name the output a bare `gtms`. In any initialised GTMS project `gtms/`
+is the data directory, so Go treats it as a destination directory, writes the
+binary inside it, and exits 0 without warning.
 
 **Cross-compile:**
 ```bash
-GOOS=linux GOARCH=amd64 go build -o gtms ./cmd/gtms         # Linux x86_64
-GOOS=darwin GOARCH=arm64 go build -o gtms ./cmd/gtms         # macOS Apple Silicon
-GOOS=windows GOARCH=amd64 go build -o gtms.exe ./cmd/gtms    # Windows x86_64
+GOOS=linux GOARCH=amd64 go build -o gtms-linux-amd64 ./cmd/gtms    # Linux x86_64
+GOOS=darwin GOARCH=arm64 go build -o gtms-darwin-arm64 ./cmd/gtms  # macOS Apple Silicon
+GOOS=windows GOARCH=amd64 go build -o gtms.exe ./cmd/gtms          # Windows x86_64
 ```
 
 ### Prerequisites on the target machine
@@ -2894,9 +2926,9 @@ Rather than shipping generic prompt templates for every framework, GTMS uses **b
 
 | Framework | Status | Notes |
 |-----------|--------|-------|
-| **Playwright** | Available | See [USER-GUIDE.md](../USER-GUIDE.md) or `reference/archive/framework-integration-guide.md` for the full prompt |
-| **BATS** | Available in-project | See `gtms/automation/prompts/automate-bats.md` |
-| **Pester** | Available in-project | See `gtms/automation/prompts/automate-pester.md`. Execute via `adapters/pester-runner.sh` (Tier 2) |
+| **Playwright** | Available | See [USER-GUIDE.md](../USER-GUIDE.md) for the full prompt |
+| **BATS** | Scaffolded by `gtms init --preset bats` | Installs `gtms/adapters/bats-runner.sh`, `gtms/adapters/lib/bats-tap.sh` and `gtms/automation/templates/bats.template.bats`. No automate prompt is scaffolded -- `agent-automate` stamps the template and the agent fills it |
+| **Pester** | Bring your own | No `gtms init` preset ships a Pester prompt or runner. Write a Tier 2 runner following the BATS runner's shape and point an `execute` adapter at it |
 | **Cypress** | Planned | `cy.` commands, `cypress.config.js`, `cypress/support/` helpers |
 | **pytest** | Planned | Python fixtures, `conftest.py`, `pytest.ini`/`pyproject.toml` |
 | **Jest** | Planned | `jest.config.js`, test utilities, mock patterns |
@@ -2939,8 +2971,12 @@ Known gotchas discovered during dry runs and real usage. When you discover a new
 
 ### Cross-Framework
 
-**`--force` re-automate and duplicate cleanup (fixed):**
-`gtms automate --force` now handles both manifestations of duplicate output files. Before invoking the adapter, GTMS cleans up existing output files by TC ID prefix — so if the AI generates a different filename slug (e.g. `tc-abc-init-demo.bats` → `tc-abc-init-demo-powershell.bats`), the old file is removed first. The streaming writer also accepts the `force` flag to overwrite same-filename duplicates rather than skipping them. Without `--force`, the duplicate file guard remains active as a safety net against accidental overwrites.
+**`--force` re-automate and stale-output cleanup:**
+Before invoking the adapter, `gtms automate --force` sweeps the output directory and removes the target's own stale artefacts -- so if a previous run produced `tc-abc-init-demo.bats` and this one will produce `tc-abc-init-demo-powershell.bats`, the old file goes first.
+
+**Which files are the target's is decided by wiring records, never by name.** A file is removed only when a wiring record whose parsed `testcase` is the target names that exact file, and no other identity claims it too. There is no TC-ID-prefix rule; the earlier one was removed because it could not be made safe. TC IDs may contain single dashes, so `tc-aaaa-bbbb-checkout.bats` is indistinguishable by inspection from `tc-aaaa`'s output and from `tc-aaaa-bbbb`'s, and the prefix sweep deleted the wrong test case's script. A file nothing claims is left where it is and reported, not cleaned up.
+
+The streaming writer still accepts the `force` flag to overwrite same-filename duplicates rather than skipping them. Without `--force`, the duplicate file guard remains active as a safety net against accidental overwrites -- and the ownership rule above applies with or without the flag.
 
 **Mock adapters don't produce pipeline artifacts:**
 Mock adapters (`command: 'echo "..."'`) are useful for testing GTMS orchestration (task files, result contracts, exit codes) but they don't produce real test case files, automation records, or execution results. Tests that chain commands (create → automate → execute) and then check downstream artifacts must write fixture files directly. This applies to BATS, Pester, and any framework's test infrastructure.
@@ -2954,7 +2990,7 @@ permanent-record layer, which the wiring cutover retired as a live
 execute substrate. `gtms execute` no longer reads or writes automation records;
 the live substrates are the wiring record and the result handoff (see the Handoff
 section). Kept here as history for anyone reading a legacy record on disk.
-Five YAML fields in the old `gtms/automation/records/tc-XXX--<fw>.automation.md` shape were renamed: `last-formal-result` -> `result`, `last-formal-run` -> `executed_artefact`, `last-formal-run-at` -> `executed_at`, `log` -> `notes`, `log-spill` -> `notes-spill`. Two universal fields added: `executed_by` (CLI flag `--executed-by` > `GTMS_EXECUTED_BY` env > `git config user.name`) and `environment` (from `--env`). The `defect:` field is now `[]string` -- `gtms triage --app-wrong --defect X` appends with dedup, doesn't overwrite. New `RecordCommon` struct embedded by `AutomationRecord`; future manual record type will share it.
+Five YAML fields in the old `gtms/automation/records/tc-XXX--<fw>.automation.md` shape were renamed: `last-formal-result` -> `result`, `last-formal-run` -> `executed_artefact`, `last-formal-run-at` -> `executed_at`, `log` -> `notes`, `log-spill` -> `notes-spill`. Two universal fields added: `executed_by` (CLI flag `--executed-by` > `GTMS_EXECUTED_BY` env > `git config user.name`) and `environment` (from `--env`). The `defect:` field is now `[]string` on the legacy automation record. (ENH-200 / CON-040: triage no longer writes to automation records at all -- `gtms triage --value <key> --defect X` records the defect on the independent triage record at `gtms/triage/<tc>--<fw>.triage.yaml`.) New `RecordCommon` struct embedded by `AutomationRecord`; future manual record type will share it.
 
 **Important — the RESULT CONTRACT is unchanged:** the adapter-facing `log:` field in `.gtms/results/{task-id}.handoff.yaml` (`internal/result/result.go`) stays as `log:`. Only the pipeline record renamed to `notes:`. Adapter scripts that write `log:` to `$GTMS_RESULT_FILE` continue to work unchanged.
 
@@ -2964,25 +3000,26 @@ A `MigrateAutomationRecords()` walker exists in Go for migrating any legacy on-d
 The per-run execute state lives in the result handoff (`.gtms/results/<task>.handoff.yaml`) and the per-test row (`gtms/execution/*.results.yaml`); the identity record is the wiring record (`gtms/automation/wiring/`). These, plus the legacy `gtms/automation/records/`, are gitignored (pipeline state, regenerable from `gtms execute` runs). Adapter authors should NOT assume any of them are committed source-of-truth. CI workflows that need a deterministic dashboard view should run `gtms execute -r <folder>` from a clean checkout before asserting on `gtms status`. Results reconstruct from spec + artefact + wiring; specs (`gtms/test/cases/`) and artefacts (`test/acceptance/...`) remain the committed source.
 
 **Lifecycle vocabulary rename `failed` -> `error`:**
-The lifecycle-error bucket is `gtms/tasks/error/` (previously `gtms/tasks/failed/`); task frontmatter `status: error` (previously `status: failed`); reader JSON `execute_status` field value is `"error"` (previously `"failed"`); CLI prose label is `Error` (previously `Failed`). Migration option (a) chosen -- one-time scripted rewrite in `scripts/migrate-failed-to-error.sh`, no legacy-tolerance bridge retained. Two lessons that generalise:
+The lifecycle-error bucket is `gtms/tasks/error/` (previously `gtms/tasks/failed/`); task frontmatter `status: error` (previously `status: failed`); reader JSON `execute_status` field value is `"error"` (previously `"failed"`); CLI prose label is `Error` (previously `Failed`). The rename was applied in one pass with no legacy-tolerance bridge retained. Two lessons that generalise:
 
-1. **Lifecycle vocabulary lives on seven surfaces** that must move in lockstep when the vocabulary changes — partial sweeps leave split-brain where one surface scaffolds an old-bucket task and another doesn't see it. The audit checklist:
-   1. **Directory paths** under `gtms/tasks/<state>/` (created by `gtms init` scaffold).
-   2. **Frontmatter `status:` values** in task files (written by `internal/task` + invoker; rejected at `task.Create`/`task.Move` if not in `ValidStatuses`).
-   3. **Reader JSON field values** in `gtms status --json`, `gtms map --json`, `gtms gaps --json` — specifically `execute_status`.
-   4. **CLI prose labels** — `internal/cli/status.go` `formatTaskStatus`/`formatDetailLabel`/`formatExecuteLabel` plus `internal/cli/create_status.go` `formatTaskStatus`.
-   5. **BATS fixture seeds + assertions** — heredoc-written task files in `test/acceptance/**/*.bats` (paths, frontmatter, renderer output).
-   6. **Pester fixture seeds + assertions** — equivalent at `test/pester/**/*.Tests.ps1` (asserts on the same bucket paths via `Get-ChildItem`).
-   7. **Test-infrastructure helpers** that pre-create the lifecycle directories — `test/test_helper/common-setup.bash` for BATS and `test/pester/GtmsTestHelper.psm1` for Pester. Easy to miss because they're not in any `gtms/test/cases/` spec — grep on the bucket name explicitly.
+1. **A vocabulary change has to move every surface at once.** The bucket
+   directory, the task frontmatter value, the reader JSON field and the CLI
+   prose labels all encode the same word; changing some and not others leaves a
+   split-brain dashboard. If you build tooling that reads any of them, read the
+   value rather than inferring it from a directory name.
 
-   The rename hit all seven surfaces by completion. The Pester surface (6 + 7) escaped the Phase 3 BATS-only sweep and was caught by the GitHub Pester job: `tc-e3937fc8` failed in the first push and `tc-852191bc` was passing by accident -- its `failed/` branch never ran because the underlying bug is fixed on CI, so the legacy `Get-ChildItem` returned empty and the test fell through other error indicators.
 2. **Lifecycle and test-outcome vocabulary are orthogonal** -- `status: error` (adapter/runtime/validation failed -> `gtms/tasks/error/`) and `result: fail` (test ran cleanly and reported a failure -> `gtms/tasks/complete/`) are independent dimensions. Find-replace of `"failed"` -> `"error"` corrupts the test-outcome family. When sweeping vocabulary across fixtures, classify each occurrence: (A) lifecycle path/status/label -> rename, (B) test-outcome contract (`result: fail`, `fail-exit-codes`, "1 failed" tallies) -> preserve, (C) archaeology asserting absence of a retired literal -> preserve with a `# legacy contract literal: intentional` comment.
 
 **Helper-sync coverage gap:**
-Previously, neither `scripts/remote-full-run-unix.sh` nor `scripts/remote-dir-run-unix.sh` synced the `scripts/` directory to the VPS workspace -- only `internal/`, `cmd/`, `test/`, `gtms/`, `reference/`, etc. Both helpers now `scp -r scripts/`. Lesson: when you add a top-level helper directory that BATS tests exec from (e.g. one-time migration scripts), audit the remote-helper sync block. Symptom of a missing sync is a BATS that passes locally on Windows but fails on Linux VPS with `Migration script not found at $PROJECT_ROOT/scripts/...`. The hypothesis ladder for "passes locally, fails remotely" is now: (a) stale binary, (b) awk/sed portability, (c) line-ending difference, (d) PROJECT_ROOT discovery, **(e) helper sync coverage gap** -- check (e) first when the symptom is `file not found`.
+A remote runner only sees what its sync step copies. When tests start exec'ing a
+new top-level directory, the sync list has to grow with them, or they fail on
+the remote with a file-not-found while passing locally. The hypothesis ladder for
+"passes locally, fails remotely" is: (a) stale binary, (b) awk/sed portability,
+(c) line-ending difference, (d) project-root discovery, (e) sync coverage gap --
+check (e) first when the symptom is `file not found`.
 
 **Local `bats-runner` skip surfacing -- fixed, mixed-rollup later tightened:**
-The original Tier 1 `bats-runner` (`command: bats {artefact_file}`) couldn't distinguish skip from pass -- BATS exits 0 for both, and the Tier 1 contract has no hook into stdout. That form was retired and replaced with a Tier 2 wrapper at `adapters/bats-runner.sh` that sources `adapters/lib/bats-tap.sh` and classifies via `classify_bats_status` (the same TAP rules the four `remote-bats-*` adapters now use). All five adapters in the BATS family -- `bats-runner`, `remote-bats-execute`, `remote-bats-lean`, `remote-bats-unix-execute`, `remote-bats-unix-lean` -- produce identical contract output for any given TAP input. The rollup rule was then tightened: any `# skip` directive without a `not ok` line demotes the spec file to `result: skip` (mixed pass+skip -> ⊘, not ✓; the `result:` axis carries this, not the retired `status: skipped`). Wrappers surface both pass and skip counts in the `summary:` field (e.g. `"2 passed, 1 skipped"`); the all-skip case still produces `"All N tests skipped"` for back-compat.
+The original Tier 1 `bats-runner` (`command: bats {artefact_file}`) couldn't distinguish skip from pass -- BATS exits 0 for both, and the Tier 1 contract has no hook into stdout. That form was retired and replaced with a Tier 2 wrapper at `gtms/adapters/bats-runner.sh` that sources `gtms/adapters/lib/bats-tap.sh` and classifies via `classify_bats_status` (the same TAP rules the four `remote-bats-*` adapters now use). All five adapters in the BATS family -- `bats-runner`, `remote-bats-execute`, `remote-bats-lean`, `remote-bats-unix-execute`, `remote-bats-unix-lean` -- produce identical contract output for any given TAP input. The rollup rule was then tightened: any `# skip` directive without a `not ok` line demotes the spec file to `result: skip` (mixed pass+skip -> ⊘, not ✓; the `result:` axis carries this, not the retired `status: skipped`). Wrappers surface both pass and skip counts in the `summary:` field (e.g. `"2 passed, 1 skipped"`); the all-skip case still produces `"All N tests skipped"` for back-compat.
 
 **Folder arguments are subfolder slugs, not prefixed paths:**
 Commands like `gtms automate`, `gtms execute`, `gtms delete`, and `gtms reset` accept a folder argument that is the **subfolder slug** relative to `gtms/test/cases/` (e.g. `my-feature`). Passing the long-form `gtms/test/cases/my-feature` or the short-form `cases/my-feature` is rejected with *"Don't include the `gtms/test/cases/` prefix — GTMS adds it automatically"* — GTMS prepends the prefix itself.
@@ -2993,8 +3030,8 @@ GTMS outputs adapter metadata (adapter name, branch) on stdout. Task completion 
 **Execute fixture checklist (three things must be right):**
 When writing fixture files for `gtms execute` tests: (1) a wiring record must exist for the TC and framework at `gtms/automation/wiring/<tc>--<fw>.wiring.yaml` (the six-field schema; no `status` field) -- without it, execute errors with `No wiring record found`; (2) the execute adapter config must have `framework:` matching the wiring record's `framework:` field -- without this, execute can't find the record; (3) the artefact file referenced in the wiring record's `artefact:` must actually exist on disk -- execute verifies the file before running the adapter.
 
-**YAML `---` in result contract `log:` field breaks pipeline:**
-If a Tier 2 adapter writes a `log:` block scalar to the result contract and the adapter output contains `---` (YAML document separator), Go's YAML parser silently truncates the contract. `UpdateExecutionResult` fails without any error or warning, leaving the automation record's `result` stuck on the previous value. The dashboard shows the wrong state. **Do NOT write raw adapter output to the `log:` field** -- either omit `log:` entirely, or sanitise the output to remove `---` lines. This affects any adapter whose output may contain `---` (Pester's ANSI output is a known trigger). *TODO: Update this entry when this is fixed -- the `log:` field should then be safe to use.*
+**YAML `---` in result contract `log:` field (resolved):**
+A `---` line (YAML document separator) inside the `log:` block used to end the document early: the contract was silently truncated, the result stayed on its previous value, and the dashboard showed the wrong state. GTMS now neutralises document separators inside block scalar content before parsing the contract, so raw tool output containing `---` (Pester's ANSI output is a common source) is safe to write to `log:`. Write the block as `log: |2` (see [Diagnostic log payload](#diagnostic-log-payload)); the separator handling is independent of the indentation indicator.
 
 **`--framework` filter scopes bulk execute:**
 `gtms execute -r --adapter remote-bats-lean` (or with explicit `--framework bats`) skips TCs without a matching framework record quietly -- the skip is silent in text output (em-dashes for AUTOMATE / EXECUTE / LAST RESULT). Framework is resolved from the `--framework` flag or the adapter config's `framework:` field. The skip applies even with `--force` -- `--force` re-runs eligible TCs but does not attempt executions that cannot succeed. The folder-summary views (`status`, `gaps`) also respect `--framework`: `2/3 AUTOMATED` under a framework filter means 2 of 3 TCs in that folder have a record for the selected framework. Per-TC detail views still fall back to any available record when no framework match exists (strict per-TC filtering applies only with an explicit `--framework`). **`--json` consumers** can distinguish "no records anywhere" from "records exist under other frameworks" via per-TC `available_frameworks` (sorted list) and folder-level `framework_mismatch` (count) -- these are wired through the reader data layer. Text rendering is unchanged by design.
@@ -3045,7 +3082,7 @@ The execute pipeline is keyed on the wiring record -- `gtms/automation/wiring/<t
 
 **Scaffold patterns:**
 - Use `test.fixme()` not `test.todo()` — Playwright has no `test.todo()`. Claude will hallucinate it.
-- `test.fixme()` produces exit 0 (skipped). Only failed assertions produce exit 1.
+- `test.fixme()` and `test.skip()` are reported as skipped. Playwright still exits 0 for an all-skipped run, which is why the shipped runner classifies from the JSON report: every test skipped, or passes mixed with skips and no failures, records `result: skip`; only the report's failures record `fail`.
 
 **AI hallucination risks:**
 - Page object hallucination — AI invents methods (`page.clickButton()`, `page.fillForm()`)
@@ -3067,9 +3104,9 @@ The execute pipeline is keyed on the wiring record -- `gtms/automation/wiring/<t
 - `assert_output --partial` is the safe default for multi-word / free-form text where CRLF or whitespace may vary (Windows/MINGW). **But not for numeric counts or single-token values** -- see below
 - **Default-too-forgiving:** the BATS adapter's historical default was "always use `--partial`". That rule is wrong for pure numeric counts (`wc -l` output) and any single-digit token, because `--partial "0"` also matches `10`, `100`, `0 errors`, etc. Use exact `assert_output "0"` for single-digit counts (trim with `tr -d '[:space:]'` first) and `[ -z "$output" ]` to enforce empty stdout rather than `refute_output --partial "<specific phrase>"`
 - **Walk-up fail-fast:** every `setup_file()` that walks up to `gtms.config` must add a fail-fast guard: `[ -f "$dir/gtms.config" ] || { echo "PROJECT_ROOT discovery failed" >&2; return 1; }`. Without it, the loop terminates at `/` and produces cryptic `load: file not found` errors
-- **`grep -i` aborts on multi-byte UTF-8 input under minimal locales**: on win-runner-1 (SSH session, no `LC_ALL` / `LANG` set), `grep -q -i` on GTMS product output containing em-dash (U+2014) or status glyphs (✓ ✗ ⊘ ⚠ ●) dies with `Aborted` (SIGABRT), not exit 1. Local MINGW64 and Ubuntu CI both tolerate it -- this is a VPS-specific locale issue that only surfaces via `remote-bats-lean`. **Always prefer bash glob for literal substring checks** against product output: `[[ "$var" == *"literal"* ]]` instead of `printf '%s' "$var" | grep -q -i "literal"`. Bash glob is locale-independent and matches bytes verbatim. The sweep converted 9 BATS tests; `grep -i` is still appropriate for content guaranteed ASCII-only (error messages, file paths, CI summary labels).
-- **Whole-row glyph assertions on dashboard rows are structurally wrong**: `[[ "$row" != *$'\xe2\x9c\x93'* ]]` (checkmark absent) fails because CREATE and AUTOMATE columns legitimately contain ✓ when those stages are complete. To prove EXECUTE doesn't show ✓, assert the *presence* of the alternative icon: `[[ "$row" == *$'\xe2\x9a\xa0'* ]]` (warning triangle). If EXECUTE shows ⚠ it cannot also show ✓ -- no need to check for absence. Same principle applies to any per-column assertion: either extract the column text first, or use positive presence of the expected icon rather than row-wide absence of the unwanted one. Reference: `test/acceptance/spec-bats-alignment-drift/tc-4d4db93a-dashboard-error-no-checkmark.bats`.
-- **When converting `grep -iE` to bash glob, preserve load-bearing case-insensitivity via bash character classes**: a naïve swap from `grep -qiE "in-progress|pending|running"` to `[[ "$var" == *"in-progress"* ]]` drops the `-i` -- and fails when the product renders `● In Progress` (title case). Use bash character classes: `[[ "$var" == *[Ii]"n-"[Pp]"rogress"* || "$var" == *[Ii]"n "[Pp]"rogress"* ]]`. Reference pattern in `test/acceptance/enh-096-enh-092-functional-followups/tc-1a392ff1-*.bats`. Rule of thumb: if the original `grep` used `-i` and you don't know whether the product string is already lowercase, assume case is load-bearing and add the character classes.
+- **`grep -i` can abort on multi-byte UTF-8 input under a minimal locale**: with no `LC_ALL` / `LANG` set, `grep -q -i` against product output containing an em-dash or a status glyph can die with `Aborted` (SIGABRT) rather than exit 1, while the same command tolerates it under a fuller locale. **Prefer a bash glob for literal substring checks** against product output: `[[ "$var" == *"literal"* ]]` rather than `printf '%s' "$var" | grep -q -i "literal"`. Bash glob is locale-independent and matches bytes verbatim. `grep -i` remains fine for content guaranteed ASCII-only (error messages, file paths, CI summary labels).
+- **Whole-row glyph assertions on dashboard rows are structurally wrong**: `[[ "$row" != *$'\xe2\x9c\x93'* ]]` (checkmark absent) fails because CREATE and AUTOMATE columns legitimately contain ✓ when those stages are complete. To prove EXECUTE doesn't show ✓, assert the *presence* of the alternative icon: `[[ "$row" == *$'\xe2\x9a\xa0'* ]]` (warning triangle). If EXECUTE shows ⚠ it cannot also show ✓ -- no need to check for absence. Same principle applies to any per-column assertion: either extract the column text first, or use positive presence of the expected icon rather than row-wide absence of the unwanted one.
+- **When converting `grep -iE` to bash glob, preserve load-bearing case-insensitivity via bash character classes**: a naïve swap from `grep -qiE "in-progress|pending|running"` to `[[ "$var" == *"in-progress"* ]]` drops the `-i` -- and fails when the product renders `● In Progress` (title case). Use bash character classes: `[[ "$var" == *[Ii]"n-"[Pp]"rogress"* || "$var" == *[Ii]"n "[Pp]"rogress"* ]]`. Rule of thumb: if the original `grep` used `-i` and you don't know whether the product string is already lowercase, assume case is load-bearing and add the character classes.
 
 **Wiring record gotchas:**
 - Execute requires a wiring record `gtms/automation/wiring/<tc-id>--<fw>.wiring.yaml` (six fields, no `status` gate); GTMS scans `gtms/automation/wiring/`, not the retired `gtms/automation/records/*.automation.md`.
@@ -3077,7 +3114,7 @@ The execute pipeline is keyed on the wiring record -- `gtms/automation/wiring/<t
 - Cross-framework fixture pattern: when a BATS test needs to simulate "this TC has a Pester record" (or Cypress, or any other framework), write a wiring record at `gtms/automation/wiring/<tc-id>--<fw>.wiring.yaml` with the six identity fields (`testcase`, `testcase-hash`, `framework`, `adapter`, `artefact`, `artefact-hash`). AI often writes raw artefact files like `gtms/automation/<slug>/pester/<tc>.Tests.ps1` instead -- GTMS resolves execution from the wiring record, so those raw files are invisible and the fixture silently misrepresents the state it's trying to test. The `artefact:` value only needs to be a path string; the file doesn't need to exist unless the test itself touches it.
 
 **Fixture placement gotcha:**
-- BATS tests that exercise the resolver's glob-walk fallback (stale-hash, skip-list scenarios) must place primary artefact fixtures under user-controlled directories (`test/acceptance/`, `tests/`). Primaries placed inside `.git`, `.gtms`, `gtms/test/cases/`, `gtms/automation/`, or `gtms/tasks/` -- at any depth -- are invisible to the walk per the resolver's hardcoded skip list, so "multiple artefact" scenarios silently fire "no artefact found" instead. The `automate-bats.md` prompt template carries this as critical rule #11 at generation time; this note is a backup for manual authoring.
+- BATS tests that exercise the resolver's glob-walk fallback (stale-hash, skip-list scenarios) must place primary artefact fixtures under user-controlled directories (`test/acceptance/`, `tests/`). Primaries placed inside `.git`, `.gtms`, `gtms/test/cases/`, `gtms/automation/`, or `gtms/tasks/` -- at any depth -- are invisible to the walk per the resolver's hardcoded skip list, so "multiple artefact" scenarios silently fire "no artefact found" instead.
 - **Note:** The `artefact-ignore:` config key was retired in the wiring-authoritative cutover. It is no longer accepted in `gtms.config`.
 
 **Platform notes:**
@@ -3086,23 +3123,19 @@ The execute pipeline is keyed on the wiring record -- `gtms/automation/wiring/<t
 - `.bats` files must have LF line endings — CRLF causes "bad interpreter" errors
 
 **Orthogonal contract -- replaces tri-state:**
-- A Tier 2 BATS adapter that writes `status: error` on any non-zero exit conflates genuine assertion failures with infra failures (SSH down, bats not installed). Parse the TAP stream: `not ok` lines with a valid `1..N` plan → `status: complete` + `result: fail`. No plan line, or SSH exit 255 → `status: error` + `result:` empty. See `adapters/remote-bats-lean.sh` for the reference implementation. Legacy `status: fail` and `status: skipped` are **retired** — writing them triggers Tier 2 read-boundary validation rejection and recovery to `status: error`.
+- A Tier 2 BATS adapter that writes `status: error` on any non-zero exit conflates genuine assertion failures with infra failures (SSH down, bats not installed). Parse the TAP stream: `not ok` lines with a valid `1..N` plan → `status: complete` + `result: fail`. No plan line, or SSH exit 255 → `status: error` + `result:` empty. Legacy `status: fail` and `status: skipped` are **retired** — writing them triggers Tier 2 read-boundary validation rejection and recovery to `status: error`.
 
 **Skip classification:**
-- BATS `skip "reason"` inside a test body emits TAP `ok N # skip <reason>` and exits 0. This once looked indistinguishable from a real pass -- the dashboard rendered ✓ while the test never actually asserted. Skip classification was moved from core GTMS into the adapters themselves: each BATS adapter now sources `adapters/lib/bats-tap.sh` (a shared TAP classifier) and writes the appropriate `status:` + `result:` values to `$GTMS_RESULT_FILE` directly. The contract shape then changed: adapters write `status: complete` + `result: skip` (not the retired `status: skipped`). The rollup rule is **any-skip-without-fail demotes to skip**: if the TAP stream contains at least one `# skip` directive and zero `not ok` lines, the adapter writes `status: complete` + `result: skip` regardless of how many tests passed. The pass count is surfaced in the `summary:` field (e.g. `"2 passed, 3 skipped"`). All-skip files produce `"All N tests skipped"`. All-pass files produce `status: complete` + `result: pass`. Fail takes precedence -- any `not ok` line produces `status: complete` + `result: fail` regardless of skip lines. New BATS adapters should source `adapters/lib/bats-tap.sh` and use the `classify_bats_status` function for consistent classification. Non-BATS adapters that detect skips should write `status: complete` + `result: skip` to `$GTMS_RESULT_FILE` directly. The pipeline maps contract `result: skip` -> record `result: skipped`, which renders as `⊘` in both `gtms status` and `gtms map`.
+- BATS `skip "reason"` inside a test body emits TAP `ok N # skip <reason>` and exits 0. This once looked indistinguishable from a real pass -- the dashboard rendered ✓ while the test never actually asserted. Skip classification was moved from core GTMS into the adapters themselves: each BATS adapter now sources `gtms/adapters/lib/bats-tap.sh` (a shared TAP classifier) and writes the appropriate `status:` + `result:` values to `$GTMS_RESULT_FILE` directly. The contract shape then changed: adapters write `status: complete` + `result: skip` (not the retired `status: skipped`). The rollup rule is **any-skip-without-fail demotes to skip**: if the TAP stream contains at least one `# skip` directive and zero `not ok` lines, the adapter writes `status: complete` + `result: skip` regardless of how many tests passed. The pass count is surfaced in the `summary:` field (e.g. `"2 passed, 3 skipped"`). All-skip files produce `"All N tests skipped"`. All-pass files produce `status: complete` + `result: pass`. Fail takes precedence -- any `not ok` line produces `status: complete` + `result: fail` regardless of skip lines. New BATS adapters should source `gtms/adapters/lib/bats-tap.sh` and use the `classify_bats_status` function for consistent classification. Non-BATS adapters that detect skips should write `status: complete` + `result: skip` to `$GTMS_RESULT_FILE` directly. The pipeline maps contract `result: skip` -> record `result: skipped`, which renders as `⊘` in both `gtms status` and `gtms map`.
 
 **bats-in-bats env scrub:**
-- When `gtms execute` is invoked from inside a parent `bats` run — common during dogfood / acceptance suites that build fixture projects and exercise the real adapter — the parent prepends its internal `$BATS_LIBEXEC` to PATH and exports `BATS_*` vars. PATH lookup then resolves `bats` to the libexec entry script, which expects helpers only the user-facing wrapper sources. Direct invocation fails with `bats_readlinkf: command not found` and `//bats-core/validator.bash: No such file or directory`, and the contract gets `status: error` with summary "Malformed or missing TAP output". The fix lives in `adapters/bats-runner.sh` (and the embedded scaffold template): unset `BATS_LIBEXEC BATS_ROOT BATS_CWD BATS_TMPDIR BATS_ROOT_PID BATS_VERSION` and strip `*/libexec/bats-core` entries from `PATH` before invoking `bats`. **Authors of any new adapter that shells out to a tool that may have been invoked by a parent process** (Pester invoking pwsh, Playwright invoking node, npm-installed tools that put `libexec` on PATH) should consider the same defensive scrub.
+- When `gtms execute` is invoked from inside a parent `bats` run — common during dogfood / acceptance suites that build fixture projects and exercise the real adapter — the parent prepends its internal `$BATS_LIBEXEC` to PATH and exports `BATS_*` vars. PATH lookup then resolves `bats` to the libexec entry script, which expects helpers only the user-facing wrapper sources. Direct invocation fails with `bats_readlinkf: command not found` and `//bats-core/validator.bash: No such file or directory`, and the contract gets `status: error` with summary "Malformed or missing TAP output". The fix lives in `gtms/adapters/bats-runner.sh` (and the embedded scaffold template): unset `BATS_LIBEXEC BATS_ROOT BATS_CWD BATS_TMPDIR BATS_ROOT_PID BATS_VERSION` and strip `*/libexec/bats-core` entries from `PATH` before invoking `bats`. **Authors of any new adapter that shells out to a tool that may have been invoked by a parent process** (Pester invoking pwsh, Playwright invoking node, npm-installed tools that put `libexec` on PATH) should consider the same defensive scrub.
 
 **Orthogonal contract vocabulary -- replaces the legacy `status:` overloads:**
 - The result contract has two orthogonal axes: `status:` carries adapter-execution state (`pending | in-progress | complete | error`); `result:` carries test outcome (`pass | fail | skip | error`). Legacy `status: fail` and `status: skipped` are **retired and rejected** by validation. Both `bats-runner.sh` and all four `remote-bats-*` wrappers write the orthogonal form. **When authoring specs**: assert `status: complete` + `result: pass` for pass cases; `status: complete` + `result: fail` for fail; `status: complete` + `result: skip` for skip; `status: error` for adapter crash (with `result:` empty). **When asserting on the automation record**: `result: pass/fail/skipped/error` (note the pipeline maps contract `result: skip` → record `result: skipped`). Single-TC execute exits 0 for `status: complete` (any result) and exits non-zero for `status: error`.
 
 **Mocks must self-classify:**
 - There is no in-core classifier to fall back on. Any mock adapter in a BATS test MUST write both `status:` and `result:` to `$GTMS_RESULT_FILE` itself. For a pass mock: `status: complete` + `result: pass`. For a fail mock: `status: complete` + `result: fail`. For a skip mock: `status: complete` + `result: skip`. For a crash mock: `status: error` with `result:` empty or omitted. Mocks that write `status: complete` without a `result:` field will be rejected by Tier 2 read-boundary validation and recovered to `status: error`.
-
-**Scaffold-template parity is a contract -- and a Go raw-string-with-backticks gotcha lurks underneath:**
-- `gtms init` ships adapter scripts as embedded Go string constants in `internal/scaffold/templates.go` (`batsRunnerScript`, `batsTapHelper`, etc). Any edit to an in-tree adapter script under `adapters/` MUST be mirrored byte-for-byte into the corresponding constant -- otherwise `gtms init` writes a stale copy to fresh projects. The `tc-798bac31` test is the dual-update guard for the BATS family; if you're touching `adapters/*.sh` or `adapters/lib/bats-tap.sh`, run that test (or its broader `bats-runner-mixed-skip-rollup` folder) before merging. Same rule for any future adapter family that gets a scaffold constant.
-- The trap underneath: a backtick-delimited Go raw string literal (`` const x = `...` ``) cannot contain a backtick. If the in-tree script has backticks in its comments (markdown-style emphasis around technical terms -- `` `gtms execute` ``, `` `bats` ``, etc.), the embedded constant must use the concat workaround `` ` + "`x`" + ` `` (see `templates.go` line 791 for `gtms.config` / `demo_seeded: false`, or `batsRunnerScript` for three uses). Anyone editing the constant naively to "clean up" the concat operators will silently strip backticks from the output and break the parity test on the next run. This was logged; the fix added a docstring above `batsRunnerScript` flagging the contract for the next editor.
 
 ### Pester
 
@@ -3117,7 +3150,7 @@ The execute pipeline is keyed on the wiring record -- `gtms/automation/wiring/<t
 - `Join-Path` only accepts TWO arguments on PS 5.1. `Join-Path $a 'b' 'c'` fails with "A positional parameter cannot be found". Nest calls instead: `Join-Path (Join-Path $a 'b') 'c'`. AI consistently generates the PS 7+ multi-argument form.
 
 **NUnit XML output:**
-- Pester outputs NUnit XML (not JUnit). Use `total=` and `failed=` attributes, not `tests=` and `failures=`
+- Pester outputs NUnit XML (not JUnit). The counts are attributes on the root `<test-results>` element: use `total=` and `failures=` (with `errors=` and `skipped=`), not JUnit's `tests=` on a `<testsuite>`. See the canonical classification pattern in the Result Contract section for the fail-closed rules
 - Invoke with `-CI` flag for NUnit output: `pwsh -NoProfile -Command "Invoke-Pester -Path 'spec.Tests.ps1' -CI"`
 - Output goes to `testResults.xml` in the working directory by default
 
@@ -3175,7 +3208,7 @@ For adapter and CI authors:
 
 **Mock adapter limitations in tests:**
 - Mock adapters (`command: 'echo "..."'`) validate GTMS orchestration (task files, result contracts, exit codes) but do NOT produce pipeline artifacts (test case files, automation records, execution results)
-- Tests that chain commands (create → automate → execute) must write fixture files directly instead of relying on upstream mock commands. See the Pester automate prompt template (`gtms/automation/prompts/automate-pester.md`) for fixture patterns.
+- Tests that chain commands (create → automate → execute) must write fixture files directly instead of relying on upstream mock commands.
 
 **One `It` block per test case:**
 - Each test case spec (one `test_case_id`) must map to exactly one Pester `It` block. If the spec has multiple steps, they go sequentially inside a single `It`. Splitting steps into separate `It` blocks with the same TC ID breaks `gtms gaps` traceability.
@@ -3217,7 +3250,7 @@ Use this when reviewing a new or modified adapter.
 - [ ] Script reads context from `GTMS_` environment variables (not hardcoded paths)
 - [ ] Script updates `$GTMS_RESULT_FILE` with `status: complete` (+ a `result:` value) or `status: error` -- never the retired `status: fail`/`status: skipped`
 - [ ] In-tree adapter scripts are ASCII-only (no smart quotes, em-dashes, or box-drawing bytes) -- enforced by `TestScaffoldAndAdapterSourcesASCIIOnly`
-- [ ] Status decision parses framework output (TAP for BATS, JUnit XML for Pester) -- never relies on exit code alone (see the canonical classification pattern in the Result Contract section)
+- [ ] Status decision parses framework output (TAP for BATS, NUnit XML for Pester, the JSON report for Playwright) -- never relies on exit code alone (see the canonical classification pattern in the Result Contract section)
 - [ ] Remote/transport settings (host, user, port, remote dir) come from env vars or config — NOT hardcoded in the script. Hardcoding blocks self-contained testing of the error path (you can't point the adapter at an unreachable host without forking the script)
 - [ ] For async: trigger script exits quickly (doesn't block waiting for remote work)
 - [ ] For async: status script reads remote reference from result contract and polls correctly
@@ -3327,7 +3360,7 @@ execute:
 
 ```bash
 #!/bin/bash
-# adapters/remote-bats-execute.sh
+# gtms/adapters/remote-bats-execute.sh
 set -e
 
 REMOTE_HOST="win-runner-1"
@@ -3373,7 +3406,7 @@ exit ${EXIT_CODE}
 
 ```bash
 #!/bin/bash
-# adapters/remote-bats-lean.sh — same as above but without the SCP block.
+# gtms/adapters/remote-bats-lean.sh — same as above but without the SCP block.
 # Pre-sync files manually before bulk runs:
 #   VPS_SLOT=$(basename "$(pwd)")
 #   scp -P 2222 -r test/ cmd/ internal/ go.mod go.sum gtms.config \
@@ -3391,10 +3424,6 @@ exit ${EXIT_CODE}
 - **Go may be needed on remote**: if BATS tests call `go build` in `setup_file()`, Go must be installed on the remote machine. Consider a `GTMS_BIN` env var override to skip remote builds.
 - **SCP sync doesn't handle deletions**: `scp -r` copies files to the remote but never deletes files that were removed locally. If a test asserts a file was deleted, the stale file persists on the remote and the test fails. Fix: `ssh host "del C:/path/to/stale-file"` (Windows) or `ssh host "rm -f /path/to/stale-file"` (Linux) before running. Note: Windows SSH default shell is `cmd.exe`, so use `del` not `rm`.
 - **SCP overwrite of `gtms.exe` is unreliable on Windows**: after rebuilding `gtms.exe` locally, a subsequent `scp` to an existing remote copy can silently leave the old binary in place (likely Windows file-locking or AV interference), even though `scp` reports success. Symptom: BATS runs still exhibit pre-fix behaviour and "fixture bugs" appear in tests that were already green locally. Fix: always remove the remote binary before copying — `ssh host "del C:/gtms-workspace/${VPS_SLOT}/gtms.exe" && scp gtms.exe host:C:/gtms-workspace/${VPS_SLOT}/`. Worth building into any pre-run sync step for lean adapters.
-- **Concurrent agents overwrite each other's binary**: when multiple agents run against the same VPS in parallel, `scp gtms.exe` from one agent overwrites the binary while another agent's BATS tests are mid-run, causing intermittent failures that pass on retry. Fix: `remote-bats-execute.sh` now uses per-invocation slot isolation -- `REMOTE_SLOT="${PROJECT_SLOT}-${GTMS_TASK_ID}"` gives each task its own VPS directory and binary copy. Lean scripts (`remote-bats-lean.sh`, `remote-pester-lean.sh`) keep the shared project-scoped slot since they don't sync files; their headers document the concurrent-sync risk for manual pre-sync. Cleanup: stale per-invocation slots accumulate on the VPS (~5MB each); remove with `ssh host "rm -rf /c/gtms-workspace/gtms-v1-task-*"` after batch runs.
-- **Lean-adapter pre-sync scope is narrower than product scope**: the default pre-sync list (`test/`, `cmd/`, `internal/`, `go.mod`, `go.sum`, `gtms.config`, `gtms/test/cases/`, `gtms/automation/`, `test-fixtures/`, `adapters/`) does **not** include `.github/`, `.claude/`, or `reference/`. BATS tests that `grep` product files in those directories for content (common when the feature-under-test is a workflow YAML, a skill markdown, or a reference doc -- e.g. 11 file-shape TCs against `.github/workflows/bats.yml`, `.claude/commands/tests-execute.md`, and `reference/ai-coding-assistant-guide.md`) will fail on the VPS with empty grep output even though they pass locally. Symptom: first VPS run shows ~half the TCs failing with `grep -qE '...'` assertions that matched locally. Fix: extend the pre-sync for that run to include the specific non-default paths the tests read from (`scp -r .github/ .claude/ reference/ host:...`), or fall back to the full-sync adapter. Consider whether the test really needs a file-shape assertion against a non-Go source file, or whether the same behaviour can be exercised through the CLI — see ai-coding-assistant-guide's "BATS boundary rule".
-- **Lean-adapter on a fresh worktree fails until the VPS slot is primed**: `remote-bats-lean` skips the SCP block by design -- it assumes `/c/gtms-workspace/{slot}/` already contains a current `gtms.exe`, fixtures, and `gtms.config`. From a fresh `.claude/worktrees/agent-XXX/` slot, that directory is empty (or missing), so the lean adapter fails with `Malformed or missing TAP output from win-runner-1 (exit 1)` -- looks like a real test failure but is actually an unprimed slot. Fix: do the first bulk run of any new worktree with `remote-bats` (auto-syncing). After that initial bulk, switch to `remote-bats-lean` for single-TC re-runs and follow-up bulks -- the slot is now primed and lean is ~3× faster. The `/tests-execute` skill defaults correctly: `remote-bats` for the first bulk, lean only when files have already been synced.
-- **Top-level docs are now part of the per-test sync**: both `remote-bats-execute.sh` (Windows VPS) and `remote-bats-unix-execute.sh` (Linux VPS) now `scp` `USER-GUIDE.md`, `README.md`, `ARCHITECTURE.md`, `CONTRIBUTING.md`, and `CLAUDE.md` to the workspace alongside `gtms.config`. `scripts/remote-full-run-unix.sh` includes `USER-GUIDE.md` in its top-level doc sync. This closes the gap where BATS tests that assert on doc-content (e.g. the manual-authoring section of `USER-GUIDE.md`) had to fall back to local `bats-runner` because the asserted-on doc wasn't present on the VPS. Rule for new top-level docs that BATS needs to assert on: extend the `for doc in USER-GUIDE.md README.md ...` loop in both adapter scripts AND the script-side `scp` line in `scripts/remote-full-run-unix.sh`. The sync is `scp ... 2>/dev/null || true` per file, so a missing doc on the local side is silently skipped -- adding a new file is additive and safe.
 
 ---
 
@@ -3554,7 +3583,7 @@ framework labels; each label gets its own wiring record and result slot:
 
 ### Tier 2 Environment Isolation
 
-**BREAKING CHANGE:** Tier 2 scripts no longer inherit the full parent process environment. Scripts receive only a minimal allowlist of system variables plus all `GTMS_*` variables.
+**BREAKING CHANGE:** Tier 2 scripts no longer inherit the full parent process environment. Scripts receive only a minimal allowlist of system variables plus the `GTMS_*` variables GTMS itself generates for the task (see Tier 2 Environment Variables). That set is an explicit list, not a prefix filter: GTMS does not scan the caller's environment, so a caller-defined variable is not forwarded merely because its name begins with `GTMS_`.
 
 **Allowlist:** `PATH`, `HOME`, `TMPDIR`, `USER`, `SHELL`, `LANG`, `LC_ALL` (+ `USERPROFILE`, `SYSTEMROOT`, `COMSPEC`, `PATHEXT`, `TEMP`, `TMP` on Windows).
 
@@ -3605,5 +3634,4 @@ These are known gaps between the documented contract and the current implementat
 | Document | Purpose |
 |----------|---------|
 | [USER-GUIDE.md](../USER-GUIDE.md) | Complete feature reference -- command flags, config fields, prompt templates |
-| [ARCHITECTURE.md](../ARCHITECTURE.md) | Package map, data flow, how to add commands |
 | [adapter-architectures/](adapter-architectures/) | Worked architectures -- full builds from real installs, with the dead ends kept in |

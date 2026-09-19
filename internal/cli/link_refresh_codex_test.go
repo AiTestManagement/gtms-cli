@@ -250,13 +250,16 @@ func TestLinkRefresh_DuplicateFolderTCID_FailsClosed(t *testing.T) {
 	before, err := os.ReadFile(wrec)
 	require.NoError(t, err)
 
-	// --- Preview: ambiguous ID counted as a failure, neighbour still previewed ---
+	// --- Preview: ambiguous ID held back per-ID as a counted failure, neighbour
+	// still previewed. ADR-024 makes ambiguity a PROJECT-WIDE OWNERSHIP concern
+	// (the OwnershipError names the conflicting owners), superseding the old
+	// per-record, framework-governed message. ---
 	out, err := runCmdCaptureStdout(t, newLinkCmd(), folder, "--refresh", "--dry-run")
 	require.Error(t, err, "an ambiguous ID in scope must drive a non-zero exit")
-	assert.Contains(t, out, "[dry-run] tc-dddddddd (bats): ambiguous refresh scope",
-		"reported per in-scope RECORD, naming its framework like every other per-record line")
-	assert.Contains(t, out, "give each test case a unique tc-<id>",
-		"the remedy travels with the line -- there is no per-record hint to fall back on")
+	assert.Contains(t, out, "tc-dddddddd", "the held-back id is named")
+	assert.Contains(t, out, "ambiguous", "held back as ambiguous ownership")
+	assert.Contains(t, out, "Resolve the duplicate IDs",
+		"the OwnershipError carries the remedy")
 	assert.Contains(t, out, "[dry-run] Would refresh: tc-d0000001 (bats)",
 		"an unambiguous record in the same folder must still be previewed")
 	assert.Contains(t, out, "[dry-run] 1 would refresh, 0 current, 1 failed")
@@ -266,7 +269,8 @@ func TestLinkRefresh_DuplicateFolderTCID_FailsClosed(t *testing.T) {
 	// --- Real: same accounting, neighbour actually refreshed, ambiguous untouched ---
 	out2, err2 := runCmdCaptureStdout(t, newLinkCmd(), folder, "--refresh")
 	require.Error(t, err2)
-	assert.Contains(t, out2, "tc-dddddddd (bats): ambiguous refresh scope")
+	assert.Contains(t, out2, "tc-dddddddd")
+	assert.Contains(t, out2, "ambiguous")
 	assert.NotContains(t, out2, "[dry-run]", "a real refresh must never carry the preview label")
 	assert.Contains(t, out2, "Refreshed: tc-d0000001 (bats)")
 	assert.Contains(t, out2, "1 refreshed, 0 current, 1 failed")
@@ -608,18 +612,20 @@ func TestLinkRefresh_AmbiguousIDRespectsWiringScope(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "tc-ab000001-two.md"),
 		[]byte("---\ntest_case_id: tc-ab000001\ntitle: two\n---\n"), 0o644))
 
+	// ADR-024 supersedes the old framework-governed, per-record ambiguity model:
+	// ambiguity is a PROJECT-WIDE OWNERSHIP concern, so an ambiguous id in the
+	// refresh scope is held back per-ID as a counted failure regardless of whether
+	// it has a wiring record or which framework is requested. Fail-closed: the
+	// duplicate is surfaced rather than silently exiting 0 (tc-31d05fff).
 	out, err := runCmdCaptureStdout(t, newLinkCmd(), nowiring, "--refresh", "--dry-run")
-	require.NoError(t, err, "nothing to refresh means nothing to fail -- exit 0")
-	assert.Contains(t, out, "[dry-run] No wiring records in scope.")
-	assert.NotContains(t, out, "ambiguous refresh scope",
-		"an ambiguous ID with no wiring in scope has no record to fail")
+	require.Error(t, err, "an ambiguous id in scope is held back even with no wiring")
+	assert.Contains(t, out, "tc-ab000001")
+	assert.Contains(t, out, "ambiguous")
+	assert.Contains(t, out, "[dry-run] 0 would refresh, 0 current, 1 failed")
 
-	out2, err2 := runCmdCaptureStdout(t, newLinkCmd(), nowiring, "--refresh")
-	require.NoError(t, err2, "the real refresh agrees -- this is the pre-change behaviour")
-	assert.Contains(t, out2, "0 refreshed, 0 current, 0 failed")
-
-	// A folder where the ambiguous ID has ONLY a playwright record. A bats-scoped
-	// refresh must not fail on it.
+	// A folder where the ambiguous ID has ONLY a playwright record. Under ADR-024
+	// the ambiguity is decided at the OWNERSHIP level, not per wiring record, so a
+	// bats-scoped refresh still holds it back.
 	scoped := "ambiguous-scoped"
 	dir2 := filepath.Join(root, "gtms/test/cases", scoped)
 	require.NoError(t, os.MkdirAll(dir2, 0o755))
@@ -635,14 +641,14 @@ func TestLinkRefresh_AmbiguousIDRespectsWiringScope(t *testing.T) {
 	require.NoError(t, werr)
 
 	outBats, errBats := runCmdCaptureStdout(t, newLinkCmd(), scoped, "--refresh", "--dry-run", "--framework", "bats")
-	require.NoError(t, errBats, "no bats record is in scope, so there is nothing to fail")
-	assert.NotContains(t, outBats, "ambiguous refresh scope")
+	require.Error(t, errBats, "ambiguity is ownership-level, not per-record -- held back regardless of --framework")
+	assert.Contains(t, outBats, "tc-ab000002")
+	assert.Contains(t, outBats, "ambiguous")
 
-	// Unfiltered, the playwright record IS in scope -- now the ambiguity is real
-	// and must be reported and counted, naming the framework like any other
-	// per-record line.
+	// Unfiltered too, the ambiguous id is held back.
 	outAll, errAll := runCmdCaptureStdout(t, newLinkCmd(), scoped, "--refresh", "--dry-run")
 	require.Error(t, errAll)
-	assert.Contains(t, outAll, "[dry-run] tc-ab000002 (playwright): ambiguous refresh scope")
+	assert.Contains(t, outAll, "tc-ab000002")
+	assert.Contains(t, outAll, "ambiguous")
 	assert.Contains(t, outAll, "[dry-run] 0 would refresh, 0 current, 1 failed")
 }

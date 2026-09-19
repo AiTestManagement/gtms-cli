@@ -136,27 +136,30 @@ Adapter execution:
 			}
 
 			// --- Single TC mode (existing behavior) ---
-			// BUG-059 (REV-113) + REV-120: route the QUALIFIED-target scope +
-			// project-wide ambiguity guard through the shared requireScopedSpec so a
-			// wrong-folder or cross-folder-duplicate qualified target is rejected
-			// before automate wires the flat bare ID. (requireScopedSpec skips bare
-			// targets, so the existence check below still covers them.)
-			if err := requireScopedSpec(root, res); err != nil {
-				output.Errorf(err.Error(), "Check the folder qualifier, resolve any duplicate IDs, or drop the qualifier.")
+			// ADR-024 s5: resolve identity ONCE here and pass the resolved owner
+			// forward. Everything downstream -- the adapter's source file, post-fill
+			// validation, hashing, the wiring write -- consumes `owner` rather than
+			// re-deriving the id for itself. The scope guard (BUG-059 / REV-113), the
+			// project-wide ambiguity guard (REV-120), and the ownership refusal
+			// (BUG-185 / BUG-188) all run inside it, in that order, against one snapshot.
+			owner, hint, err := resolveTargetOwner(root, res, "Check the folder qualifier, resolve any duplicate IDs, or drop the qualifier.")
+			if err != nil {
+				if errors.Is(err, testcase.ErrOwnerNotFound) {
+					msg := fmt.Sprintf("Test case '%s' not found in gtms/test/cases/", res.Target)
+					output.Errorf(msg, "Create the test case first with 'gtms create'.")
+					return output.AsDisplayed(fmt.Errorf(msg))
+				}
+				output.Errorf(err.Error(), hint)
 				return output.AsDisplayed(err)
-			}
-			if !testcase.Exists(root, res.Target) {
-				msg := fmt.Sprintf("Test case '%s' not found in gtms/test/cases/", res.Target)
-				output.Errorf(msg, "Create the test case first with 'gtms create'.")
-				return output.AsDisplayed(fmt.Errorf(msg))
 			}
 
 			// Flat wiring/task/invoke key (bare ID) for the rest of the path.
 			target := res.TCID
 
 			// ENH-150: Post-fill validation gate -- catches frontmatter corruption
-			// before the adapter is invoked.
-			if violations := adapter.ValidateTestCasePostFill(root, target); len(violations) > 0 {
+			// before the adapter is invoked. It validates the RESOLVED OWNER; it is
+			// not handed the id to go looking for a file itself.
+			if violations := adapter.ValidateTestCaseOwner(root, owner); len(violations) > 0 {
 				summary := adapter.FormatValidationErrors(violations)
 				output.Errorf(summary, "Fix the test case frontmatter and try again.")
 				return output.AsDisplayed(fmt.Errorf(summary))
@@ -188,6 +191,7 @@ Adapter execution:
 
 			// Invoke adapter
 			flags := adapter.CommandFlags{
+				Owner:       owner,
 				Adapter:     adapterFlag,
 				Framework:   frameworkFlag,
 				Environment: environmentFlag,
@@ -249,7 +253,7 @@ Adapter execution:
 	cmd.Flags().StringVar(&environmentFlag, "env", "", "Environment label recorded and passed to the adapter; GTMS does not route on it")
 	cmd.Flags().StringVar(&executedByFlag, "executed-by", "", "Identity to record on the executed_by field (defaults to GTMS_EXECUTED_BY, then git user.name)")
 	cmd.Flags().StringVar(&contextFileFlag, "context-file", "", "Path to context file (coding standards, API docs, etc.)")
-	cmd.Flags().BoolVar(&forceFlag, "force", false, "Reprocess even if already automated (bulk skip checks bypassed; existing output files replaced)")
+	cmd.Flags().BoolVar(&forceFlag, "force", false, "Reprocess even if already automated (bulk skip checks bypassed; GTMS replaces only output files this test case provably owns, and ownership is required with or without --force; an external adapter's own writes are outside that guarantee)")
 	cmd.Flags().BoolVar(&failFastFlag, "fail-fast", false, "Stop on first error in bulk mode")
 	cmd.Flags().BoolVarP(&recursiveFlag, "recursive", "r", false, "Include test cases from subdirectories")
 
@@ -264,9 +268,20 @@ func runBulkAutomate(cmd *cobra.Command, root string, folder string, adapterFlag
 	ctx := cmd.Context()
 	cfg := GetConfig()
 
-	// Discover test cases in the folder
-	tcIDs, err := DiscoverTestCases(root, folder, recursive)
+	// ADR-024 / BUG-185 (tc-dbc64e99) + BUG-188: the work-set is the project-wide
+	// body-identity OWNERS under the folder, and the whole run refuses before any
+	// adapter is invoked if any is Ambiguous (incl. a renamed owner outside the
+	// folder) or Unprovable. Deriving the ids from resolved body identity -- not
+	// the filename-truncated DiscoverTestCases set -- is what keeps an extended-id
+	// sibling (tc-x--legacy) from being truncated to tc-x, skipped, and the wrong
+	// id invoked against an adapter.
+	owners, err := resolveBulkOwners(root, folder, recursive)
 	if err != nil {
+		var oe *testcase.OwnershipError
+		if errors.As(err, &oe) {
+			output.Errorf(oe.Error(), "")
+			return output.AsDisplayed(err)
+		}
 		output.Errorf(err.Error(), "Check that gtms/test/cases/"+folder+"/ contains tc-*.md files.")
 		return output.AsDisplayed(err)
 	}
@@ -312,7 +327,32 @@ func runBulkAutomate(cmd *cobra.Command, root string, folder string, adapterFlag
 		}
 	}
 
-	total := len(tcIDs)
+	// ADR-024 artefact ownership: scan and validate every wiring record ONCE,
+	// here, BEFORE the batch mutates anything. Three things follow from doing it
+	// here rather than per item.
+	//
+	// Completeness is a batch-wide precondition, and it is enforced with the same
+	// policy the prerequisite check above already uses: one diagnostic, no
+	// per-TC task/result/artefact/wiring state, nothing invoked. A corrupt wiring
+	// record cannot prove who owns the artefacts this batch is about to write
+	// over, and discovering that at item 40 -- after 39 items have already
+	// changed the tree -- is not a refusal, it is a partial run.
+	//
+	// Reads stay O(wiring records) for the whole batch instead of
+	// O(test cases x wiring records), which is the REV-159 regression shape.
+	//
+	// And the set is MUTABLE operation state, not a frozen snapshot: each
+	// invocation reserves its planned path before its adapter runs and commits it
+	// once its wiring is written, so item 40 is judged against what items 1..39
+	// actually claimed. A snapshot taken here and never updated would be stale in
+	// exactly the way that lets two test cases write the same artefact.
+	claims, claimsErr := adapter.NewArtefactClaimSet(root)
+	if claimsErr != nil {
+		output.Errorf(claimsErr.Error(), "")
+		return output.AsDisplayed(claimsErr)
+	}
+
+	total := len(owners)
 	recursiveLabel := ""
 	if recursive {
 		recursiveLabel = " (recursive)"
@@ -327,7 +367,8 @@ func runBulkAutomate(cmd *cobra.Command, root string, folder string, adapterFlag
 	skipped := 0
 	failed := 0
 
-	for i, tcID := range tcIDs {
+	for i, owner := range owners {
+		tcID := owner.ID()
 		idx := i + 1
 
 		// Skip check (unless --force)
@@ -340,8 +381,20 @@ func runBulkAutomate(cmd *cobra.Command, root string, folder string, adapterFlag
 			}
 		}
 
-		// Build flags for this TC
+		// Build flags for this TC.
+		//
+		// REV-158 CODEX-001: Owner is REQUIRED here. The loop already iterates
+		// resolved owners, but the flags used to omit the owner, so the adapter
+		// received an empty source path and empty test-case content, and the
+		// post-invocation WriteAutomateWiring failed with "no resolved owner" --
+		// a failure downgraded to a warning, so bulk automate reported success
+		// while writing no wiring record at all (ADR-024 s5).
 		flags := adapter.CommandFlags{
+			Owner: owner,
+			// The batch's live ownership state, scanned once above and updated by
+			// each invocation. Passing it is what keeps wiring reads O(N) and what
+			// lets this item see the artefacts earlier items claimed.
+			Claims:      claims,
 			Adapter:     adapterFlag,
 			Framework:   frameworkFlag,
 			Environment: environmentFlag,

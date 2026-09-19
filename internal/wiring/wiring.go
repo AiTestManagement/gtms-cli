@@ -223,6 +223,19 @@ func Find(projectRoot, testCaseID, framework string) (*WiringRecord, string, err
 // match the {tc}--{framework}.wiring.yaml shape are skipped; parse errors are
 // logged to stderr and the bad file is skipped (a single corrupt wiring record
 // must not blind the reader to the rest).
+//
+// REV-158 CLAUDE-005: selection is by the record's PARSED body `testcase`, not
+// by its filename prefix (ADR-024 s1). The filename prefix only decides which
+// files are worth opening. A bare prefix returned
+// "tc-77777777--legacy--bats.wiring.yaml" for tc-77777777, so `gtms execute
+// tc-77777777` refused with "has multiple wiring records (bats, bats). Re-run
+// with --framework <name>" -- an unactionable message naming the same framework
+// twice, and the user could not execute the base test case at all. That is
+// BUG-188's stated defect left reachable on a mutating consumer, since this
+// selector also feeds bulk execute's framework resolution and triage. A record
+// whose body declares a different identity than its filename implies is a
+// data-integrity error owned by that other identity, so it is not this id's
+// record either way.
 func FindAllForTC(projectRoot, testCaseID string) ([]*WiringRecord, error) {
 	if err := pathsafe.ValidateFilenameComponent(testCaseID, "test case ID"); err != nil {
 		return nil, err
@@ -254,6 +267,10 @@ func FindAllForTC(projectRoot, testCaseID string) ([]*WiringRecord, error) {
 		rec, err := Read(path)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "warning: skipping wiring file %s: %v\n", path, err)
+			continue
+		}
+		// Body identity is authoritative: the filename merely got the file opened.
+		if rec.TestCase != testCaseID {
 			continue
 		}
 		out = append(out, rec)
@@ -392,6 +409,38 @@ func splitStemForScope(stem string, scope map[string]bool) (tc, framework string
 	return best, stem[len(best)+2:], true
 }
 
+// TCFromNameForScope attributes a wiring FILENAME to the test case id it belongs
+// to, chosen as the LONGEST id in candidates that the filename starts with. It is
+// the exported form of splitStemForScope for callers that must decide which id a
+// record is RELEVANT to when the record's body cannot be read.
+//
+// This exists because ParseFilename splits on the FIRST "--", which cannot tell
+// "tc-77777777--legacy--bats.wiring.yaml" (testcase tc-77777777--legacy,
+// framework bats) from the same name read as testcase tc-77777777, framework
+// "legacy--bats". Both readings are grammatical; only knowing which ids actually
+// exist resolves it. Attributing by the first "--" filed an extended id's
+// corruption under its shorter prefix sibling, which BOTH hid the corruption from
+// the id that owned it AND blocked the unrelated shorter id (BUG-188 resurfacing
+// inside F2's fix).
+//
+// It answers RELEVANCE ONLY, never identity. A readable record's identity is its
+// parsed body `testcase` field (ADR-024 s1) and this function must not be used to
+// override it; it is for records whose body is unreadable, malformed, or
+// self-contradictory, where the filename is the only signal left.
+//
+// Returns ok=false when no candidate id matches, meaning the record is
+// unattributable and relevant to no id.
+func TCFromNameForScope(name string, candidates []string) (string, bool) {
+	scope := make(map[string]bool, len(candidates))
+	for _, id := range candidates {
+		if id != "" {
+			scope[id] = true
+		}
+	}
+	tc, _, ok := splitStemForScope(strings.TrimSuffix(name, FileSuffix), scope)
+	return tc, ok
+}
+
 // discover is the shared body of DiscoverAll and DiscoverForScope. A nil scope
 // means "every file", which also restores DiscoverAll's contract of reporting a
 // filename that does not match the {tc}--{framework} shape as a failing result:
@@ -419,50 +468,87 @@ func discover(projectRoot string, scope map[string]bool, framework string) ([]Di
 		}
 		path := filepath.Join(dir, name)
 
-		var tc, fw string
+		// Pre-open gate (safety/perf). Identity is decided by the record BODY below
+		// (ADR-024 s1); the filename only governs WHETHER we open the file.
+		//   - Scoped: open only files whose filename plausibly belongs to a
+		//     requested id, so an unrelated (huge/corrupt/FIFO) file the caller
+		//     never asked about is never read (REV-129).
+		//   - Unscoped (DiscoverAll): a filename that cannot even be a
+		//     {tc}--{framework} shape is reported without a read (it can never be a
+		//     valid wiring record), preserving the no-read behaviour for obviously
+		//     malformed names while still opening every plausibly-shaped file.
 		if scope != nil {
-			var ok bool
-			tc, fw, ok = splitStemForScope(strings.TrimSuffix(name, FileSuffix), scope)
+			_, fnFW, ok := splitStemForScope(strings.TrimSuffix(name, FileSuffix), scope)
 			if !ok {
 				continue
 			}
-			if framework != "" && fw != framework {
+			// Framework filter in the pre-open gate so a framework-excluded file is
+			// never read (REV-129). splitStemForScope prefers the LONGEST scope id,
+			// so when the record's own body id is in scope the filename framework it
+			// yields equals the body framework; the post-read scope check below is
+			// the authority either way.
+			if framework != "" && fnFW != framework {
 				continue
 			}
-		} else {
-			var shapeOK bool
-			tc, fw, shapeOK = ParseFilename(name)
-			if !shapeOK {
-				out = append(out, DiscoveryResult{
-					Path: path,
-					Err:  fmt.Errorf("filename %q does not match {tc}--{framework}%s shape", name, FileSuffix),
-				})
+		} else if _, _, shapeOK := ParseFilename(name); !shapeOK {
+			out = append(out, DiscoveryResult{
+				Path: path,
+				Err:  fmt.Errorf("filename %q does not match {tc}--{framework}%s shape", name, FileSuffix),
+			})
+			continue
+		}
+
+		rec, readErr := Read(path)
+		if readErr != nil {
+			// Best-effort filename-derived labels for the diagnostic line only.
+			tcN, fwN, _ := ParseFilename(name)
+			out = append(out, DiscoveryResult{Path: path, Err: readErr, TCFromName: tcN, FWFromName: fwN})
+			continue
+		}
+
+		// ADR-024 s1: the record body is authoritative and the filename MUST
+		// reconstruct from it. A filename that does not reconstruct is a
+		// data-integrity error (a cross-record overwrite vector: a file named
+		// A--fw declaring testcase B would otherwise be selectable as B and its
+		// write would land on B's real record), NOT a valid record. Reconstructing
+		// from the body -- rather than splitting the filename at the first "--" --
+		// is what correctly parses an extended id whose own separator contains "--"
+		// (tc-x--legacy--bats), which ParseFilename could not (tc-d1c39672, and the
+		// tc-f7d8f7c1/tc-31d05fff extended-id wiring cases).
+		expected := rec.TestCase + "--" + rec.Framework + FileSuffix
+		if expected != name {
+			// Label the failure by the FILENAME-derived identity (best effort), not
+			// the body's -- a per-id caller (folder refresh) attributes the failure
+			// to the id it asked about, and a user greps for the filename's id. The
+			// message names both sides so the disagreement is legible.
+			tcN, fwN, _ := ParseFilename(name)
+			out = append(out, DiscoveryResult{
+				Path:       path,
+				Err:        fmt.Errorf("wiring identity mismatch: filename %q implies testcase %q framework %q but record declares testcase %q framework %q", name, tcN, fwN, rec.TestCase, rec.Framework),
+				TCFromName: tcN,
+				FWFromName: fwN,
+			})
+			continue
+		}
+
+		// Scoped SELECTION is by body identity: a record whose body id is not in
+		// the requested scope -- e.g. an extended sibling whose filename prefix
+		// matched a shorter requested id in the pre-open gate -- is silently
+		// skipped, never reported (it is out of the scope the caller asked for).
+		if scope != nil {
+			if !scope[rec.TestCase] {
+				continue
+			}
+			if framework != "" && rec.Framework != framework {
 				continue
 			}
 		}
 
-		rec, readErr := Read(path)
-		// CODEX-002: a schema-valid record whose declared identity disagrees with
-		// its filename is a cross-record overwrite vector (a file named A--fw
-		// containing testcase B would be selected as B and its write would land on
-		// B's real record via wiring.Path). Reject it as a per-file error so it is
-		// reported and never exposed as a selectable record.
-		if readErr == nil && rec != nil && (rec.TestCase != tc || rec.Framework != fw) {
-			// The two halves are quoted separately. Rendering them as tc--framework
-			// could print the SAME string twice when the disagreement is only about
-			// where the split falls (filename "tc-foo--bar--bats" read as
-			// tc-foo + bar--bats vs. a record declaring tc-foo--bar + bats), which
-			// makes the diagnostic unreadable (REV-130 CODEX-130-001).
-			readErr = fmt.Errorf("wiring identity mismatch: filename %q implies testcase %q framework %q but record declares testcase %q framework %q",
-				name, tc, fw, rec.TestCase, rec.Framework)
-			rec = nil
-		}
 		out = append(out, DiscoveryResult{
 			Path:       path,
 			Record:     rec,
-			Err:        readErr,
-			TCFromName: tc,
-			FWFromName: fw,
+			TCFromName: rec.TestCase,
+			FWFromName: rec.Framework,
 		})
 	}
 	return out, nil

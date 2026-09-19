@@ -10,6 +10,7 @@ import (
 
 	"github.com/aitestmanagement/gtms-cli/internal/layout"
 	"github.com/aitestmanagement/gtms-cli/internal/pathsafe"
+	"github.com/aitestmanagement/gtms-cli/internal/testcase"
 	"github.com/aitestmanagement/gtms-cli/internal/wiring"
 )
 
@@ -111,22 +112,80 @@ func buildDeletePlan(projectRoot string, scope *ScopeInfo, tcID string, keepSpec
 	// filepath.Rel emits a spurious "../../" escape (BUG-173 Windows CI).
 	projectRoot = pathsafe.CanonicalRoot(projectRoot)
 
-	// 1. Resolve the selection set of TC IDs. Deduplicate: a folder with two
-	//    specs sharing a frontmatter ID would otherwise gather the same physical
-	//    paths twice and fail mid-operation on the second removal (CODEX-005).
+	// ADR-024: one immutable project-wide snapshot backs the whole plan, so a
+	// dry-run preview and the real removal share one ownership decision and the
+	// tree is enumerated exactly once (BUG-185 instrumented-enumeration
+	// requirement).
+	snap, err := testcase.NewSnapshot(projectRoot)
+	if err != nil {
+		return nil, err
+	}
+
+	// 1. Resolve the selection set of TC IDs from the snapshot.
+	//    Folder scope selects the REAL owners physically under the (canonical)
+	//    scope directory; a spec-file symlink never confers its target's
+	//    membership, and an in-scope Unprovable candidate refuses the whole plan.
 	var selection []string
 	if tcID != "" {
+		// ADR-024 s3 / REV-158 CLAUDE-001: a folder-qualified single-TC delete
+		// requires MUTATION AUTHORITY under that folder, not mere reachability. The
+		// plan below removes the owner's CANONICAL file, so a spec symlink must
+		// never make a target elsewhere deletable "because it was reached through
+		// that link". An unqualified target (nil scope) is unchanged.
+		if scope != nil {
+			if err := snap.RequireMutationAuthorityUnderScope(scopeRelFor(projectRoot, scope), tcID); err != nil {
+				return nil, err
+			}
+		}
 		selection = []string{tcID}
 	} else {
-		tcs, err := scanTestCases(projectRoot, scope)
-		if err != nil {
-			return nil, fmt.Errorf("scanning test cases: %w", err)
+		// REV-159 CLAUDE-005. scopeRelFor tolerates a nil scope and returns "", but
+		// scope.Recursive on the next argument dereferences it. The equivalent line
+		// in the reset rewrite (internal/reader/reset.go) writes
+		// `scope != nil && scope.Recursive`, so the two destructive planners
+		// disagreed on the same input shape.
+		//
+		// This is a regression introduced on THIS branch: at b524c9b5 the folder
+		// branch called scanTestCases(projectRoot, scope), which handled a nil scope
+		// explicitly and scanned the whole tree. It is not reachable from the CLI --
+		// delete's folder mode always builds a scope and its TC mode always passes a
+		// non-empty id -- but reader.DeleteArtifacts is an exported API, and a call
+		// that previously returned a plan now crashes the process.
+		//
+		// Refusing explicitly rather than mirroring reset's `scope != nil &&`: for a
+		// DESTRUCTIVE planner, silently selecting nothing is indistinguishable from
+		// "the project is empty", and restoring the old whole-project selection would
+		// make a nil argument mean "delete everything". Neither is a good default for
+		// an all-or-nothing destructive plan. A caller that means the whole project
+		// says so with a scope.
+		if scope == nil {
+			return nil, fmt.Errorf("a folder-scoped delete requires a scope; pass a *ScopeInfo, or name a test case ID")
 		}
-		for _, tc := range tcs {
-			selection = append(selection, tc.ID)
+		scopeRel := scopeRelFor(projectRoot, scope)
+		ids, inScopeUnprovable := snap.SelectFolder(scopeRel, scope.Recursive)
+		if len(inScopeUnprovable) > 0 {
+			return nil, testcase.UnprovableInScope(scopeRel, inScopeUnprovable[0])
 		}
+		selection = ids
 	}
 	selection = dedupByKey(selection)
+
+	// ADR-024 destructive authority: every selected id must be a UNIQUE
+	// project-wide owner before any file is planned. Ambiguous or Unprovable
+	// ownership refuses the WHOLE plan (delete/reset are all-or-nothing). A
+	// NotFound id is NOT refused -- delete cleans orphaned flat state (wiring,
+	// tasks, handoffs) keyed by exact id even when no spec remains.
+	ownerAbs := make(map[string]string, len(selection))
+	for _, id := range selection {
+		res := snap.Resolve(id)
+		switch res.Outcome {
+		case testcase.OutcomeAmbiguous, testcase.OutcomeUnprovable:
+			return nil, testcase.OwnershipErrorFor(res)
+		case testcase.OutcomeUniqueOwner:
+			ownerAbs[id] = res.OwnerCanonicalAbs
+		}
+	}
+
 	selectionSet := make(map[string]bool, len(selection))
 	for _, id := range selection {
 		selectionSet[id] = true
@@ -146,6 +205,41 @@ func buildDeletePlan(projectRoot string, scope *ScopeInfo, tcID string, keepSpec
 			len(unreadable), strings.Join(unreadable, ", "))
 	}
 
+	// Enumerate wiring ONCE and index by body identity, reused across the whole
+	// selection (M2: avoid re-parsing every wiring file per selected id).
+	//
+	// The attribution universe for a CORRUPT record is every id this project
+	// provably contains, plus the ids being deleted. Both halves are needed: the
+	// known ids let an extended sibling (tc-x--legacy) claim its own filename
+	// instead of losing it to its shorter prefix, and the selection keeps an
+	// ORPHANED id -- one whose spec is already gone but whose flat wiring remains --
+	// able to claim its record. Body identity is untouched by this; it governs
+	// only records that cannot be read.
+	attributionIDs := append(snap.KnownIDs(), selection...)
+	wiringIndex, corruptWiring, werr := wiringPathsByTestCase(projectRoot, attributionIDs)
+	if werr != nil {
+		return nil, werr
+	}
+
+	// F2 (ADR-024 s1): a corrupt wiring record RELEVANT to a selected id -- its
+	// filename attributes it to that id but its body is malformed, unreadable, or
+	// declares a different identity -- is a data-integrity error, NEVER absence.
+	// Abort the WHOLE plan before any mutation, regardless of
+	// --force-artefact-deletion: silently treating it as absent would delete the
+	// spec/tasks/handoffs and leave the unattributed corrupt wiring behind.
+	// Corrupt wiring attributed to some OTHER id stays out of scope (relevance
+	// rule), including a `--` sibling of the id being deleted.
+	//
+	// REV-160 CLAUDE-007: rendered through the typed *CorruptWiringError so the
+	// repository-derived path and parse error pass the CENTRAL sanitiser
+	// (ADR-024 s7) instead of being interpolated raw with %s, and so runDelete
+	// can give it the same output.Errorf shape as the other refusals.
+	for _, id := range selection {
+		if cw, bad := corruptWiring[id]; bad {
+			return nil, &CorruptWiringError{TCID: id, Path: cw.Path, Err: cw.Err}
+		}
+	}
+
 	plan := &deletePlan{}
 
 	// artefactCandidates: canonical key -> {abs, rel}, deduplicated across the
@@ -160,17 +254,15 @@ func buildDeletePlan(projectRoot string, scope *ScopeInfo, tcID string, keepSpec
 		plan.testCasesProcessed++
 
 		if !keepSpec {
-			specs, err := findTestCaseSpecs(projectRoot, id)
-			if err != nil {
-				return nil, fmt.Errorf("finding test case specs for %s: %w", id, err)
+			// ADR-024: the spec to remove is the UNIQUE physical owner resolved above
+			// (by body identity), never a filename-prefix match. A NotFound id has no
+			// spec to remove (orphan cleanup still proceeds for its flat state).
+			if owner, ok := ownerAbs[id]; ok {
+				plan.specs = append(plan.specs, owner)
 			}
-			plan.specs = append(plan.specs, specs...)
 		}
 
-		records, err := findAutomationRecordFiles(projectRoot, id)
-		if err != nil {
-			return nil, fmt.Errorf("finding automation records for %s: %w", id, err)
-		}
+		records := automationRecordsForID(projectRoot, id, wiringIndex)
 		plan.records = append(plan.records, records...)
 
 		// Atomic precheck: resolve declared artefact paths. A path-safety
@@ -307,38 +399,29 @@ func buildArtefactReferenceIndex(projectRoot string) (index map[string]map[strin
 		index[k][tc] = true
 	}
 
-	// Wiring records (project-wide). Only two fields matter for sharing: the TC
-	// (taken from the filename, which is the authoritative identity) and the
-	// artefact path. Hash fields are irrelevant here, so a record that is merely
-	// missing them still contributes its reference -- extracting leniently
-	// (rather than via the strict six-field Read) keeps hash-optional records
-	// visible. A record is reported unreadable ONLY when its artefact reference
-	// cannot be determined at all -- broken YAML, a filename that encodes no TC,
-	// or an empty artefact field -- because then exclusivity cannot be proven
-	// and a forced delete must fail closed (CODEX-003).
-	wiringDir := layout.WiringDir(projectRoot)
-	if entries, err := os.ReadDir(wiringDir); err == nil {
-		for _, e := range entries {
-			if e.IsDir() || !strings.HasSuffix(e.Name(), wiring.FileSuffix) {
-				continue
-			}
-			path := filepath.Join(wiringDir, e.Name())
-			tc, _, ok := wiring.ParseFilename(e.Name())
-			if !ok {
-				unreadable = append(unreadable, path)
-				continue
-			}
-			fields, perr := parseRecordArtefactFields(path)
-			if perr != nil || fields.Artefact == "" {
-				unreadable = append(unreadable, path)
-				continue
-			}
-			add(tc, fields.Artefact)
+	// Wiring records (project-wide). The reference's TC identity is the record's
+	// PARSED body `testcase` field, NOT a filename split (ADR-024 / BUG-188): the
+	// old wiring.ParseFilename split `tc-77777777--legacy--playwright` at the first
+	// `--` and mis-attributed the extended sibling's artefact reference to the
+	// shorter id, collapsing the shared-artefact protection for a `--` sibling
+	// (tc-85334613). A record whose artefact reference cannot be determined --
+	// unparseable, or filename/body identity mismatch, or empty artefact -- is
+	// reported unreadable so a forced delete fails closed (CODEX-003).
+	discovered, derr := wiring.DiscoverAll(projectRoot)
+	if derr != nil {
+		unreadable = append(unreadable, fmt.Sprintf("%s (%v)", layout.WiringDir(projectRoot), derr))
+	}
+	for _, dr := range discovered {
+		if dr.Record == nil {
+			unreadable = append(unreadable, dr.Path)
+			continue
 		}
-	} else if !os.IsNotExist(err) {
-		// Whole-directory read failure: the index is entirely unreliable. Name
-		// the directory so a forced delete aborts with a clear cause.
-		unreadable = append(unreadable, fmt.Sprintf("%s (%v)", wiringDir, err))
+		fields, perr := parseRecordArtefactFields(dr.Path)
+		if perr != nil || fields.Artefact == "" {
+			unreadable = append(unreadable, dr.Path)
+			continue
+		}
+		add(dr.Record.TestCase, fields.Artefact)
 	}
 
 	// Manual records also carry an `artefact:` field.
@@ -364,6 +447,31 @@ func buildArtefactReferenceIndex(projectRoot string) (index map[string]map[strin
 
 	sort.Strings(unreadable)
 	return index, unreadable
+}
+
+// scopeRelFor renders a scope's scan directory as a CANONICAL project-relative
+// path, for snapshot scope selection.
+//
+// REV-158 CLAUDE-004: the scan directory must be canonicalised before it is
+// relativised, because the project root it is relativised against already is.
+// ResetExecuteResults and buildDeletePlan both canonicalise the root, but the
+// root ScopeInfo is built from the RAW root in internal/cli/scope.go, so whenever
+// the project is reached through a symlink -- macOS /var and /tmp, a symlinked
+// home or work directory, a Windows 8.3 short path -- the two disagreed.
+// filepath.Rel then produced a "../.."-prefixed string, logicalInScope matched
+// nothing, and reset reported "[dry-run] Nothing to clear." and exited 0 from a
+// project it had just listed one test case for. The old resetByScope walked
+// ScanDir directly and was unaffected, so this was a silent regression with a
+// success exit code.
+//
+// Canonicalising HERE rather than at the caller is deliberate: it also makes a
+// directory alias resolve to its real directory for callers that build a scope
+// by hand, which the folder-qualified authority check depends on (ADR-024 s3).
+func scopeRelFor(projectRoot string, scope *ScopeInfo) string {
+	if scope == nil {
+		return ""
+	}
+	return toProjectRel(projectRoot, pathsafe.CanonicalRoot(scope.ScanDir))
 }
 
 // toProjectRel renders an absolute path as a forward-slash project-relative

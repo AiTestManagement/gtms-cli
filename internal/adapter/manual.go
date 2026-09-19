@@ -9,6 +9,7 @@ import (
 
 	"github.com/aitestmanagement/gtms-cli/internal/layout"
 	"github.com/aitestmanagement/gtms-cli/internal/pipeline"
+	"github.com/aitestmanagement/gtms-cli/internal/testcase"
 	"gopkg.in/yaml.v3"
 )
 
@@ -139,11 +140,12 @@ func populateManualExecuteFields(ctx *AdapterContext, projectRoot, target string
 		return
 	}
 
-	// 5. Compute current testcase hash for drift comparison
-	tcSource := findTestCaseSource(projectRoot, target)
+	// 5. Compute current testcase hash for drift comparison, from the spec the
+	// command resolved as the owner (ADR-024 s5). Drift is a comparison against
+	// what the user's spec says NOW, so hashing anything other than the exact
+	// resolved owner would compare against the wrong file.
 	currentHash := ""
-	if tcSource != "" {
-		absTC := filepath.Join(projectRoot, tcSource)
+	if absTC := testcase.OwnerAbsFor(projectRoot, ctx.Owner); absTC != "" {
 		if h, hashErr := pipeline.HashFile(absTC); hashErr == nil {
 			currentHash = h
 		}

@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/aitestmanagement/gtms-cli/internal/config"
+	"github.com/aitestmanagement/gtms-cli/internal/pathsafe"
 	"gopkg.in/yaml.v3"
 )
 
@@ -162,7 +163,7 @@ func Init(opts Options) (*Result, error) {
 
 	// BUG-111 / ADR-022: Install preset-owned assets (framework-specific files).
 	// BATS runner, TAP helper, Playwright runner etc. are no longer unconditional.
-	if err := installPresetAssets(opts.ProjectRoot, opts.Preset, result); err != nil {
+	if err := installPresetAssets(opts.ProjectRoot, opts.Preset, opts.Force, result); err != nil {
 		return nil, fmt.Errorf("installing preset assets: %w", err)
 	}
 
@@ -320,27 +321,244 @@ func writeFileIfNotExists(absPath string, content []byte, relPath string, result
 
 // installPresetAssets writes framework-specific files owned by the given preset.
 // BUG-111 / ADR-022: framework assets are deliberate preset policy, not unconditional.
-func installPresetAssets(projectRoot, preset string, result *Result) error {
+//
+// BUG-189 (tc-65df1eb5): existing projects hold their own copy of an asset such as
+// gtms/adapters/playwright-runner.sh, and there is no repository source file for them
+// to pull. When force is set, this provides a content-aware upgrade path for assets
+// that declare known prior versions (PresetAssetPriorVersions):
+//   - on-disk content byte-identical to the current shipped content -> skip (current);
+//   - byte-identical to a known prior shipped version -> refresh in place (a pristine
+//     older copy has no user edits to lose);
+//   - anything else -> the file is user-modified or unknown; write a `.gtms-new`
+//     companion and warn, never clobbering the original.
+// Assets with no prior-version catalog entry keep the plain absent->write /
+// present->skip behaviour regardless of force, so existing init/force flows are
+// byte-for-byte unchanged.
+func installPresetAssets(projectRoot, preset string, force bool, result *Result) error {
 	assets, ok := PresetAssets[preset]
 	if !ok {
 		return nil // no assets for this preset
 	}
 	for _, asset := range assets {
-		absPath := filepath.Join(projectRoot, filepath.FromSlash(asset.RelPath))
+		// Step 1 -- inspect the LEAF on the LEXICAL path. filepath.Join plus Clean
+		// only: no symlink evaluation, so os.Lstat below sees the asset's own final
+		// component rather than whatever it points at.
+		//
+		// REV-165 (CODEX-003): Lstat, never Stat/ReadFile, to decide what is on
+		// disk. os.ReadFile and os.WriteFile both FOLLOW symlinks, so a symlinked
+		// gtms/adapters/playwright-runner.sh whose target happened to hold known
+		// prior bytes had that EXTERNAL target overwritten by --force. Before the
+		// upgrade path existed an existing asset was simply skipped, so this was
+		// a new out-of-project write. Anything that is not a regular file is
+		// refused outright and reported.
+		//
+		// This veto MUST run against the UNRESOLVED leaf. Handing Lstat a
+		// canonicalised path instead would give it a leaf symlink already resolved
+		// to its regular target, Mode().IsRegular() would be true, and the veto
+		// would silently stop firing.
+		lexPath := filepath.Clean(filepath.Join(projectRoot, filepath.FromSlash(asset.RelPath)))
+		info, statErr := os.Lstat(lexPath)
+		if statErr != nil && !os.IsNotExist(statErr) {
+			return fmt.Errorf("inspecting %s: %w", asset.RelPath, statErr)
+		}
+		leafPresent := statErr == nil
+		if leafPresent && !info.Mode().IsRegular() {
+			result.FilesSkipped = append(result.FilesSkipped, asset.RelPath)
+			result.Warnings = append(result.Warnings,
+				fmt.Sprintf("%s is not a regular file (%s) and was left untouched. "+
+					"GTMS will not write through a symlink or replace a directory; "+
+					"replace it with a regular file and re-run if you want the shipped version.",
+					asset.RelPath, info.Mode().String()))
+			continue
+		}
+
+		// Step 2 -- resolve CONTAINMENT before any MkdirAll, read or write.
+		//
+		// REV-165 (CODEX-R2-001): the leaf veto above never inspects PARENT
+		// components. If gtms/adapters/ is itself a symlink (or a Windows junction)
+		// pointing outside the project, the asset, its temporary file and its
+		// .gtms-new companions were all created in that EXTERNAL directory --
+		// overwriting an out-of-project file whenever it held known prior bytes.
+		// That is the CODEX-003 data-loss class one level up, and it is reachable
+		// on the absent-leaf path too, not only on a forced upgrade.
+		//
+		// pathsafe.ResolveUnderRoot resolves symlinks on the nearest existing
+		// ancestor and re-attaches the not-yet-created suffix, so an escaping
+		// parent is caught whether the leaf exists or not.
+		absPath, _, resolveErr := pathsafe.ResolveUnderRoot(projectRoot, asset.RelPath)
+		if resolveErr != nil {
+			result.FilesSkipped = append(result.FilesSkipped, asset.RelPath)
+			result.Warnings = append(result.Warnings,
+				fmt.Sprintf("%s resolves outside the project and was left untouched (%s). "+
+					"GTMS will not create or replace files beyond the project root; check "+
+					"whether a parent directory such as gtms/adapters/ is a symlink or "+
+					"junction pointing elsewhere.",
+					asset.RelPath, pathsafe.SanitizeControlChars(resolveErr.Error())))
+			continue
+		}
+
+		// Step 3 -- from here on every filesystem operation uses absPath, the
+		// canonical in-root path. lexPath is never written through: writeFileAtomic
+		// derives its temporary file from filepath.Dir(absPath), and writeCompanion
+		// derives every .gtms-new companion from absPath.
+		//
 		// Ensure parent directory exists (e.g. gtms/adapters/lib/)
 		if err := os.MkdirAll(filepath.Dir(absPath), 0o755); err != nil {
 			return fmt.Errorf("creating directory for %s: %w", asset.RelPath, err)
 		}
-		if _, err := os.Stat(absPath); os.IsNotExist(err) {
+
+		if !leafPresent {
+			// Absent -> write (unchanged behaviour).
 			if err := os.WriteFile(absPath, []byte(asset.Content), asset.Perm); err != nil {
 				return fmt.Errorf("writing %s: %w", asset.RelPath, err)
 			}
 			result.FilesCreated = append(result.FilesCreated, asset.RelPath)
-		} else {
+			continue
+		}
+
+		existing, readErr := os.ReadFile(absPath)
+		if readErr != nil {
+			return fmt.Errorf("reading %s: %w", asset.RelPath, readErr)
+		}
+
+		// Present. Without --force, or for an asset that declares no prior versions,
+		// preserve the established present->skip behaviour.
+		if !force || len(PresetAssetPriorVersions[asset.RelPath]) == 0 {
 			result.FilesSkipped = append(result.FilesSkipped, asset.RelPath)
+			continue
+		}
+
+		// --force + present + upgradeable asset: content-aware refresh.
+		if string(existing) == asset.Content {
+			// Already the current shipped content.
+			result.FilesSkipped = append(result.FilesSkipped, asset.RelPath)
+			continue
+		}
+		if isKnownPriorAsset(asset.RelPath, string(existing)) {
+			// A pristine older shipped copy: safe to refresh in place.
+			if err := writeFileAtomic(absPath, []byte(asset.Content), asset.Perm); err != nil {
+				return fmt.Errorf("upgrading %s: %w", asset.RelPath, err)
+			}
+			result.FilesCreated = append(result.FilesCreated, asset.RelPath)
+			result.Notes = append(result.Notes,
+				fmt.Sprintf("Upgraded %s to the current shipped version.", asset.RelPath))
+			continue
+		}
+		// User-modified or unknown: never clobber. Write a companion and warn.
+		if err := writeCompanion(absPath, asset, result); err != nil {
+			return err
 		}
 	}
 	return nil
+}
+
+// writeCompanion writes the current shipped content beside a user-modified asset
+// so the operator can merge it by hand.
+//
+// REV-165 (CODEX-004): the companion used to be written unconditionally, so a
+// second `gtms init --force` silently truncated any hand-merged edits the
+// operator had made in it -- in a feature whose whole promise is that it never
+// clobbers user changes. An existing companion is now never overwritten: if it
+// already holds the current shipped bytes there is nothing to do, and otherwise
+// the shipped version goes to the next free `.gtms-new.N` and the operator is
+// told their companion was preserved.
+func writeCompanion(absPath string, asset PresetAsset, result *Result) error {
+	baseRel := asset.RelPath + ".gtms-new"
+	baseAbs := absPath + ".gtms-new"
+
+	companionRel, companionAbs := baseRel, baseAbs
+	preserved := ""
+	for n := 2; ; n++ {
+		info, statErr := os.Lstat(companionAbs)
+		if os.IsNotExist(statErr) {
+			break // free slot
+		}
+		if statErr != nil {
+			return fmt.Errorf("inspecting %s: %w", companionRel, statErr)
+		}
+		if info.Mode().IsRegular() {
+			existing, readErr := os.ReadFile(companionAbs)
+			if readErr != nil {
+				return fmt.Errorf("reading %s: %w", companionRel, readErr)
+			}
+			if string(existing) == asset.Content {
+				// Already the current shipped content: nothing to write, and
+				// nothing of the operator's to lose.
+				result.FilesSkipped = append(result.FilesSkipped, asset.RelPath, companionRel)
+				result.Warnings = append(result.Warnings, conflictWarning(asset.RelPath, companionRel))
+				return nil
+			}
+		}
+		if preserved == "" {
+			preserved = companionRel
+		}
+		companionRel = fmt.Sprintf("%s.%d", baseRel, n)
+		companionAbs = fmt.Sprintf("%s.%d", baseAbs, n)
+	}
+
+	if err := writeFileAtomic(companionAbs, []byte(asset.Content), asset.Perm); err != nil {
+		return fmt.Errorf("writing %s: %w", companionRel, err)
+	}
+	result.FilesSkipped = append(result.FilesSkipped, asset.RelPath)
+	result.FilesCreated = append(result.FilesCreated, companionRel)
+	result.Warnings = append(result.Warnings, conflictWarning(asset.RelPath, companionRel))
+	if preserved != "" {
+		result.Warnings = append(result.Warnings,
+			fmt.Sprintf("%s already existed and differs from the shipped version, so it was "+
+				"left untouched; the current version was written to %s instead.",
+				preserved, companionRel))
+	}
+	return nil
+}
+
+// conflictWarning is the operator-facing text for a user-modified preset asset
+// that was left alone with the shipped version written alongside it.
+func conflictWarning(assetRel, companionRel string) string {
+	return fmt.Sprintf("%s differs from the shipped version and was left untouched. "+
+		"The current version was written to %s -- review and merge to pick up "+
+		"fixes such as BUG-189's Playwright result classification.",
+		assetRel, companionRel)
+}
+
+// writeFileAtomic writes content to absPath via a same-directory temporary file
+// and an atomic rename.
+//
+// REV-165 (CODEX-003): os.WriteFile opens the destination in place, which
+// mutates whatever the path resolves to -- including the far end of a hard link
+// shared with a file outside the project -- and leaves a half-written asset
+// behind if the write fails part way. Renaming a fresh file over the path
+// replaces the directory entry instead, so a hard-linked twin keeps the old
+// content and a failed write leaves the original intact.
+func writeFileAtomic(absPath string, content []byte, perm os.FileMode) error {
+	dir := filepath.Dir(absPath)
+	tmp, err := os.CreateTemp(dir, ".gtms-asset-*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName) // no-op once the rename has succeeded
+	if _, err := tmp.Write(content); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Chmod(tmpName, perm); err != nil {
+		return err
+	}
+	return os.Rename(tmpName, absPath)
+}
+
+// isKnownPriorAsset reports whether content byte-matches any known prior shipped
+// version of the asset at relPath (BUG-189 upgrade path).
+func isKnownPriorAsset(relPath, content string) bool {
+	for _, prior := range PresetAssetPriorVersions[relPath] {
+		if content == prior {
+			return true
+		}
+	}
+	return false
 }
 
 // CreateDirectories creates the GTMS directory structure with .gitkeep files.

@@ -23,7 +23,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 
 	"github.com/aitestmanagement/gtms-cli/internal/layout"
@@ -82,28 +81,66 @@ func ResolveFolder(projectRoot, relativeFolder string) (string, error) {
 	return scope, nil
 }
 
-// MatchesSpecFile reports whether base names a test-case SPEC file for the bare
-// tcID: a Markdown file named exactly "<tcID>.md" or "<tcID>-*.md".
+// MatchesSpecFile reports whether base names a test-case SPEC file whose id
+// component is EXACTLY the bare tcID: a Markdown file named "<tcID>.md", or
+// "<tcID>-<slug>.md" where the slug is not itself an id extension.
 //
 // This is the SINGLE authoritative predicate shared by ResolveSpec
 // (existence/resolution), FindAllSpecs (the qualified-target uniqueness guard), and
-// reader.findTestCaseSpecs (the delete/reset mutation). Keeping the guard, the
-// existence check, and the mutation on ONE predicate is load-bearing: if they drift
-// (as they did in REV-121/REV-122), a prefixed non-spec file like "tc-x-notes.txt"
-// can either invent a false duplicate or, worse, satisfy a scoped-existence check
-// and let a qualified operation broaden to the global ID and delete the real spec in
-// another folder. base must be a filename (no path); tcID is a bare id.
+// Snapshot.Resolve's relevance shortlist for Unprovable candidates. Keeping the
+// guard, the existence check, and the mutation on ONE predicate is load-bearing: if
+// they drift (as they did in REV-121/REV-122), a prefixed non-spec file like
+// "tc-x-notes.txt" can either invent a false duplicate or, worse, satisfy a
+// scoped-existence check and let a qualified operation broaden to the global ID and
+// delete the real spec in another folder. base must be a filename (no path); tcID
+// is a bare id.
+//
+// REV-158 CLAUDE-003: a "<tcID>--..." filename is a LONGER id (tc-x--legacy), not
+// tcID plus a slug, and must NOT match. A bare HasPrefix made an unreadable
+// extended-ID sibling relevant to its shorter prefix, so a malformed
+// tc-11111111--legacy.md refused every operation on the unrelated tc-11111111 --
+// exactly the cross-identity coupling BUG-188 exists to remove, and which the
+// wiring side of the same change already avoided (wiring.TCFromNameForScope).
 func MatchesSpecFile(base, tcID string) bool {
 	if !strings.HasSuffix(base, ".md") {
 		return false
 	}
-	return base == tcID+".md" || strings.HasPrefix(base, tcID+"-")
+	if base == tcID+".md" {
+		return true
+	}
+	rest, ok := strings.CutPrefix(base, tcID+"-")
+	if !ok {
+		return false
+	}
+	// rest is "<slug>.md"; a leading '-' means the real filename was "<tcID>--",
+	// i.e. an extended id, so this file belongs to a different (longer) test case.
+	return !strings.HasPrefix(rest, "-")
 }
 
-// ResolveSpec resolves the spec file for a target and returns its project-relative
-// (forward-slash) path, or an error. The error distinguishes "not found" from an
-// out-of-tree containment violation for callers that want the security diagnostic;
-// Exists/FindSource wrap it for the common boolean/string cases.
+// ResolveSpec resolves the spec file for a target by FILENAME and returns its
+// project-relative (forward-slash) path, or an error.
+//
+// ADR-024 "Delivery boundary" (5a): this is the DEFERRED half of the split
+// helper. It is the pre-migration resolver -- a filename-matched walk with an
+// early SkipAll that does NOT read or parse spec bodies, and does NOT build a
+// project-wide snapshot at any depth. Bulk status, the picker, map, gaps and
+// triage listing stay on it until ENH-205 migrates them deliberately, with its
+// own policy matrix. Exists, FindSource and pipeline.ResolveTestCaseSpec are thin
+// wrappers over it and are part of the same deferred surface.
+//
+// Do NOT reimplement this body on top of NewSnapshot. That is the prohibited
+// dependency direction: it makes every per-record bulk-read caller O(N^2) without
+// a single caller being edited, which is exactly the regression REV-159
+// CLAUDE-001 recorded (gtms status <folder> on 2049 specs: 102s -> not completing
+// in 300s). The prohibition is enforced by the guard in
+// internal/testcase/adr024_boundary_guard_test.go and by the bounded-enumeration
+// assertion in internal/reader/adr024_bounded_enumeration_test.go.
+//
+// First-half (row-1) consumers -- anything that writes, removes, overwrites,
+// invokes external code, hashes on a mutating path, or reads a single named test
+// case -- must NOT use this. They resolve through the snapshot API (ResolveOwner,
+// Snapshot.RequireOwner, Snapshot.RequireOwnerUnderFolder) and receive an explicit
+// *Owner, so identity is decided by the parsed body test_case_id.
 //
 // Target shapes:
 //   - Unqualified: "tc-abc123" -- searched anywhere under gtms/test/cases/.
@@ -129,12 +166,7 @@ func ResolveSpec(projectRoot, target string) (string, error) {
 		return "", fmt.Errorf("test cases directory resolves outside the project root: %w", err)
 	}
 
-	folder := ""
-	tcID := target
-	if idx := strings.LastIndex(target, "/"); idx >= 0 {
-		folder = target[:idx]
-		tcID = target[idx+1:]
-	}
+	folder, tcID := SplitQualifiedTarget(target)
 
 	// Resolve the search directory under the (canonical) cases root. For a
 	// folder-qualified target this rejects an out-of-tree directory symlink (root
@@ -142,20 +174,20 @@ func ResolveSpec(projectRoot, target string) (string, error) {
 	// alias resolves to its canonical in-tree directory.
 	searchDir := casesRoot
 	if folder != "" {
-		abs, _, err := pathsafe.ResolveUnderRoot(casesRoot, folder)
-		if err != nil {
-			return "", fmt.Errorf("test case folder %q resolves outside the test cases directory: %w", folder, err)
+		abs, _, ferr := pathsafe.ResolveUnderRoot(casesRoot, folder)
+		if ferr != nil {
+			return "", fmt.Errorf("test case folder %q resolves outside the test cases directory: %w", folder, ferr)
 		}
 		searchDir = abs
 	}
 
-	if info, err := os.Stat(searchDir); err != nil || !info.IsDir() {
+	if info, serr := os.Stat(searchDir); serr != nil || !info.IsDir() {
 		return "", fmt.Errorf("test case %q not found under %s/", target, layout.Current().TestCases)
 	}
 
 	var found string
-	_ = filepath.Walk(searchDir, func(path string, info os.FileInfo, err error) error {
-		if err != nil || info.IsDir() {
+	_ = filepath.Walk(searchDir, func(path string, info os.FileInfo, werr error) error {
+		if werr != nil || info.IsDir() {
 			return nil
 		}
 		base := filepath.Base(path)
@@ -208,59 +240,32 @@ func ResolveSpec(projectRoot, target string) (string, error) {
 // than silently undercounting and mutating shared flat state. A missing cases
 // directory yields an empty result, not an error.
 func FindAllSpecs(projectRoot, tcID string) ([]string, error) {
-	casesRoot, _, err := pathsafe.ResolveUnderRoot(projectRoot, layout.Current().TestCases)
+	snap, err := NewSnapshot(projectRoot)
 	if err != nil {
-		return nil, fmt.Errorf("test cases directory resolves outside the project root: %w", err)
+		return nil, err
 	}
-	if info, statErr := os.Stat(casesRoot); statErr != nil || !info.IsDir() {
+	res := snap.Resolve(tcID)
+	switch res.Outcome {
+	case OutcomeUniqueOwner:
+		return []string{res.OwnerLogicalRel}, nil
+	case OutcomeAmbiguous:
+		return res.Owners, nil
+	case OutcomeUnprovable:
+		// Fail closed: a relevant candidate whose ownership cannot be proved must
+		// abort the qualified operation rather than undercounting.
+		return nil, OwnershipErrorFor(res)
+	default: // NotFound
 		return nil, nil
 	}
-
-	var found []string
-	walkErr := filepath.Walk(casesRoot, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			// REV-121 CODEX-001: a scan error means the project-wide count may be
-			// INCOMPLETE. Fail closed -- propagate so the qualified operation aborts
-			// instead of undercounting a duplicate and mutating shared flat state.
-			return fmt.Errorf("scanning test cases under %s: %w", layout.Current().TestCases, err)
-		}
-		if info.IsDir() {
-			return nil
-		}
-		// REV-121/122: the ONE shared spec predicate -- identical to ResolveSpec and
-		// the delete/reset mutation resolver, so a prefixed non-spec file is never a
-		// duplicate.
-		if !MatchesSpecFile(filepath.Base(path), tcID) {
-			return nil
-		}
-		// Containment on the candidate spec: reject an out-of-tree spec symlink even
-		// inside a safe directory (mirrors ResolveSpec).
-		rel, relErr := filepath.Rel(casesRoot, path)
-		if relErr != nil {
-			return nil
-		}
-		if _, _, resErr := pathsafe.ResolveUnderRoot(casesRoot, rel); resErr != nil {
-			return nil
-		}
-		// REV-123 CODEX-002: relativise against the CANONICAL project root (see
-		// ResolveSpec) so a non-canonical (Windows 8.3) root cannot produce a
-		// spurious "../.." project-relative path.
-		if projRel, e := filepath.Rel(pathsafe.CanonicalRoot(projectRoot), path); e == nil {
-			found = append(found, filepath.ToSlash(projRel))
-		} else {
-			found = append(found, filepath.ToSlash(path))
-		}
-		return nil
-	})
-	if walkErr != nil {
-		return nil, walkErr
-	}
-	sort.Strings(found)
-	return found, nil
 }
 
 // Exists reports whether a path-safe, in-tree test case spec file exists for the
 // given target. It maps any containment violation or missing spec to false.
+//
+// ADR-024 5a: a thin wrapper over the DEFERRED filename resolver, and part of the
+// same deferred surface. A row-1 consumer asks the snapshot for an *Owner instead
+// -- mapping an ownership failure to a bare false is how a mutating caller reads a
+// refusal as absence.
 func Exists(projectRoot, target string) bool {
 	_, err := ResolveSpec(projectRoot, target)
 	return err == nil
@@ -270,6 +275,11 @@ func Exists(projectRoot, target string) bool {
 // spec file for the given target, or "" if it is missing or resolves out-of-tree.
 //
 // ENH-134: used by manualUpdateHash which needs the TC file path for hashing.
+//
+// ADR-024 5a: a thin wrapper over the DEFERRED filename resolver, and part of the
+// same deferred surface. A row-1 consumer uses Owner.SpecRel/SpecAbs from a
+// snapshot resolution instead -- collapsing every error to "" hides an Ambiguous
+// or Unprovable identity behind a value that looks like "not found".
 func FindSource(projectRoot, target string) string {
 	path, err := ResolveSpec(projectRoot, target)
 	if err != nil {

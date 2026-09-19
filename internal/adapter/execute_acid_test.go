@@ -40,7 +40,7 @@ func setupExecuteTestProject(t *testing.T) (string, *config.Config) {
 	// Create a test case file that automate/execute reference
 	testCasePath := filepath.Join(root, "gtms/test/cases", "tc-acid-checkout.md")
 	testCaseContent := `---
-id: tc-acid
+test_case_id: tc-acid
 title: Acid Test Checkout Flow
 requirement: JIRA-100
 ---
@@ -167,7 +167,7 @@ func TestExecuteAdapterAbstractionAcidTest(t *testing.T) {
 			flags := CommandFlags{
 				ArtefactFile: "gtms/automation/specs/tc-acid-checkout.spec.ts",
 			}
-			res, err := InvokeWithRoot(context.Background(), root, cfg, resolved, "tc-acid", flags)
+			res, err := InvokeWithRoot(context.Background(), root, cfg, resolved, "tc-acid", withOwner(t, root, "tc-acid", flags))
 			require.NoError(t, err)
 
 			// Verify outcome
@@ -226,7 +226,7 @@ func TestExecuteAdapterAbstractionAcidTest(t *testing.T) {
 			flags := CommandFlags{
 				ArtefactFile: "gtms/automation/specs/tc-acid-checkout.spec.ts",
 			}
-			res, err := InvokeWithRoot(context.Background(), asyncRoot, asyncCfg, resolved, "tc-acid", flags)
+			res, err := InvokeWithRoot(context.Background(), asyncRoot, asyncCfg, resolved, "tc-acid", withOwner(t, asyncRoot, "tc-acid", flags))
 			require.NoError(t, err)
 
 			// After trigger: task should be in-progress (not complete)
@@ -344,7 +344,7 @@ func TestExecuteAcidTest_SameCodePath(t *testing.T) {
 		Config: &config.AdapterConfig{Mode: "sync", Command: `echo "PASS"`},
 		Tier: 1, Mode: "sync",
 	}
-	res1, err := InvokeWithRoot(context.Background(), root, cfg, resolved1, "tc-acid", flags)
+	res1, err := InvokeWithRoot(context.Background(), root, cfg, resolved1, "tc-acid", withOwner(t, root, "tc-acid", flags))
 	require.NoError(t, err)
 	assert.Equal(t, "complete", res1.Status)
 
@@ -360,7 +360,7 @@ func TestExecuteAcidTest_SameCodePath(t *testing.T) {
 		},
 		Tier: 2, Mode: "async",
 	}
-	res2, err := InvokeWithRoot(context.Background(), root2, cfg2, resolved2, "tc-acid", flags)
+	res2, err := InvokeWithRoot(context.Background(), root2, cfg2, resolved2, "tc-acid", withOwner(t, root2, "tc-acid", flags))
 	require.NoError(t, err)
 	assert.Equal(t, "in-progress", res2.Status) // Async stops at in-progress
 
@@ -385,7 +385,7 @@ func TestExecuteAcidTest_ContextFields(t *testing.T) {
 		Tier: 1, Mode: "sync",
 	}
 
-	res, err := InvokeWithRoot(context.Background(), root, cfg, resolved, target, flags)
+	res, err := InvokeWithRoot(context.Background(), root, cfg, resolved, target, withOwner(t, root, target, flags))
 	require.NoError(t, err)
 	assert.Equal(t, "complete", res.Status)
 
@@ -408,7 +408,7 @@ func TestExecuteAcidTest_AutomationRecordUpdated(t *testing.T) {
 		require.NoError(t, err)
 
 		flags := CommandFlags{ArtefactFile: "gtms/automation/specs/tc-acid-checkout.spec.ts", Framework: "playwright"}
-		res, err := InvokeWithRoot(context.Background(), root, cfg, resolved, "tc-acid", flags)
+		res, err := InvokeWithRoot(context.Background(), root, cfg, resolved, "tc-acid", withOwner(t, root, "tc-acid", flags))
 		require.NoError(t, err)
 
 		rc, err := result.Read(result.ResultPath(root, res.TaskID))
@@ -430,7 +430,7 @@ func TestExecuteAcidTest_TaskFileFields(t *testing.T) {
 	require.NoError(t, err)
 
 	flags := CommandFlags{ArtefactFile: "gtms/automation/specs/tc-acid-checkout.spec.ts"}
-	res, err := InvokeWithRoot(context.Background(), root, cfg, resolved, "tc-acid", flags)
+	res, err := InvokeWithRoot(context.Background(), root, cfg, resolved, "tc-acid", withOwner(t, root, "tc-acid", flags))
 	require.NoError(t, err)
 
 	// Read the task file from complete
@@ -465,7 +465,7 @@ func TestExecuteAcidTest_ResultContractFields(t *testing.T) {
 		require.NoError(t, err)
 
 		flags := CommandFlags{ArtefactFile: "gtms/automation/specs/tc-acid-checkout.spec.ts"}
-		res, err := InvokeWithRoot(context.Background(), root, cfg, resolved, "tc-acid", flags)
+		res, err := InvokeWithRoot(context.Background(), root, cfg, resolved, "tc-acid", withOwner(t, root, "tc-acid", flags))
 		require.NoError(t, err)
 
 		rcPath := result.ResultPath(root, res.TaskID)
@@ -488,7 +488,7 @@ func TestExecuteAcidTest_ResultContractFields(t *testing.T) {
 		require.NoError(t, err)
 
 		flags := CommandFlags{ArtefactFile: "gtms/automation/specs/tc-acid-checkout.spec.ts"}
-		res, err := InvokeWithRoot(context.Background(), root, cfg, resolved, "tc-acid", flags)
+		res, err := InvokeWithRoot(context.Background(), root, cfg, resolved, "tc-acid", withOwner(t, root, "tc-acid", flags))
 		require.NoError(t, err)
 
 		// After trigger, result contract exists but status is still pending
@@ -519,7 +519,7 @@ func TestExecuteAcidTest_NoCommandModeSpecificLogic(t *testing.T) {
 	require.NoError(t, err)
 	flags := CommandFlags{ArtefactFile: "gtms/automation/specs/tc-acid-checkout.spec.ts"}
 
-	syncRes, err := InvokeWithRoot(context.Background(), root1, cfg1, syncResolved, "tc-acid", flags)
+	syncRes, err := InvokeWithRoot(context.Background(), root1, cfg1, syncResolved, "tc-acid", withOwner(t, root1, "tc-acid", flags))
 	require.NoError(t, err)
 	assert.Equal(t, "complete", syncRes.Status, "Sync: pending -> complete in one invocation")
 
@@ -528,7 +528,7 @@ func TestExecuteAcidTest_NoCommandModeSpecificLogic(t *testing.T) {
 	asyncResolved, err := Resolve(cfg2, "execute", "mock-async")
 	require.NoError(t, err)
 
-	asyncRes, err := InvokeWithRoot(context.Background(), root2, cfg2, asyncResolved, "tc-acid", flags)
+	asyncRes, err := InvokeWithRoot(context.Background(), root2, cfg2, asyncResolved, "tc-acid", withOwner(t, root2, "tc-acid", flags))
 	require.NoError(t, err)
 	assert.Equal(t, "in-progress", asyncRes.Status, "Async: pending -> in-progress after trigger")
 
@@ -552,7 +552,7 @@ func TestBUG023_FailedExecuteUpdatesPipelineRecord(t *testing.T) {
 	}
 
 	flags := CommandFlags{ArtefactFile: "gtms/automation/specs/tc-acid-checkout.spec.ts", Framework: "playwright"}
-	res, err := InvokeWithRoot(context.Background(), root, cfg, resolved, "tc-acid", flags)
+	res, err := InvokeWithRoot(context.Background(), root, cfg, resolved, "tc-acid", withOwner(t, root, "tc-acid", flags))
 	require.NoError(t, err, "InvokeWithRoot should not return error for non-zero exit")
 	assert.Equal(t, "error", res.Status, "status should be error for failed adapter")
 
@@ -604,7 +604,7 @@ exit 0
 	}
 
 	flags := CommandFlags{ArtefactFile: "gtms/automation/specs/tc-acid-checkout.spec.ts", Framework: "playwright"}
-	res, err := InvokeWithRoot(context.Background(), root, cfg, resolved, "tc-acid", flags)
+	res, err := InvokeWithRoot(context.Background(), root, cfg, resolved, "tc-acid", withOwner(t, root, "tc-acid", flags))
 	require.NoError(t, err)
 	assert.Equal(t, "error", res.Status, "status should be error for failed Tier 2 adapter")
 
@@ -631,7 +631,7 @@ func TestBUG023_FailedThenPassedExecute(t *testing.T) {
 	}
 
 	flags := CommandFlags{ArtefactFile: "gtms/automation/specs/tc-acid-checkout.spec.ts", Framework: "playwright"}
-	res, err := InvokeWithRoot(context.Background(), root, cfg, failResolved, "tc-acid", flags)
+	res, err := InvokeWithRoot(context.Background(), root, cfg, failResolved, "tc-acid", withOwner(t, root, "tc-acid", flags))
 	require.NoError(t, err)
 	assert.Equal(t, "error", res.Status)
 
@@ -644,7 +644,7 @@ func TestBUG023_FailedThenPassedExecute(t *testing.T) {
 	passResolved, err := Resolve(cfg, "execute", "mock-runner")
 	require.NoError(t, err)
 
-	res, err = InvokeWithRoot(context.Background(), root, cfg, passResolved, "tc-acid", flags)
+	res, err = InvokeWithRoot(context.Background(), root, cfg, passResolved, "tc-acid", withOwner(t, root, "tc-acid", flags))
 	require.NoError(t, err)
 	assert.Equal(t, "complete", res.Status)
 
@@ -678,7 +678,7 @@ func TestBUG029_Tier2ExecutePersistsArtefactHash(t *testing.T) {
 	// Create test case
 	require.NoError(t, os.WriteFile(
 		filepath.Join(root, "gtms/test/cases", "tc-bug029.md"),
-		[]byte("---\nid: tc-bug029\ntitle: BUG-029 hash test\n---\n\n## Steps\n1. Test\n"), 0644,
+		[]byte("---\ntest_case_id: tc-bug029\ntitle: BUG-029 hash test\n---\n\n## Steps\n1. Test\n"), 0644,
 	))
 
 	// Create spec file with known content
@@ -751,7 +751,7 @@ defaults:
 		Framework:    "bats",
 	}
 
-	res, err := InvokeWithRoot(context.Background(), root, cfg, resolved, "tc-bug029", flags)
+	res, err := InvokeWithRoot(context.Background(), root, cfg, resolved, "tc-bug029", withOwner(t, root, "tc-bug029", flags))
 	require.NoError(t, err)
 	require.NotNil(t, res)
 	assert.Equal(t, "complete", res.Status)
@@ -798,7 +798,7 @@ func TestBUG083_InvokerRestoresTargetAfterTier2Overwrite(t *testing.T) {
 
 	require.NoError(t, os.WriteFile(
 		filepath.Join(root, "gtms/test/cases", "tc-bug083.md"),
-		[]byte("---\nid: tc-bug083\ntitle: BUG-083 target restore test\n---\n\n## Steps\n1. Test\n"), 0644,
+		[]byte("---\ntest_case_id: tc-bug083\ntitle: BUG-083 target restore test\n---\n\n## Steps\n1. Test\n"), 0644,
 	))
 
 	specContent := []byte("#!/usr/bin/env bats\n@test \"example\" { true; }\n")
@@ -865,7 +865,7 @@ defaults:
 		Framework:    "bats",
 	}
 
-	res, err := InvokeWithRoot(context.Background(), root, cfg, resolved, "tc-bug083", flags)
+	res, err := InvokeWithRoot(context.Background(), root, cfg, resolved, "tc-bug083", withOwner(t, root, "tc-bug083", flags))
 	require.NoError(t, err)
 	require.NotNil(t, res)
 	assert.Equal(t, "complete", res.Status)

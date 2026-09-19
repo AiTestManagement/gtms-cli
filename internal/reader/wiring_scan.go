@@ -10,6 +10,7 @@ import (
 
 	"github.com/aitestmanagement/gtms-cli/internal/execution"
 	"github.com/aitestmanagement/gtms-cli/internal/layout"
+	"github.com/aitestmanagement/gtms-cli/internal/pathsafe"
 	"github.com/aitestmanagement/gtms-cli/internal/result"
 	"github.com/aitestmanagement/gtms-cli/internal/wiring"
 )
@@ -54,6 +55,15 @@ type overlayHit struct {
 	GitBranch   string
 	GitDirty    *bool
 	Adapter     string // ENH-191: the adapter that produced this result
+
+	// ENH-200 additive fields for triage snapshot capture. These are new and
+	// must not change the meaning of the existing fields above (overlayHit is
+	// shared with the status/gaps/map overlays). Triage reads these; the
+	// status/gaps consumers ignore them.
+	Task         string // handoff task ID (rc.Task)
+	ArtefactHash string // handoff artefact-hash, verbatim (may be empty)
+	RawResult    string // rc.Result verbatim: pass|fail|skip|error (NOT reader-normalised)
+	RawCompleted string // rc.Completed verbatim (empty when the handoff omitted it)
 }
 
 // overlayKey is the canonical map key for the join.
@@ -77,10 +87,16 @@ func scanTerminalResultsForTC(projectRoot, testCaseID string) (map[string]overla
 	if err != nil {
 		return nil, err
 	}
-	if len(recs) == 0 {
-		return nil, nil
+	// Delegate to the single canonical scanner so the wiring join AND the
+	// BUG-193 proven-manual claim are applied exactly once, in one place. A
+	// manual-only TC (recs empty) still reaches the scanner so its wiring-free
+	// manual claim is merged; the scanner keys everything by (tc, framework), so
+	// the extra project-wide manual keys it returns are simply not looked up here.
+	wiringByTC := map[string][]*wiring.WiringRecord{}
+	if len(recs) > 0 {
+		wiringByTC[testCaseID] = recs
 	}
-	return scanTerminalResults(projectRoot, map[string][]*wiring.WiringRecord{testCaseID: recs}), nil
+	return scanTerminalResults(projectRoot, wiringByTC), nil
 }
 
 // scanTerminalResults walks .gtms/results/ and returns the latest
@@ -124,9 +140,28 @@ func scanTerminalResultsForTC(projectRoot, testCaseID string) (map[string]overla
 // as Error on the dashboard. Bad files are skipped silently; the reader
 // must not blind itself to the rest because one handoff is malformed.
 func scanTerminalResults(projectRoot string, wiringByTC map[string][]*wiring.WiringRecord) map[string]overlayHit {
-	// Fast path: with no wiring on this project, every result is an
-	// orphan in the overlay sense. Skip the directory walk — saves work
-	// on fresh clones and pre-automate workspaces.
+	// The wiring join below is skipped when the project has no wiring (every
+	// result would be an overlay orphan). BUG-193: the proven-manual claim is
+	// wiring-free, so it is merged AFTER this block regardless of wiring -- the
+	// old fast-path `return nil` here would have hidden a manual-only result.
+	out := scanWiringTerminalResults(projectRoot, wiringByTC)
+
+	// BUG-193: merge the proven manual claim for every TC with a terminal manual
+	// execute handoff whose artefact proves out. Add-if-absent so a genuine
+	// manual WIRING record's join (rung 1 above) wins over the synthesized claim.
+	out = mergeManualClaims(out, buildManualClaims(projectRoot, ""))
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// scanWiringTerminalResults is the ENH-146 wiring join: it walks .gtms/results/
+// and returns the latest terminal EXECUTE handoff per (testcase, framework) that
+// joins to a currently existing wiring record. It is the wiring-only half of
+// scanTerminalResults; BUG-193's wiring-free manual claim is layered on top by
+// the caller. Returns an empty map when the project has no wiring.
+func scanWiringTerminalResults(projectRoot string, wiringByTC map[string][]*wiring.WiringRecord) map[string]overlayHit {
 	if len(wiringByTC) == 0 {
 		return nil
 	}
@@ -197,6 +232,14 @@ func scanTerminalResults(projectRoot string, wiringByTC map[string][]*wiring.Wir
 			GitBranch:   rc.GitBranch,
 			GitDirty:    rc.GitDirty,
 			Adapter:     rc.Adapter, // ENH-191: carry the actual runner
+			// ENH-200: raw provenance for triage snapshot capture. RawResult
+			// keeps the contract vocabulary (skip, not skipped); RawCompleted
+			// is the handoff's `completed` verbatim so triage can omit
+			// snapshot.completed_at when the handoff never supplied one.
+			Task:         rc.Task,
+			ArtefactHash: rc.ArtefactHash,
+			RawResult:    rc.Result,
+			RawCompleted: rc.Completed,
 		}
 		prev, ok := by[key]
 		if !ok || stamp > prev.stamp || (stamp == prev.stamp && mtime > prev.mtime) {
@@ -293,6 +336,219 @@ func uniqueWiringFramework(tcWiring []*wiring.WiringRecord, match func(*wiring.W
 		return "", false
 	}
 	return found.Framework, true
+}
+
+// BUG-193: proven-manual claim.
+//
+// A manual-only test case is wiring-free by design (CON-023), so the ENH-146
+// wiring join above can never surface its execution result. The manual claim
+// closes that gap WITHOUT inventing wiring: it admits the manual framework's
+// latest terminal execute handoff into the overlay only when that handoff's
+// artefact can be PROVEN to be the canonical in-project manual result file for
+// the same (test case, framework: manual) pair. The durable execution file is
+// never consulted -- it corroborates but does not authorise (BUG-193 Evidence
+// authority). This lives in wiring_scan.go, the one file allowed to walk
+// .gtms/results/, so triage inherits exactly one result-selection mechanism.
+
+// mergeManualClaims folds proven manual claims into an existing overlay with
+// ADD-IF-ABSENT semantics: a genuine manual WIRING record's join (resolveOverlay
+// Framework rung 1) already keyed overlayKey(tc,"manual") and must win, so the
+// synthesized claim only fills a key the wiring join left empty. Never weakens
+// the orphan rule for any other framework -- a non-manual handoff is never a
+// manual claim.
+func mergeManualClaims(out, manual map[string]overlayHit) map[string]overlayHit {
+	if len(manual) == 0 {
+		return out
+	}
+	if out == nil {
+		out = make(map[string]overlayHit, len(manual))
+	}
+	for k, v := range manual {
+		if _, exists := out[k]; !exists {
+			out[k] = v
+		}
+	}
+	return out
+}
+
+// buildManualClaims walks .gtms/results/ for terminal manual execute handoffs and
+// returns the latest proven manual claim per test case, keyed overlayKey(tc,
+// "manual"). When tcFilter is non-empty only that test case is considered.
+//
+// A handoff yields a claim only when it names framework: manual, is a terminal
+// execute contract, and its artefact proves out via manualArtefactProven. The
+// claim copies the handoff's Task, RawResult, RawCompleted, Artefact and
+// ArtefactHash verbatim so triage snapshots the selected execution, not the
+// editable manual template. "Latest" uses Completed (RFC3339) falling back to
+// Created, with filesystem mtime breaking an equal-second tie -- identical to the
+// wiring join's rule.
+func buildManualClaims(projectRoot, tcFilter string) map[string]overlayHit {
+	dir := filepath.Join(projectRoot, ".gtms", "results")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+
+	type stamped struct {
+		stamp string
+		mtime int64
+		hit   overlayHit
+	}
+	by := make(map[string]stamped)
+
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".handoff.yaml") {
+			continue
+		}
+		path := filepath.Join(dir, e.Name())
+		rc, rErr := result.Read(path)
+		if rErr != nil || rc == nil {
+			continue
+		}
+		// framework: manual is the authority (BUG-193): the adapter NAME
+		// manual-execute is never treated as a framework, so the handoff's
+		// framework field -- corrected from the manual template to "manual" -- is
+		// what admits the claim.
+		if rc.Framework != "manual" {
+			continue
+		}
+		if !result.IsTerminalExecuteContract(rc) {
+			continue
+		}
+		if tcFilter != "" && rc.Target != tcFilter {
+			continue
+		}
+		if !manualClaimAdmissible(e.Name(), rc) {
+			continue
+		}
+		if !manualArtefactProven(projectRoot, rc) {
+			continue
+		}
+		stamp := rc.Completed
+		if stamp == "" {
+			stamp = rc.Created
+		}
+		var mtime int64
+		if fi, statErr := os.Stat(path); statErr == nil {
+			mtime = fi.ModTime().UnixNano()
+		}
+		readerResult := rc.Result
+		if readerResult == "skip" {
+			readerResult = "skipped"
+		}
+		hit := overlayHit{
+			Status:       rc.Status,
+			Result:       readerResult,
+			ExecutedAt:   stamp,
+			Adapter:      rc.Adapter,
+			Artefact:     rc.Artefact,
+			Task:         rc.Task,
+			ArtefactHash: rc.ArtefactHash,
+			RawResult:    rc.Result,
+			RawCompleted: rc.Completed,
+		}
+		key := overlayKey(rc.Target, "manual")
+		prev, ok := by[key]
+		if !ok || stamp > prev.stamp || (stamp == prev.stamp && mtime > prev.mtime) {
+			by[key] = stamped{stamp: stamp, mtime: mtime, hit: hit}
+		}
+	}
+
+	if len(by) == 0 {
+		return nil
+	}
+	out := make(map[string]overlayHit, len(by))
+	for k, v := range by {
+		out[k] = v.hit
+	}
+	return out
+}
+
+// manualArtefactProven reports whether rc's artefact is the canonical in-project
+// manual result file for rc's test case: the exact pair path
+// <parent>/manual/records/<tc>--manual.result.yaml, present as a regular file
+// (not a directory and not a symlink), parseable as YAML, and whose body
+// identifies the same test case and framework: manual. Any other artefact --
+// out-of-project, a different test case, a directory, malformed, a non-manual
+// body, a byte-identical copy at a non-canonical path, or a symlink -- fails the
+// proof (BUG-193 verification item 8 / tc-c78c0008).
+func manualArtefactProven(projectRoot string, rc *result.ResultContract) bool {
+	if rc == nil || rc.Target == "" {
+		return false
+	}
+	// REV-170 CLAUDE-003: the target comes from handoff YAML. Refuse separators,
+	// dot segments and control characters BEFORE it is joined into a path, so a
+	// crafted target cannot steer the proof outside the records directory.
+	if err := pathsafe.ValidateFilenameComponent(rc.Target, "handoff target"); err != nil {
+		return false
+	}
+	recordsDir := filepath.ToSlash(filepath.Join(layout.Current().Manual, "records")) + "/"
+	canonicalRel := filepath.ToSlash(filepath.Join(layout.Current().Manual, "records", rc.Target+"--manual.result.yaml"))
+	if !strings.HasPrefix(canonicalRel, recordsDir) || filepath.ToSlash(rc.Artefact) != canonicalRel {
+		return false
+	}
+	// Lstat the LEXICAL path (not Stat) so a symlink at the canonical leaf is
+	// seen as a link and refused; IsRegular() also refuses a directory and a
+	// missing file.
+	lexical := filepath.Join(projectRoot, filepath.FromSlash(canonicalRel))
+	fi, statErr := os.Lstat(lexical)
+	if statErr != nil || !fi.Mode().IsRegular() {
+		return false
+	}
+	// REV-170 CODEX-003: an ancestor symlink or junction (e.g. manual/records
+	// pointing outside the project) passes the leaf Lstat, so resolve the
+	// candidate through the shared containment boundary and read only the
+	// canonical in-project target it yields.
+	abs, _, resolveErr := pathsafe.ResolveUnderRoot(projectRoot, canonicalRel)
+	if resolveErr != nil {
+		return false
+	}
+	mr, parseErr := parseManualResultFile(abs)
+	if parseErr != nil || mr == nil {
+		return false
+	}
+	return mr.TestCaseID == rc.Target && mr.Framework == "manual"
+}
+
+// manualClaimAdmissible is the REV-170 CODEX-002 provenance gate for a manual
+// handoff, applied ONLY on the manual-claim path so wired-framework authority
+// is untouched. A claim is admitted only when every value that will be copied
+// into a triage snapshot or printed by the classification is classifiable and
+// format-safe: a non-empty result in the contract vocabulary, a non-empty
+// filename-safe task that agrees with the handoff filename, a completed stamp
+// that is empty or RFC3339, and an artefact hash that is empty or free of
+// separators and control characters.
+func manualClaimAdmissible(fileName string, rc *result.ResultContract) bool {
+	if rc == nil {
+		return false
+	}
+	if rc.Result == "" || result.Validate(rc) != nil {
+		return false
+	}
+	if pathsafe.ValidateFilenameComponent(rc.Task, "handoff task") != nil {
+		return false
+	}
+	if fileName != rc.Task+".handoff.yaml" {
+		return false
+	}
+	if rc.Completed != "" {
+		if _, err := time.Parse(time.RFC3339, rc.Completed); err != nil {
+			return false
+		}
+	}
+	if rc.ArtefactHash != "" && pathsafe.ValidateFilenameComponent(rc.ArtefactHash, "artefact hash") != nil {
+		return false
+	}
+	return true
+}
+
+// manualClaimForTC returns the proven manual claim for one test case, or
+// (zero, false). Used by triage framework inference (resolveTriageFramework) so
+// proven manual evidence is a first-class candidate alongside wiring frameworks.
+func manualClaimForTC(projectRoot, testCaseID string) (overlayHit, bool) {
+	claims := buildManualClaims(projectRoot, testCaseID)
+	hit, ok := claims[overlayKey(testCaseID, "manual")]
+	return hit, ok
 }
 
 // manualRecord captures the parsed contents of one

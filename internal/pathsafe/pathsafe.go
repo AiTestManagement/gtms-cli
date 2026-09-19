@@ -32,7 +32,36 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode"
 )
+
+// SanitizeControlChars replaces every Unicode control character (the Cc
+// category: the C0 controls below 0x20 including ESC 0x1B, DEL 0x7F, and the
+// C1 controls U+0080 to U+009F such as CSI U+009B, ST U+009C, and OSC U+009D)
+// with '?' so a filesystem-derived or record-derived string echoed in a
+// diagnostic cannot manipulate the terminal (move the cursor, clear a line, or
+// forge a new one). It does NOT truncate -- a legitimate path can be long and
+// must remain readable (REV-123 CODEX-001).
+//
+// Promoted from internal/cli in BUG-187 so both the CLI ambiguity diagnostics
+// and the triage storage-boundary diagnostics share one escaping rule rather
+// than duplicating it. REV-166 CODEX-001 widened the rule from C0+DEL to the
+// full Unicode Cc category: C1 controls (reachable once ENH-209 routed stored
+// free-text summary/defect through this helper) survived the old byte test
+// r < 0x20 || r == 0x7F and could inject terminal sequences. unicode.IsControl
+// covers exactly the Cc category, so C0, DEL, and C1 are all replaced while
+// every printable rune is untouched.
+func SanitizeControlChars(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		if unicode.IsControl(r) {
+			b.WriteRune('?')
+		} else {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
 
 // ValidateFilenameComponent rejects values that are unsafe for use as a single
 // filename component. The label parameter names the value in error messages

@@ -27,45 +27,6 @@ type RefreshTarget struct {
 	Err       error
 }
 
-// PartitionTCIDsByAmbiguity splits a spec-first refresh scope into the bare TC
-// IDs that identify exactly one spec and the ones that appear more than once.
-// Both slices are sorted and free of repeats, so the caller's behaviour does not
-// depend on directory-walk order. ids need not be sorted.
-//
-// Folder/recursive refresh discovers its scope from spec filenames, and wiring is
-// keyed on the BARE id. When two specs in scope carry the same bare ID, a refresh
-// cannot tell which one to hash: PlanRefresh resolves the spec through
-// pipeline.ResolveTestCaseSpec -> testcase.ResolveSpec, which takes the FIRST
-// filepath.Walk match and stops. Refreshing anyway would write a testcase-hash
-// derived from an arbitrary source, with nothing in the output to say which spec
-// won (CODEX-004).
-//
-// The ambiguous IDs are therefore excluded from discovery and reported as counted
-// failures, while the unambiguous ones refresh normally (REV-129 CLAUDE-003) --
-// one collision must not stop an entire folder, or an entire subtree under -r,
-// from refreshing. Dry and real callers use the same partition, so their target
-// set and failure accounting are identical.
-//
-// This is a narrow refresh-scope guard, not the tree-wide TC-ID uniqueness owned
-// by ENH-100/101: two specs sharing an ID in DIFFERENT folders are still resolved
-// first-match by a single-TC refresh.
-func PartitionTCIDsByAmbiguity(ids []string) (unique, ambiguous []string) {
-	counts := make(map[string]int, len(ids))
-	for _, id := range ids {
-		counts[id]++
-	}
-	for id, n := range counts {
-		if n > 1 {
-			ambiguous = append(ambiguous, id)
-		} else {
-			unique = append(unique, id)
-		}
-	}
-	sort.Strings(unique)
-	sort.Strings(ambiguous)
-	return unique, ambiguous
-}
-
 // DiscoverRefreshTargets is the single identity-validating, diagnostic-preserving
 // discovery path for link --refresh. It replaces the old wiring.Find /
 // wiring.FindAllForTC selection, which selected records by filename but returned

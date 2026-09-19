@@ -64,7 +64,7 @@ the default -- the evidence trail is the point.
    - Script matches spec and the subject fails: record the triage:
 
      ```sh
-     gtms triage <tc-id> --app-wrong --summary "<what is broken>"
+     gtms triage <tc-id> --value app-wrong --summary "<what is broken>"
      ```
 
    Never re-execute blindly -- the same cause produces the same failure.

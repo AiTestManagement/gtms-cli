@@ -1,14 +1,16 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
 
-	"github.com/spf13/cobra"
 	"github.com/aitestmanagement/gtms-cli/internal/output"
 	"github.com/aitestmanagement/gtms-cli/internal/reader"
 	targetpkg "github.com/aitestmanagement/gtms-cli/internal/target"
+	"github.com/aitestmanagement/gtms-cli/internal/testcase"
+	"github.com/spf13/cobra"
 )
 
 func newResetCmd() *cobra.Command {
@@ -51,7 +53,14 @@ task files. Wiring records and test case specs are untouched.
 						output.Errorf(err.Error(), "")
 						return output.AsDisplayed(err)
 					}
-					return runReset(os.Stdout, root, nil, res.TCID, dry)
+					// ADR-024 s3 / REV-158 CLAUDE-001: carry the folder qualifier into
+					// the core so reset can require MUTATION AUTHORITY under it.
+					qualifiedScope, qerr := qualifiedTargetScope(root, res)
+					if qerr != nil {
+						output.Errorf(qerr.Error(), "")
+						return output.AsDisplayed(qerr)
+					}
+					return runReset(os.Stdout, root, qualifiedScope, res.TCID, dry)
 				}
 				scope, serr := buildScopeFromArg(root, res.Target, recursive)
 				if serr != nil {
@@ -80,6 +89,22 @@ task files. Wiring records and test case specs are untouched.
 func runReset(w io.Writer, projectRoot string, scope *reader.ScopeInfo, tcID string, dryRun bool) error {
 	result, err := reader.ResetExecuteResults(projectRoot, scope, tcID, dryRun)
 	if err != nil {
+		// ADR-024 / BUG-185 (tc-2ceabc97): reset is destructive by effect. An
+		// ambiguous or unprovable selected id refuses before any mutation, and the
+		// refusal MUST be visible -- non-zero exit AND an actionable diagnostic on
+		// stderr, never a silent non-zero exit (REV-156 CLAUDE-003).
+		var oe *testcase.OwnershipError
+		if errors.As(err, &oe) {
+			output.Errorf(oe.Error(), "")
+			return output.AsDisplayed(err)
+		}
+		// ADR-024 s3 / REV-158 CLAUDE-001: reached through a link, but the spec
+		// lives outside the named folder.
+		var sae *testcase.ScopeAuthorityError
+		if errors.As(err, &sae) {
+			output.Errorf(sae.Error(), "")
+			return output.AsDisplayed(err)
+		}
 		return err
 	}
 

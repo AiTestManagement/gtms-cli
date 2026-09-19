@@ -4,15 +4,18 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 
 	"github.com/spf13/cobra"
 
 	"github.com/aitestmanagement/gtms-cli/internal/adapter"
 	"github.com/aitestmanagement/gtms-cli/internal/config"
+	"github.com/aitestmanagement/gtms-cli/internal/layout"
 	"github.com/aitestmanagement/gtms-cli/internal/link"
 	"github.com/aitestmanagement/gtms-cli/internal/output"
 	targetpkg "github.com/aitestmanagement/gtms-cli/internal/target"
+	"github.com/aitestmanagement/gtms-cli/internal/testcase"
 	"github.com/aitestmanagement/gtms-cli/internal/wiring"
 )
 
@@ -232,6 +235,23 @@ Repoint mode (reassign the stored execute adapter):
 						"Configure a compatible execute adapter in gtms.config (adapters.execute with a matching framework), or correct the link's --framework/--artefact.")
 					return output.AsDisplayed(err)
 				}
+				// tc-d1c39672: a foreign-identity wiring record cannot be forced, so
+				// the generic "use --force to overwrite" hint would send the user to a
+				// dead end. Point them at the record instead.
+				var wme *link.WiringIdentityMismatchError
+				if errors.As(err, &wme) {
+					output.Errorf(err.Error(),
+						"Fix or remove the mismatched wiring record; --force cannot overwrite a foreign-identity record.")
+					return output.AsDisplayed(err)
+				}
+				// ADR-024 s7 / REV-158 CLAUDE-006: an ambiguous or unprovable identity
+				// is not an artefact problem and --force cannot resolve it. Render the
+				// typed diagnostic, which names both owners, with no --force hint.
+				var oe *testcase.OwnershipError
+				if errors.As(err, &oe) {
+					output.Errorf(oe.Error(), "")
+					return output.AsDisplayed(err)
+				}
 				output.Errorf(err.Error(), "Check the artefact path or use --force to overwrite.")
 				return output.AsDisplayed(err)
 			}
@@ -271,6 +291,11 @@ Repoint mode (reassign the stored execute adapter):
 // folder target (KindFolder) can't be re-derived into a single-TC refresh on a
 // global wiring, even when the folder is absent or TC-shaped.
 func runRefresh(root string, classified targetpkg.Result, frameworkFlag, artefactFlag string, checkFlag, forceFlag, strictFlag, recursive, dry bool) error {
+	// F3: refresh resolves ownership once and reuses that snapshot across the
+	// ownership guard and the spec-hash path (one project-wide enumeration per
+	// operation). refresh reads specs and writes only wiring -- never a spec -- so
+	// the cached snapshot cannot go stale mid-operation.
+
 	// Reject incompatible flags. classified.Target is used only for the example
 	// hint text (never to determine kind).
 	if artefactFlag != "" {
@@ -371,9 +396,9 @@ func refreshDryFieldList(plan link.RefreshPlan) string {
 // calls link.PlanRefresh (no write); the real path calls link.RefreshRecord.
 // Both share link.PlanRefresh's validation, so the preview surfaces exactly the
 // errors and field changes the real refresh would (BUG-146 parity).
-func processRefreshRecord(root, tcLabel string, rec *wiring.WiringRecord, dry bool) refreshOutcome {
+func processRefreshRecord(root string, snap *testcase.Snapshot, tcLabel string, rec *wiring.WiringRecord, dry bool) refreshOutcome {
 	if dry {
-		plan, err := link.PlanRefresh(root, rec)
+		plan, err := link.PlanRefresh(root, snap, rec)
 		if err != nil {
 			// BUG-146 CODEX-128-002 / AC2: a preview failure must carry the
 			// [dry-run] label so an all-failures preview is never mistaken for a
@@ -391,7 +416,7 @@ func processRefreshRecord(root, tcLabel string, rec *wiring.WiringRecord, dry bo
 		return refreshCurrent
 	}
 
-	refreshed, err := link.RefreshRecord(root, rec)
+	refreshed, err := link.RefreshRecord(root, snap, rec)
 	if err != nil {
 		fmt.Printf("  %s %s (%s): %s\n", output.IconError, tcLabel, rec.Framework, err.Error())
 		return refreshFailed
@@ -409,7 +434,7 @@ func processRefreshRecord(root, tcLabel string, rec *wiring.WiringRecord, dry bo
 // per-record error line and counts as a failure; a valid record is previewed or
 // applied via processRefreshRecord. Routing failures here -- instead of dropping
 // them at discovery -- keeps the dry and real failure sets identical (CODEX-002).
-func processRefreshTarget(root string, tgt link.RefreshTarget, dry bool) refreshOutcome {
+func processRefreshTarget(root string, snap *testcase.Snapshot, tgt link.RefreshTarget, dry bool) refreshOutcome {
 	if tgt.Err != nil {
 		// BUG-146 CODEX-128-002 / AC2: a preview discovery failure (malformed /
 		// identity-mismatched wiring) carries the [dry-run] label; the real path
@@ -417,7 +442,7 @@ func processRefreshTarget(root string, tgt link.RefreshTarget, dry bool) refresh
 		fmt.Printf("  %s %s%s (%s): %s\n", output.IconError, dryMarker(dry), tgt.TCID, tgt.Framework, tgt.Err.Error())
 		return refreshFailed
 	}
-	return processRefreshRecord(root, tgt.TCID, tgt.Record, dry)
+	return processRefreshRecord(root, snap, tgt.TCID, tgt.Record, dry)
 }
 
 // runSingleTCRefresh handles --refresh for a single TC ID (ENH-156). With dry
@@ -429,6 +454,23 @@ func processRefreshTarget(root string, tgt link.RefreshTarget, dry bool) refresh
 // and then written to a foreign identity (CODEX-001), and a malformed in-scope
 // file is a counted failure rather than a silent skip (CODEX-002).
 func runSingleTCRefresh(root, tcID, frameworkFlag string, dry bool) error {
+	// ADR-024 / BUG-185: refresh writes wiring, so a bare id whose ownership is
+	// Ambiguous or Unprovable is held back (for a single id, the whole refresh)
+	// rather than writing a hash from an unproven owner. A prefix/-- sibling does
+	// NOT trigger this -- it is a different, unique owner (tc-31d05fff).
+	// F4: a snapshot build failure (enumeration/containment/read error) must NOT
+	// skip the ownership guard and proceed to rewrite wiring -- that is
+	// error-to-permission conversion on a mutating consumer. Surface it and exit
+	// non-zero.
+	snap, serr := testcase.NewSnapshot(root)
+	if serr != nil {
+		output.Errorf(dryMarker(dry)+serr.Error(), "Check gtms/test/cases/ is readable, then retry.")
+		return output.AsDisplayed(serr)
+	}
+	if oerr := snap.RequireOwnership(tcID); oerr != nil {
+		output.Errorf(dryMarker(dry)+oerr.Error(), "")
+		return output.AsDisplayed(oerr)
+	}
 	targets, err := link.DiscoverRefreshTargets(root, []string{tcID}, frameworkFlag)
 	if err != nil {
 		msg := fmt.Sprintf("%sScanning wiring for %s: %v", dryMarker(dry), tcID, err)
@@ -457,7 +499,7 @@ func runSingleTCRefresh(root, tcID, frameworkFlag string, dry bool) error {
 
 	failCount := 0
 	for _, tgt := range targets {
-		if processRefreshTarget(root, tgt, dry) == refreshFailed {
+		if processRefreshTarget(root, snap, tgt, dry) == refreshFailed {
 			failCount++
 		}
 	}
@@ -469,6 +511,23 @@ func runSingleTCRefresh(root, tcID, frameworkFlag string, dry bool) error {
 	return nil
 }
 
+// folderNotFoundMessage renders "this folder is not there" for every scope-taking
+// link path. REV-160 mechanism C: refresh and repoint reached the SAME condition
+// -- a scope folder that does not exist -- and rendered it two different ways.
+// Refresh said "folder '<cases>/<name>/' does not exist"; repoint surfaced
+// testcase.ErrFolderNotFound as "test case folder not found: <name>", with
+// neither the phrase a caller scripts against nor the normalised trailing
+// separator. One condition, one formatter, so the next scope-taking path cannot
+// invent a third wording.
+//
+// The trailing "/" is load-bearing, not decoration: it is the NORMALISED folder
+// token, and it is what tells a reader the argument was taken as a folder rather
+// than a test case id -- which is the whole subject of the
+// folder-target-normalisation suite.
+func folderNotFoundMessage(prefix, folder string) string {
+	return fmt.Sprintf("%sfolder '%s/%s/' does not exist", prefix, layout.Current().TestCases, folder)
+}
+
 // runFolderRefresh handles --refresh for a folder target (ENH-156).
 //
 // Spec-first selection: discover TC IDs under the folder, enumerate wiring
@@ -477,55 +536,71 @@ func runSingleTCRefresh(root, tcID, frameworkFlag string, dry bool) error {
 // using the same per-record continuation policy so the preview's success/failure
 // set matches the real refresh exactly.
 func runFolderRefresh(root, folder, frameworkFlag string, recursive, dry bool) error {
-	tcIDs, err := DiscoverTestCases(root, folder, recursive)
-	if err != nil {
-		msg := dryMarker(dry) + err.Error()
-		output.Errorf(msg, "Check that gtms/test/cases/"+folder+"/ contains tc-*.md files.")
+	// ADR-024 / BUG-185 (tc-31d05fff) + BUG-188: refresh selection is by PARSED
+	// body identity via the project-wide snapshot, so a prefix/-- sibling is a
+	// different, unique owner and no longer creates FALSE ambiguity (the old
+	// filename-based PartitionTCIDsByAmbiguity + DiscoverTestCases collapsed the
+	// pair to one id and held both back). Refresh WRITES wiring, so it needs
+	// project-wide UniqueOwner per id -- but its policy is per-ID HOLD-BACK, not
+	// whole-operation refusal: an Ambiguous or Unprovable id is held back as a
+	// counted failure, named, with no wiring written, while every unambiguous
+	// record still refreshes. It exits non-zero when anything was held back.
+	snap, serr := testcase.NewSnapshot(root)
+	if serr != nil {
+		return serr
+	}
+	scopeRel, ok := folderScopeRel(root, folder)
+	if !ok {
+		// REV-160 mechanism C. Folder-not-found must keep the wording this path
+		// produced at b524c9b5 via DiscoverTestCases, which is also what the
+		// sibling resolveBulkOwners still emits for the identical condition
+		// (internal/cli/validate.go). The CLAUDE-005 rewrite restored the
+		// BEHAVIOUR here but not the PHRASING, so a caller scripting against the
+		// message broke, and two helpers disagreed about the same failure.
+		//
+		// Distinct from the empty-folder case below: this is "the folder is not
+		// there", that one is "the folder is there and holds no test cases".
+		msg := folderNotFoundMessage(dryMarker(dry), folder)
+		output.Errorf(msg, "Check the folder name and try again.")
+		return output.AsDisplayed(fmt.Errorf(msg))
+	}
+	ownerIDs, inScopeUnprovable := snap.SelectFolder(scopeRel, recursive)
+	if len(ownerIDs) == 0 && len(inScopeUnprovable) == 0 {
+		// REV-160 CLAUDE-005: an existing but EMPTY folder is a "No test cases
+		// found" error, not a silent zero-work success. At b524c9b5 this branch
+		// went through DiscoverTestCases, which returned exactly this message with
+		// a non-zero exit; replacing it with snap.SelectFolder dropped the check,
+		// so `gtms link --refresh <emptyfolder>` printed "0 refreshed, 0 current,
+		// 0 failed" and exited 0 -- a scripted `gtms link --refresh <f> && ...`
+		// chain then proceeded against a folder holding nothing. The sibling bulk
+		// helper resolveBulkOwners (internal/cli/validate.go) keeps the error for
+		// exactly this case; refresh must not be the odd one out.
+		msg := fmt.Sprintf("%sNo test cases found in %s/%s/", dryMarker(dry), layout.Current().TestCases, folder)
+		output.Errorf(msg, fmt.Sprintf("Check that %s/%s/ contains tc-*.md files.", layout.Current().TestCases, folder))
 		return output.AsDisplayed(fmt.Errorf(msg))
 	}
 
-	// CODEX-004: never refresh a bare TC ID that more than one spec in scope
-	// claims.
-	//
-	// The reason is the SPEC side, not the wiring side (REV-129 CLAUDE-001
-	// corrected the original rationale here, which claimed the preview would
-	// report two planned refreshes for one record -- it cannot: DiscoverRefreshTargets
-	// scopes through a set of bare IDs and emits one target per wiring FILE).
-	// What actually breaks is which spec the refresh hashes. Wiring is keyed on
-	// the bare ID, and PlanRefresh resolves the spec through
-	// pipeline.ResolveTestCaseSpec -> testcase.ResolveSpec, which takes the FIRST
-	// match from a filepath.Walk and stops. With two specs claiming one ID, the
-	// refresh would silently write a testcase-hash derived from whichever spec the
-	// filesystem happened to yield first -- a non-deterministic mutation, and the
-	// user has no way to see which source won. Failing closed on it is the same
-	// rule the qualified-target guard already applies (REV-120 CODEX-001,
-	// testcase.FindAllSpecs).
-	//
-	// REV-129 CLAUDE-003 narrowed the blast radius: only the colliding IDs are
-	// held back. They are reported as counted failures, exactly like any other
-	// per-record discovery failure, so the summary and the non-zero exit still
-	// account for them -- while every unambiguous test case in the folder (or,
-	// under -r, in the rest of the subtree) refreshes normally. Preview and real
-	// refresh consume the identical set, so they still agree record for record.
-	uniqueIDs, ambiguousIDs := link.PartitionTCIDsByAmbiguity(tcIDs)
-	ambiguous := make(map[string]bool, len(ambiguousIDs))
-	for _, id := range ambiguousIDs {
-		ambiguous[id] = true
+	// Partition the folder's owner ids by PROJECT-WIDE ownership. A duplicate
+	// whose second physical owner is outside the folder is held back too -- a
+	// scope-local scan could not see it (tc-31d05fff step 8).
+	held := map[string]error{}
+	var heldIDs []string
+	var okIDs []string
+	for _, id := range ownerIDs {
+		if oerr := snap.RequireOwnership(id); oerr != nil {
+			held[id] = oerr
+			heldIDs = append(heldIDs, id)
+		} else {
+			okIDs = append(okIDs, id)
+		}
 	}
+	sort.Strings(heldIDs)
 
 	// Single identity-validating discovery path for both dry and real refresh: an
 	// identity-mismatched record cannot be written to a foreign TC (CODEX-001) and
 	// a malformed in-scope record is a counted failure, not a silent drop
-	// (CODEX-002). Orphan wiring whose spec was deleted is excluded because tcIDs
-	// is spec-first.
-	//
-	// The ambiguous IDs go through discovery too (REV-130 CODEX-130-002). They are
-	// reported, never planned or written -- but routing them through the same
-	// discovery is what makes --framework govern them and gives one failure per
-	// in-scope RECORD. Counting them up-front instead meant an ambiguous ID with
-	// only a playwright record failed a `--framework bats` refresh that had no
-	// bats record in scope, and an ambiguous ID with three records counted once.
-	targets, err := link.DiscoverRefreshTargets(root, append(uniqueIDs, ambiguousIDs...), frameworkFlag)
+	// (CODEX-002). Only proven unique owners reach discovery/refresh.
+	targets, err := link.DiscoverRefreshTargets(root, okIDs, frameworkFlag)
 	if err != nil {
 		msg := fmt.Sprintf("%sScanning wiring for %s/: %v", dryMarker(dry), folder, err)
 		output.Errorf(msg, "Check gtms/automation/wiring/ for parse errors.")
@@ -536,16 +611,22 @@ func runFolderRefresh(root, folder, frameworkFlag string, recursive, dry bool) e
 	refreshedCount := 0
 	currentCount := 0
 
+	// Held-back ids (ambiguous/unprovable ownership): counted failures, named,
+	// with the remedy on the line -- no wiring is written for them.
+	for _, id := range heldIDs {
+		fmt.Printf("  %s %s%s: %v\n", output.IconError, dryMarker(dry), id, held[id])
+		failCount++
+	}
+	// In-scope unprovable specs have no body id and no wiring to refresh; report
+	// each with the repair for its specific failure.
+	for _, c := range inScopeUnprovable {
+		oe := testcase.UnprovableInScope(scopeRel, c)
+		fmt.Printf("  %s %s%v\n", output.IconError, dryMarker(dry), oe)
+		failCount++
+	}
+
 	for _, tgt := range targets {
-		if ambiguous[tgt.TCID] {
-			// The remedy travels with the line: an ambiguous record never reaches
-			// planning, so there is no per-record hint to fall back on.
-			fmt.Printf("  %s %s%s (%s): ambiguous refresh scope -- more than one spec under %s/; give each test case a unique tc-<id>\n",
-				output.IconError, dryMarker(dry), tgt.TCID, tgt.Framework, folder)
-			failCount++
-			continue
-		}
-		switch processRefreshTarget(root, tgt, dry) {
+		switch processRefreshTarget(root, snap, tgt, dry) {
 		case refreshFailed:
 			failCount++
 		case refreshChanged:
@@ -638,9 +719,22 @@ func runRepoint(root string, classified *targetpkg.Result, adapterFlag, fromAdap
 		DryRun:        dryRun,
 	}
 
+	// ADR-024 s5 / REV-160 CLAUDE-003: ONE project-wide enumeration for the whole
+	// repoint, whatever its scope. Every guard below and the write itself answer
+	// against THIS snapshot, and the resulting ownership decision is carried in
+	// opts.Authority rather than re-derived. A qualified single-TC repoint used to
+	// run three independent enumerations and a folder or --all repoint two, so the
+	// state the record was written under was not necessarily the state the
+	// refusals were made against.
+	snap, serr := testcase.NewSnapshot(root)
+	if serr != nil {
+		output.Errorf(serr.Error(), "Check that gtms/test/cases/ is readable.")
+		return output.AsDisplayed(serr)
+	}
+
 	// --all: project-wide scope (no positional target).
 	if allFlag {
-		return runRepointAll(root, opts)
+		return runRepointAll(root, snap, opts)
 	}
 
 	// Non-all: validateRepointFlags already rejected an empty target, so classified
@@ -658,14 +752,27 @@ func runRepoint(root string, classified *targetpkg.Result, adapterFlag, fromAdap
 			output.Errorf(msg, fmt.Sprintf("Example: gtms link %s --from-adapter old --adapter %s", classified.Target, adapterFlag))
 			return output.AsDisplayed(fmt.Errorf(msg))
 		}
-		return runRepointFolder(root, classified.Target, recursive, opts)
+		return runRepointFolder(root, snap, classified.Target, recursive, opts)
 	case targetpkg.KindTCID:
 		// BUG-059 (REV-113): scope-validate a qualified TC, then repoint the flat
-		// wiring keyed on the bare ID.
-		if err := requireScopedSpec(root, *classified); err != nil {
+		// wiring keyed on the bare ID -- against the operation's snapshot.
+		if err := requireScopedSpecIn(snap, root, *classified); err != nil {
 			output.Errorf(err.Error(), "Check the folder qualifier, or drop it to match the TC anywhere.")
 			return output.AsDisplayed(err)
 		}
+		// The ONE ownership decision for this repoint. It replaces the separate
+		// refuseUnownedTarget call that stood here, which asked the same question
+		// against a second snapshot and then threw the answer away, leaving
+		// RepointSingle to build a third and resolve the id all over again. The
+		// decision is now carried to the write (REV-160 CLAUDE-003). NotFound stays
+		// permitted -- see link.AuthoriseSingleRepoint for the orphan-repair policy
+		// and its three controls.
+		auth, aerr := link.AuthoriseSingleRepoint(snap, classified.TCID)
+		if aerr != nil {
+			output.Errorf(aerr.Error(), "")
+			return output.AsDisplayed(aerr)
+		}
+		opts.Authority = auth
 		return runRepointSingleTC(root, classified.TCID, opts)
 	default:
 		return output.AsDisplayed(fmt.Errorf("internal error: unclassified repoint target"))
@@ -726,7 +833,32 @@ func runRepointSingleTC(root, tcID string, opts link.RepointOptions) error {
 
 // runRepointFolder delegates folder/recursive repoint to the core link package
 // and renders the result (CODEX-008/CODEX-016).
-func runRepointFolder(root, folder string, recursive bool, opts link.RepointOptions) error {
+func runRepointFolder(root string, snap *testcase.Snapshot, folder string, recursive bool, opts link.RepointOptions) error {
+	// ADR-024 / BUG-185 (tc-f8fdee34): folder and recursive repoint WRITE wiring,
+	// so they require proven UniqueOwner project-wide before any rewrite. Unlike
+	// refresh, repoint has no per-ID hold-back policy: an Ambiguous or Unprovable
+	// id refuses the WHOLE operation and leaves every wiring record byte-identical.
+	//
+	// REV-160 CLAUDE-003: the refusal and the work set now come from ONE decision
+	// against the operation's snapshot, carried into RepointBulk. It used to be a
+	// CLI-level refusal against one snapshot followed by RepointBulk building
+	// another and asking again.
+	auth, aerr := link.AuthoriseScopeRepoint(root, snap, folder, recursive)
+	if aerr != nil {
+		// REV-160 mechanism C, second half. A missing scope folder is the SAME
+		// condition refresh renders, so it renders the same way -- through
+		// folderNotFoundMessage, not through the raw testcase.ErrFolderNotFound
+		// text, which carries neither the phrase callers script against nor the
+		// normalised trailing separator.
+		if errors.Is(aerr, testcase.ErrFolderNotFound) {
+			msg := folderNotFoundMessage("", folder)
+			output.Errorf(msg, "Check the folder name and try again.")
+			return output.AsDisplayed(fmt.Errorf(msg))
+		}
+		output.Errorf(aerr.Error(), "")
+		return output.AsDisplayed(aerr)
+	}
+	opts.Authority = auth
 	summary, err := link.RepointBulk(root, folder, recursive, opts)
 	if err != nil {
 		output.Errorf(err.Error(), "Check gtms.config adapters.execute, or resolve the scope/ambiguity issue before repointing.")
@@ -741,7 +873,20 @@ func runRepointFolder(root, folder string, recursive bool, opts link.RepointOpti
 
 // runRepointAll delegates project-wide repoint to the core link package and
 // renders the result (CODEX-008/CODEX-016).
-func runRepointAll(root string, opts link.RepointOptions) error {
+func runRepointAll(root string, snap *testcase.Snapshot, opts link.RepointOptions) error {
+	// ADR-024 / BUG-185: --all is the project-wide bulk repoint and rewrites wiring,
+	// so it is a mutating consumer requiring UniqueOwner. Like folder/recursive
+	// repoint it has NO per-id hold-back, so ANY Ambiguous or Unprovable owner
+	// anywhere in the project refuses the whole operation before any rewrite. The
+	// whole project is the recursive scope of the cases root (folder "").
+	//
+	// REV-160 CLAUDE-003: one decision, carried into RepointAll.
+	auth, aerr := link.AuthoriseScopeRepoint(root, snap, "", true)
+	if aerr != nil {
+		output.Errorf(aerr.Error(), "")
+		return output.AsDisplayed(aerr)
+	}
+	opts.Authority = auth
 	summary, err := link.RepointAll(root, opts)
 	if err != nil {
 		output.Errorf(err.Error(), "Check gtms.config adapters.execute or gtms/automation/wiring/ for issues.")

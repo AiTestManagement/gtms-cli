@@ -2,23 +2,28 @@ package cli
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"strings"
 	"time"
 
-	"github.com/spf13/cobra"
 	"github.com/aitestmanagement/gtms-cli/internal/config"
 	"github.com/aitestmanagement/gtms-cli/internal/output"
+	"github.com/aitestmanagement/gtms-cli/internal/pathsafe"
 	"github.com/aitestmanagement/gtms-cli/internal/reader"
 	targetpkg "github.com/aitestmanagement/gtms-cli/internal/target"
+	"github.com/aitestmanagement/gtms-cli/internal/testcase"
+	"github.com/spf13/cobra"
 )
 
 func newStatusCmd() *cobra.Command {
 	var jsonOut bool
 	var recursive bool
 	var framework string
+	var showTriage bool
+	var triageValue string
 
 	cmd := &cobra.Command{
 		Use:   "status [test-case-id | folder]",
@@ -55,6 +60,29 @@ Use 'gaps' for coverage analysis or 'map' for requirement traceability.
 			// A config-level default keeps its current fallback behaviour.
 			strict := framework != ""
 
+			// ENH-202: --triage implies triage presentation and requires a
+			// scope. An unscoped root invocation (no folder, no TC, no -r) is
+			// refused BEFORE any scan so it never expands the whole project
+			// (item 2 / tc-cd5d4d75 step 9). --show-triage at root is allowed;
+			// only the filter needs a scope.
+			triageFilter := triageValue
+			if triageFilter != "" && len(args) == 0 && !recursive {
+				msg := "--triage requires a folder, test-case ID, or --recursive scope."
+				output.Errorf(msg, "Try 'gtms status -r --triage environment'.")
+				return output.AsDisplayed(fmt.Errorf(msg))
+			}
+			// The filter implies presentation for the scoped views.
+			showTriageEff := showTriage || triageFilter != ""
+
+			// Best-effort triage labels for JSON; a config problem never blocks
+			// a read (the pre-run hook already enforced gtms.config loaded).
+			triageValues := map[string]string{}
+			if cfg != nil {
+				if v, verr := cfg.ResolveTriageValues(); verr == nil {
+					triageValues = v
+				}
+			}
+
 			if len(args) > 0 {
 				// BUG-167: shared classifier -- folder case preserved (existence
 				// first), only confirmed TC IDs lowercased/stripped.
@@ -70,7 +98,7 @@ Use 'gaps' for coverage analysis or 'map' for requirement traceability.
 						return output.AsDisplayed(err)
 					}
 					// TC ID -> detail view (flat lookup on the bare ID)
-					return runStatusDetail(os.Stdout, root, res.TCID, jsonOut, defaultFw, strict)
+					return runStatusDetail(os.Stdout, root, res.TCID, jsonOut, defaultFw, strict, showTriageEff, triageFilter, triageValues)
 				}
 				// Folder scope for overview
 				scope, serr := buildScopeFromArg(root, res.Target, recursive)
@@ -78,7 +106,7 @@ Use 'gaps' for coverage analysis or 'map' for requirement traceability.
 					output.Errorf(serr.Error(), "")
 					return output.AsDisplayed(serr)
 				}
-				return runStatusOverview(os.Stdout, root, scope, jsonOut, defaultFw, strict)
+				return runStatusOverview(os.Stdout, root, scope, jsonOut, defaultFw, strict, showTriageEff, triageFilter, triageValues)
 			}
 
 			// No arg: -r → recursive flat list; default → folder summary
@@ -88,19 +116,23 @@ Use 'gaps' for coverage analysis or 'map' for requirement traceability.
 					output.Errorf(serr.Error(), "")
 					return output.AsDisplayed(serr)
 				}
-				return runStatusOverview(os.Stdout, root, scope, jsonOut, defaultFw, strict)
+				return runStatusOverview(os.Stdout, root, scope, jsonOut, defaultFw, strict, showTriageEff, triageFilter, triageValues)
 			}
 			// BUG-082: pass the explicit --framework value, not the
 			// config default. When no flag is given, framework == ""
 			// and PipelineFolderSummary skips framework filtering,
 			// counting ALL non-manual wiring as automated.
-			return runStatusFolderSummary(os.Stdout, root, jsonOut, framework)
+			// ENH-202: the root summary gains a per-folder TRIAGED count only
+			// under --show-triage (the filter is refused at root above).
+			return runStatusFolderSummary(os.Stdout, root, jsonOut, framework, showTriage, triageValues)
 		},
 	}
 
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Output as JSON")
 	cmd.Flags().BoolVarP(&recursive, "recursive", "r", false, "Include test cases from subdirectories; with no folder, show the flat per test case view")
 	cmd.Flags().StringVar(&framework, "framework", "", "Select one framework per test case (non-matching test cases show as not-set)")
+	cmd.Flags().BoolVar(&showTriage, "show-triage", false, "Show triage classification (per-folder TRIAGED count, or a per-test-case TRIAGE column/section)")
+	cmd.Flags().StringVar(&triageValue, "triage", "", "Filter to test cases carrying this triage value (implies --show-triage; needs a folder, test-case ID, or -r)")
 
 	return cmd
 }
@@ -108,14 +140,46 @@ Use 'gaps' for coverage analysis or 'map' for requirement traceability.
 // runStatusOverview displays the pipeline overview table for test cases within the scope.
 // ENH-082: strictFramework is set by the caller when --framework was supplied
 // explicitly so per-TC selection skips fallback to a different framework.
-func runStatusOverview(w io.Writer, projectRoot string, scope *reader.ScopeInfo, jsonOut bool, defaultFramework string, strictFramework bool) error {
+//
+// ENH-202: per-test-case JSON ALWAYS carries the nested triage object (no
+// presentation flag), so the JSON path always attaches triage. Human output
+// gains a TRIAGE column only under showTriage (which the caller already ORs
+// with an active --triage filter). triageFilter, when set, restricts the view
+// to test cases whose selected framework carries that active value; an empty
+// match is a successful, empty result.
+func runStatusOverview(w io.Writer, projectRoot string, scope *reader.ScopeInfo, jsonOut bool, defaultFramework string, strictFramework bool, showTriage bool, triageFilter string, triageValues map[string]string) error {
 	entries, err := reader.PipelineStatus(projectRoot, scope, defaultFramework, strictFramework)
 	if err != nil {
 		return err
 	}
+	// BUG-193 / REV-170 CODEX-001: only an EXPLICIT --framework (strict) gates
+	// the manual-only entry-level triage carrier; a config default does not.
+	explicitFramework := ""
+	if strictFramework {
+		explicitFramework = defaultFramework
+	}
 
 	if jsonOut {
+		// Per-TC JSON always exposes triage; the filter, when set, narrows both
+		// which rows appear and which triage objects attach.
+		if err := reader.AttachTriageToEntries(projectRoot, entries, triageValues, triageFilter, explicitFramework); err != nil {
+			return err
+		}
+		if triageFilter != "" {
+			entries = filterEntriesByTriage(entries)
+		}
 		return writeStatusJSON(w, entries)
+	}
+
+	// Human output. Attach triage only when it will be shown (showTriage is the
+	// caller's showTriage||filter), so default output stays byte-identical.
+	if showTriage {
+		if err := reader.AttachTriageToEntries(projectRoot, entries, triageValues, triageFilter, explicitFramework); err != nil {
+			return err
+		}
+		if triageFilter != "" {
+			entries = filterEntriesByTriage(entries)
+		}
 	}
 
 	// Print scope feedback BEFORE the empty-state check
@@ -128,12 +192,26 @@ func runStatusOverview(w io.Writer, projectRoot string, scope *reader.ScopeInfo,
 		fmt.Fprintln(w)
 	}
 
+	// ENH-202: an empty --triage match is a successful, empty result with a
+	// diagnostic naming the value (tc-cd5d4d75 steps 4-5). Exit status alone
+	// separates it from the refused root invocation.
+	if triageFilter != "" && len(entries) == 0 {
+		fmt.Fprintf(w, "No test cases match triage value '%s'.\n", triageFilter)
+		return nil
+	}
+
 	if len(entries) == 0 {
 		fmt.Fprintln(w, "No test cases found.")
 		return nil
 	}
 
-	tbl := output.NewTable("TEST CASE", "CREATE", "AUTOMATE", "EXECUTE", "LAST RESULT")
+	var tbl *output.Table
+	if showTriage {
+		tbl = output.NewTable("TEST CASE", "CREATE", "AUTOMATE", "EXECUTE", "LAST RESULT", "TRIAGE")
+	} else {
+		tbl = output.NewTable("TEST CASE", "CREATE", "AUTOMATE", "EXECUTE", "LAST RESULT")
+	}
+	anyChanged := false
 	for _, e := range entries {
 		execCol := formatStageStatus(e.ExecuteStatus)
 		if e.Stale {
@@ -144,13 +222,28 @@ func runStatusOverview(w io.Writer, projectRoot string, scope *reader.ScopeInfo,
 		if e.DriftDetected {
 			resultCol += " [drift]"
 		}
-		tbl.AddRow(
-			formatTestCaseColumn(e.TestCaseID, e.Slug),
-			formatStageStatus(e.CreateStatus),
-			formatStageStatus(e.AutomateStatus),
-			execCol,
-			resultCol,
-		)
+		if showTriage {
+			triageCol, changed := formatTriageCell(selectedFrameworkTriage(e))
+			if changed {
+				anyChanged = true
+			}
+			tbl.AddRow(
+				formatTestCaseColumn(e.TestCaseID, e.Slug),
+				formatStageStatus(e.CreateStatus),
+				formatStageStatus(e.AutomateStatus),
+				execCol,
+				resultCol,
+				triageCol,
+			)
+		} else {
+			tbl.AddRow(
+				formatTestCaseColumn(e.TestCaseID, e.Slug),
+				formatStageStatus(e.CreateStatus),
+				formatStageStatus(e.AutomateStatus),
+				execCol,
+				resultCol,
+			)
+		}
 	}
 
 	tbl.Render(w)
@@ -159,6 +252,11 @@ func runStatusOverview(w io.Writer, projectRoot string, scope *reader.ScopeInfo,
 		output.IconComplete, output.IconError, output.IconWarning, output.IconSkipped)
 	fmt.Fprintf(w, "  %s = in progress    %s = pending  \u2014 = not yet attempted\n",
 		output.IconInProgress, output.IconPending)
+	// ENH-202: explain the triage warning glyph when a row carries it, so the
+	// reader can learn what it means from the same output (tc-8ed5c09e step 3).
+	if showTriage && anyChanged {
+		fmt.Fprintf(w, "  %s = result changed since triage\n", output.IconWarning)
+	}
 
 	if hint := statusHint(entries); hint != "" {
 		fmt.Fprintln(w)
@@ -167,16 +265,85 @@ func runStatusOverview(w io.Writer, projectRoot string, scope *reader.ScopeInfo,
 	return nil
 }
 
+// selectedFrameworkTriage returns the triage object attached to a test case's
+// SELECTED framework entry, or nil when the test case has no selected framework
+// or no attached triage there. Human presentation and filtering both key off
+// the selected framework so a classification on another framework never renders
+// or matches (ENH-202 / tc-82eebc80).
+func selectedFrameworkTriage(e reader.PipelineEntry) *reader.FrameworkTriage {
+	if e.SelectedFramework != "" {
+		// A selected (wired) framework answers for itself: its own triage or
+		// nil. Never fall through to the entry-level carrier here, or a manual
+		// classification could render or filter as the wired framework's
+		// (BUG-193 worktree review, 2026-09-13).
+		for i := range e.Frameworks {
+			if e.Frameworks[i].Framework == e.SelectedFramework {
+				return e.Frameworks[i].Triage
+			}
+		}
+		return nil
+	}
+	// BUG-193: a manual-only test case has no selected framework and an empty
+	// frameworks[], so its manual triage is carried at the test-case level.
+	return e.Triage
+}
+
+// filterEntriesByTriage keeps only entries whose selected framework carries an
+// attached triage object. AttachTriage has already restricted attachment to the
+// active records matching the --triage value, so a non-nil selected triage means
+// the row matched the filter.
+func filterEntriesByTriage(entries []reader.PipelineEntry) []reader.PipelineEntry {
+	kept := make([]reader.PipelineEntry, 0, len(entries))
+	for _, e := range entries {
+		if selectedFrameworkTriage(e) != nil {
+			kept = append(kept, e)
+		}
+	}
+	return kept
+}
+
+// formatTriageCell renders the per-test-case TRIAGE column: the stable stored
+// value key (never the friendly label), with the warning glyph appended when
+// the latest execution result has changed since triage. Returns "\u2014" when
+// no active classification applies. The second return reports whether the cell
+// carries the changed-result warning so the caller can emit the legend.
+func formatTriageCell(t *reader.FrameworkTriage) (string, bool) {
+	if t == nil || t.Status != "active" {
+		return "\u2014", false
+	}
+	changed := t.ResultChangedSinceTriage != nil && *t.ResultChangedSinceTriage
+	if changed {
+		return t.Value + " " + output.IconWarning, true
+	}
+	return t.Value, false
+}
+
 // runStatusFolderSummary displays the folder summary view (no-arg default).
 //
 // ENH-089: cells use icon-forward rendering (✓ ● ○ ✗) with fraction suffix
 // only on non-✓ cells. CREATE column always shows ✓ (a TC existing in
 // gtms/test/cases/ IS the creation). AUTOMATE/EXECUTE columns apply the
 // documented priority rule via the formatFolder*Cell helpers below.
-func runStatusFolderSummary(w io.Writer, projectRoot string, jsonOut bool, defaultFramework string) error {
+func runStatusFolderSummary(w io.Writer, projectRoot string, jsonOut bool, defaultFramework string, showTriage bool, triageValues map[string]string) error {
 	entries, err := reader.PipelineFolderSummary(projectRoot, defaultFramework)
 	if err != nil {
 		return err
+	}
+
+	// ENH-202: the root summary gains a per-folder TRIAGED count only under
+	// --show-triage. It stays an aggregate: one count per folder, never a
+	// per-test-case expansion (tc-db0624fc). Without the flag the count is not
+	// computed and not emitted (default output byte-unchanged), so the *int
+	// Triaged pointer stays nil and its JSON key is omitted (tc-db0624fc step 8).
+	if showTriage {
+		counts, cErr := reader.FolderTriagedCounts(projectRoot, defaultFramework)
+		if cErr != nil {
+			return cErr
+		}
+		for i := range entries {
+			c := counts[entries[i].Folder]
+			entries[i].Triaged = &c
+		}
 	}
 
 	if jsonOut {
@@ -198,7 +365,12 @@ func runStatusFolderSummary(w io.Writer, projectRoot string, jsonOut bool, defau
 	// digit alongside the existing ⊘ glyph. The JSON folder summary already
 	// emits a numeric `skipped` field (ENH-094); the text renderer now
 	// matches it so users can read skip counts without subtracting.
-	tbl := output.NewTable("FOLDER", "TC", "CREATE", "AUTOMATE", "EXECUTE", "SKIP")
+	var tbl *output.Table
+	if showTriage {
+		tbl = output.NewTable("FOLDER", "TC", "CREATE", "AUTOMATE", "EXECUTE", "SKIP", "TRIAGED")
+	} else {
+		tbl = output.NewTable("FOLDER", "TC", "CREATE", "AUTOMATE", "EXECUTE", "SKIP")
+	}
 	for _, e := range entries {
 		// TC column carries the raw count plus the optional draft annotation
 		// (ENH-066). Draft annotation does NOT duplicate into CREATE.
@@ -208,14 +380,30 @@ func runStatusFolderSummary(w io.Writer, projectRoot string, jsonOut bool, defau
 		} else if e.DraftCount > 1 {
 			tcCol = fmt.Sprintf("%d (%d drafts)", e.Created, e.DraftCount)
 		}
-		tbl.AddRow(
-			e.Folder,
-			tcCol,
-			output.IconComplete, // CREATE always ✓
-			formatFolderAutomateCell(e),
-			formatFolderExecuteCell(e),
-			formatFolderSkipCell(e),
-		)
+		if showTriage {
+			triaged := 0
+			if e.Triaged != nil {
+				triaged = *e.Triaged
+			}
+			tbl.AddRow(
+				e.Folder,
+				tcCol,
+				output.IconComplete, // CREATE always ✓
+				formatFolderAutomateCell(e),
+				formatFolderExecuteCell(e),
+				formatFolderSkipCell(e),
+				fmt.Sprintf("%d", triaged),
+			)
+		} else {
+			tbl.AddRow(
+				e.Folder,
+				tcCol,
+				output.IconComplete, // CREATE always ✓
+				formatFolderAutomateCell(e),
+				formatFolderExecuteCell(e),
+				formatFolderSkipCell(e),
+			)
+		}
 	}
 	tbl.Render(w)
 
@@ -242,7 +430,7 @@ func formatFolderAutomateCell(e reader.FolderSummaryEntry) string {
 // ENH-089 priority rule (worst-news-wins): ✗ > ● > ○ > ✓.
 //   - ✗ : at least one TC has last-formal-result fail or error.
 //   - ● : at least one TC has an active execute task in gtms/tasks/in-progress/
-//         AND no fails / errors.
+//     AND no fails / errors.
 //   - ○ : not all TCs have a passing result yet AND nothing in flight AND no fails.
 //   - ✓ : all TCs in the folder have last-formal-result: pass.
 //
@@ -415,14 +603,52 @@ func adapterHint(command string) string {
 // ENH-082: strictFramework is true when the user supplied --framework on the
 // command line, so the detail view shows em-dashes for AUTOMATE/EXECUTE
 // instead of falling back to a different framework's record.
-func runStatusDetail(w io.Writer, projectRoot, testCaseID string, jsonOut bool, defaultFramework string, strictFramework bool) error {
+func runStatusDetail(w io.Writer, projectRoot, testCaseID string, jsonOut bool, defaultFramework string, strictFramework bool, showTriage bool, triageFilter string, triageValues map[string]string) error {
+	// F3: direct single-TC read resolves ownership once and reuses that snapshot
+	// for the rest of the read (one project-wide enumeration per operation).
+
 	detail, err := reader.PipelineDetail(projectRoot, testCaseID, defaultFramework, strictFramework)
 	if err != nil {
+		// ADR-024 / BUG-185 / BUG-188: direct single-TC read refuses an ambiguous id
+		// (naming its owners) or an unprovable candidate (with its repair), visibly
+		// on stderr with a non-zero exit, rather than presenting one arbitrary owner.
+		var oe *testcase.OwnershipError
+		if errors.As(err, &oe) {
+			output.Errorf(oe.Error(), "")
+			return output.AsDisplayed(err)
+		}
 		return err
+	}
+	// BUG-193 / REV-170 CODEX-001: see runStatusOverview.
+	explicitFramework := ""
+	if strictFramework {
+		explicitFramework = defaultFramework
 	}
 
 	if jsonOut {
+		// Per-TC JSON always exposes triage (no presentation flag). A --triage
+		// filter narrows attachment to matching active records; a non-matching
+		// single-test-case view returns the object WITHOUT a triage member
+		// rather than an empty collection (tc-cd5d4d75 step 7).
+		if err := reader.AttachTriageToDetail(projectRoot, detail, triageValues, triageFilter, explicitFramework); err != nil {
+			return err
+		}
 		return writeStatusDetailJSON(w, detail)
+	}
+
+	// Human output. Attach triage only when it will be shown (showTriage already
+	// ORs an active --triage filter), so default detail output is byte-identical.
+	if showTriage {
+		if err := reader.AttachTriageToDetail(projectRoot, detail, triageValues, triageFilter, explicitFramework); err != nil {
+			return err
+		}
+	}
+	// ENH-202: a --triage filter that matches nothing is a successful, empty
+	// result -- print the diagnostic and stop before rendering the record body
+	// (tc-cd5d4d75 step 4).
+	if triageFilter != "" && selectedDetailTriage(detail) == nil {
+		fmt.Fprintf(w, "No test cases match triage value '%s'.\n", triageFilter)
+		return nil
 	}
 
 	// Header
@@ -505,6 +731,11 @@ func runStatusDetail(w io.Writer, projectRoot, testCaseID string, jsonOut bool, 
 		}
 	}
 
+	// ENH-202: triage block beneath EXECUTE, under --show-triage / --triage.
+	if showTriage {
+		renderTriageDetail(w, selectedDetailTriage(detail))
+	}
+
 	fmt.Fprintln(w)
 
 	// File paths
@@ -532,6 +763,69 @@ func runStatusDetail(w io.Writer, projectRoot, testCaseID string, jsonOut bool, 
 	}
 
 	return nil
+}
+
+// selectedDetailTriage returns the triage object attached to the detail's
+// SELECTED framework entry, or nil. Detail presentation and filtering key off
+// the selected framework so a sibling framework's classification never renders
+// or matches (ENH-202 / tc-82eebc80).
+func selectedDetailTriage(detail *reader.PipelineDetailEntry) *reader.FrameworkTriage {
+	if detail == nil {
+		return nil
+	}
+	if detail.SelectedFramework != "" {
+		// Same rule as selectedFrameworkTriage: a selected framework answers
+		// for itself and never inherits the entry-level carrier (BUG-193 worktree review, 2026-09-13).
+		for i := range detail.Frameworks {
+			if detail.Frameworks[i].Framework == detail.SelectedFramework {
+				return detail.Frameworks[i].Triage
+			}
+		}
+		return nil
+	}
+	// BUG-193: manual-only detail carries the manual triage at the test-case level.
+	return detail.Triage
+}
+
+// renderTriageDetail prints the single-test-case TRIAGE block beneath EXECUTE.
+// It shows the stable value (never the label), the optional summary and defect
+// (each omitted independently when empty), and a self-explanatory changed-result
+// line. A resolved record is treated as untriaged in the human detail and shows
+// nothing. tc-23ab0b6b / tc-8ed5c09e.
+func renderTriageDetail(w io.Writer, t *reader.FrameworkTriage) {
+	if t == nil || t.Status != "active" {
+		return
+	}
+	changed := t.ResultChangedSinceTriage != nil && *t.ResultChangedSinceTriage
+	line := "TRIAGE:     " + t.Value
+	if changed {
+		line += " " + output.IconWarning
+	}
+	fmt.Fprintln(w, line)
+	// ENH-209: summary and defect are persisted record content reaching the
+	// terminal at read time, so harden this reference renderer with the same
+	// shared control-character sanitiser the triage --show/--list surfaces use.
+	// Ordinary prose is unchanged (the sanitiser is a no-op on clean text);
+	// status JSON is untouched.
+	if t.Summary != "" {
+		fmt.Fprintf(w, "  Summary:  %s\n", pathsafe.SanitizeControlChars(t.Summary))
+	}
+	if t.Defect != "" {
+		fmt.Fprintf(w, "  Defect:   %s\n", pathsafe.SanitizeControlChars(t.Defect))
+	}
+	switch {
+	case changed:
+		// Name both results so the warning is self-explanatory in place.
+		fmt.Fprintf(w, "  Snapshot: %s; latest result: %s\n", t.Snapshot.Result, t.LatestResult)
+	case t.ResultChangedSinceTriage == nil:
+		// No latest terminal result to compare -- state it rather than implying
+		// the result is unchanged.
+		fmt.Fprintf(w, "  Snapshot: %s; latest result: unavailable\n", t.Snapshot.Result)
+	}
+	if changed {
+		fmt.Fprintln(w)
+		fmt.Fprintf(w, "%s = result changed since triage\n", output.IconWarning)
+	}
 }
 
 // formatTestCaseColumn returns the test case ID with its slug appended if available.

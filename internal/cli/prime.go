@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -92,16 +93,26 @@ Adapter execution:
 				return output.AsDisplayed(fmt.Errorf(msg))
 			}
 
-			// Validate: test case exists
-			if !testcase.Exists(root, target) {
-				msg := fmt.Sprintf("Test case '%s' not found in gtms/test/cases/", target)
-				output.Errorf(msg, "Create the test case first with 'gtms create'.")
-				return output.AsDisplayed(fmt.Errorf(msg))
+			// ADR-024 / BUG-185 (tc-baf7bbd7): prime writes a manual result record
+			// attributed to a bare id, so it requires proven UniqueOwner. Resolving
+			// here yields the OWNER the rest of the command uses (ADR-024 s5) -- the
+			// spec that gets hashed by --update-hash and handed to the adapter. An
+			// Ambiguous or Unprovable id is refused BEFORE the existence check, the
+			// --update-hash shortcut, --force, and any adapter invocation or stamp.
+			owner, err := testcase.ResolveOwner(root, target)
+			if err != nil {
+				if errors.Is(err, testcase.ErrOwnerNotFound) {
+					msg := fmt.Sprintf("Test case '%s' not found in gtms/test/cases/", target)
+					output.Errorf(msg, "Create the test case first with 'gtms create'.")
+					return output.AsDisplayed(fmt.Errorf(msg))
+				}
+				output.Errorf(err.Error(), "")
+				return output.AsDisplayed(err)
 			}
 
-			// ENH-150: Post-fill validation gate -- catches frontmatter corruption
-			// before the adapter is invoked (ID mismatch, missing fields, duplicates).
-			if violations := adapter.ValidateTestCasePostFill(root, target); len(violations) > 0 {
+			// ENH-150: Post-fill validation gate -- catches frontmatter corruption in
+			// the RESOLVED OWNER before the adapter is invoked.
+			if violations := adapter.ValidateTestCaseOwner(root, owner); len(violations) > 0 {
 				summary := adapter.FormatValidationErrors(violations)
 				output.Errorf(summary, "Fix the test case frontmatter and try again.")
 				return output.AsDisplayed(fmt.Errorf(summary))
@@ -126,7 +137,7 @@ Adapter execution:
 					fw = "manual"
 				}
 				if updateHashFlag && fw == "manual" {
-					if err := manualUpdateHash(root, target); err != nil {
+					if err := manualUpdateHash(root, owner); err != nil {
 						output.Errorf(err.Error(), "Check the manual result file and try again.")
 						return output.AsDisplayed(err)
 					}
@@ -191,6 +202,7 @@ Adapter execution:
 
 			// Build flags
 			flags := adapter.CommandFlags{
+				Owner:       owner,
 				Adapter:     adapterFlag,
 				Framework:   resolvedFramework,
 				ExecutedBy:  executedBy,
@@ -303,7 +315,8 @@ func validatePrimeFolderStructure(root string) error {
 //
 // ENH-134: single dispatch point for the manual-specific --update-hash
 // preservation behaviour. Non-manual frameworks go through normal automate.
-func manualUpdateHash(root, target string) error {
+func manualUpdateHash(root string, owner *testcase.Owner) error {
+	target := owner.ID()
 	// 1. Find the manual result file (CON-023 / ENH-145: manual TCs
 	// have no wiring; the canonical manual artefact is the result file
 	// under gtms/manual/records/).
@@ -318,13 +331,10 @@ func manualUpdateHash(root, target string) error {
 	}
 	_ = relResultFile // path retained above for the error message
 
-	// 4. Compute the new test_case_hash
-	tcSource := testcase.FindSource(root, target)
-	if tcSource == "" {
-		return fmt.Errorf("test case file not found for %s", target)
-	}
-	absTC := filepath.Join(root, tcSource)
-	newHash, hashErr := pipeline.HashFile(absTC)
+	// 4. Compute the new test_case_hash from the resolved owner. The command
+	// already proved which spec owns this id; re-deriving it here is what let a
+	// prefix-sibling filename be hashed instead (ADR-024 s5).
+	newHash, hashErr := pipeline.HashFile(testcase.OwnerAbsFor(root, owner))
 	if hashErr != nil {
 		return fmt.Errorf("could not hash test case file: %w", hashErr)
 	}

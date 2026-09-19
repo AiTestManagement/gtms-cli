@@ -392,3 +392,43 @@ func TestBugRecordScope_PresentAndConforming(t *testing.T) {
 		"BUG-142: %d bug record(s) have a scope: value outside {code, test-only}.\n%s",
 		len(badValue), strings.Join(badValue, "\n"))
 }
+
+// --- BUG-189: the embedded Playwright runner classifies from the JSON reporter,
+// not the process exit code ---
+
+func TestSourceShape_PlaywrightRunnerClassifiesFromReporter(t *testing.T) {
+	// playwrightRunnerScript is the embedded string stamped into a project's
+	// gtms/adapters/playwright-runner.sh. BUG-189: Playwright exits 0 for an
+	// all-skipped run, so the runner must NOT map a zero exit straight to a pass;
+	// it must drive classification from Playwright's structured JSON reporter.
+	runner := playwrightRunnerScript
+
+	// The pre-fix defect signature must be gone from the CURRENT runner.
+	assert.NotContains(t, runner, "SUMMARY=\"Playwright test passed\"",
+		"the exit-code-only pass mapping must be removed (BUG-189)")
+
+	// The runner must use the structured JSON reporter and read its stats.
+	assert.Contains(t, runner, "--reporter=list,json",
+		"the runner must request the JSON reporter alongside the human list reporter")
+	assert.Contains(t, runner, "PLAYWRIGHT_JSON_OUTPUT_NAME",
+		"the runner must route the JSON reporter to a file it then parses")
+	assert.Contains(t, runner, "\"stats\"",
+		"the runner must classify from the reporter stats block")
+	// Fail-closed error handling must be present (skip/pass are not the only outcomes).
+	assert.Contains(t, runner, "status: error",
+		"the runner must be able to fail closed to status: error")
+}
+
+func TestSourceShape_PlaywrightRunnerPriorVersionCatalog(t *testing.T) {
+	// The upgrade path (installPresetAssets under --force, tc-65df1eb5) needs the
+	// exact pre-fix bytes to recognise a pristine older copy safe to refresh.
+	require.NotEmpty(t, playwrightRunnerScriptPriorVersions,
+		"the upgrade path needs at least one known prior version to match against")
+	assert.Contains(t, playwrightRunnerScriptPriorVersions[0], "SUMMARY=\"Playwright test passed\"",
+		"the seeded prior version must be the affected exit-code-only runner")
+
+	// The catalog must be wired to the runner's RelPath so the upgrade path finds it.
+	prior, ok := PresetAssetPriorVersions["gtms/adapters/playwright-runner.sh"]
+	require.True(t, ok, "playwright-runner.sh must declare prior versions for the upgrade path")
+	assert.NotEmpty(t, prior)
+}

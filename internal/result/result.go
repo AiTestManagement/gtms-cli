@@ -5,6 +5,8 @@
 package result
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -24,7 +26,7 @@ import (
 //
 // GitDirty is a pointer (`*bool`) so the YAML output distinguishes
 // "unavailable" (omitted via omitempty when nil) from "clean" (false). A
-// plain bool with omitempty would conflate the two — see the ENH-146
+// plain bool with omitempty would conflate the two -- see the ENH-146
 // GOTCHA in PRP-ENH-145-146-147 Task 3.
 type ResultContract struct {
 	Task         string   `yaml:"task"`
@@ -33,16 +35,23 @@ type ResultContract struct {
 	Adapter      string   `yaml:"adapter"`
 	Mode         string   `yaml:"mode"`
 	Created      string   `yaml:"created"`
-	Status       string   `yaml:"status"`              // pending, in-progress, complete, error
-	Result       string   `yaml:"result,omitempty"`     // pass, fail, skip, error (ENH-130: orthogonal test outcome)
+	Status       string   `yaml:"status"`           // pending, in-progress, complete, error
+	Result       string   `yaml:"result,omitempty"` // pass, fail, skip, error (ENH-130: orthogonal test outcome)
 	Artefact     string   `yaml:"artefact,omitempty"`
 	ArtefactHash string   `yaml:"artefact-hash,omitempty"`
 	Attempts     int      `yaml:"attempts,omitempty"`
 	Summary      string   `yaml:"summary,omitempty"`
 	Log          string   `yaml:"log,omitempty"`
 	NotesSpill   string   `yaml:"notes-spill,omitempty"` // CON-023: lifted from the retired automation record; relative path to full notes when log was truncated (ENH-077/ENH-123)
-	Warnings     []string `yaml:"warnings,omitempty"`   // adapter-injectable soft warnings (ENH-096)
+	Warnings     []string `yaml:"warnings,omitempty"`    // adapter-injectable soft warnings (ENH-096)
 	Completed    string   `yaml:"completed,omitempty"`
+
+	// ValidationError carries the gtms create post-write validation violations
+	// (BUG-038). The healthy-handoff path writes this key through Update's map
+	// merge, which never sees this struct; the field exists so the BUG-191
+	// recovery, which marshals this struct wholesale, can keep the key instead
+	// of silently dropping it from the durable record (REV-164 CODEX-001).
+	ValidationError string `yaml:"validation-error,omitempty"`
 
 	// CON-023 / ENH-146: overlay-join + Git-context fields.
 	Framework   string `yaml:"framework,omitempty"`
@@ -54,7 +63,7 @@ type ResultContract struct {
 }
 
 // validStatuses is the set of allowed Status values on a ResultContract.
-// ENH-130: fail and skipped are retired — test outcomes live on Result.
+// ENH-130: fail and skipped are retired -- test outcomes live on Result.
 var validStatuses = map[string]bool{
 	"pending":     true,
 	"in-progress": true,
@@ -109,6 +118,41 @@ func IsTerminalExecuteContract(rc *ResultContract) bool {
 		return false
 	}
 	return rc.Command == "execute" && (rc.Status == "complete" || rc.Status == "error")
+}
+
+// testCaseScopedCommands is the CLOSED set of commands whose contracts record a
+// bare TEST CASE id in `target`. It is a positive allowlist, not a denylist of
+// folder-scoped commands, because it gates a DESTRUCTIVE path: anything this set
+// does not name is not attributable to a test case and therefore not deletable
+// with one.
+//
+// Adding a command here is a deliberate act that says "this command's `target`
+// is a bare TC id". A command added to GTMS and forgotten here loses nothing --
+// its contracts simply survive a TC delete, which is the safe direction.
+var testCaseScopedCommands = map[string]bool{
+	"automate": true,
+	"execute":  true,
+	"prime":    true,
+}
+
+// TargetIsTestCaseScoped reports whether rc's target names a TEST CASE id, so the
+// contract may be attributed to that test case for deletion (F1 + the BUG-130
+// structural guard: the command dimension lives in exactly one place, never
+// inline in a results-dir walker).
+//
+// ADR-024 s6 mandates positive grammar and destructive paths fail closed, so this
+// is an ALLOWLIST of the three TC-scoped commands. The earlier `Command !=
+// "create"` denylist inverted that: an empty or missing `command` -- and every
+// folder-scoped command added in future -- defaulted to ATTRIBUTABLE, so a
+// contract GTMS could not classify was deleted anyway. `create` writes a bare
+// FOLDER name in target (no test case exists yet when create runs) and a folder
+// can be named character-for-character like a TC id, which is why the command
+// dimension has to be decided before the target is compared.
+//
+// The caller still checks the exact target; this centralises only the command
+// dimension.
+func TargetIsTestCaseScoped(rc *ResultContract) bool {
+	return rc != nil && testCaseScopedCommands[rc.Command]
 }
 
 // Create writes a new handoff contract to .gtms/results/{task-id}.handoff.yaml.
@@ -220,6 +264,134 @@ func Update(path string, updates map[string]interface{}) error {
 	// Write back
 	if err := os.WriteFile(path, merged, 0644); err != nil {
 		return fmt.Errorf("writing updated result contract: %w", err)
+	}
+
+	return nil
+}
+
+// createHandoffTemp creates a uniquely named, exclusively created temporary
+// file in dir, requesting mode 0644 so the KERNEL applies the process umask to
+// it -- exactly as it does for the os.WriteFile(path, data, 0644) calls in
+// Create and Update. The recovered handoff therefore lands with the same
+// permissions as every normal handoff on the same machine.
+//
+// This is deliberately not os.CreateTemp. CreateTemp hardcodes 0600, and the
+// obvious repair -- chmod 0644 afterwards -- is wrong, because chmod is NOT
+// umask-filtered while file creation is (REV-164 CLAUDE-R01). Under umask 077
+// that combination produced a 0644 recovered handoff while every normal handoff
+// came out 0600, so the one file carrying captured adapter stdout/stderr was
+// the one file readable by everyone. Under the default umask 022 both come out
+// 0644, which is why nothing caught it.
+//
+// O_EXCL keeps the collision safety CreateTemp provides; the suffix comes from
+// crypto/rand, and a name already taken is retried rather than reused.
+func createHandoffTemp(dir, prefix string) (*os.File, error) {
+	buf := make([]byte, 8)
+	for attempt := 0; attempt < 10000; attempt++ {
+		if _, err := rand.Read(buf); err != nil {
+			return nil, fmt.Errorf("generating temporary file name: %w", err)
+		}
+		name := filepath.Join(dir, prefix+hex.EncodeToString(buf))
+		f, err := os.OpenFile(name, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0644)
+		if os.IsExist(err) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		return f, nil
+	}
+	return nil, fmt.Errorf("exhausted attempts to create a unique temporary file in %s", dir)
+}
+
+// Reconstruct writes a fresh, valid handoff contract to path from a
+// ResultContract value, WITHOUT decoding whatever is already on disk.
+//
+// BUG-191: when a Tier 2 adapter leaves its handoff unusable -- unparseable
+// YAML, a deleted file, or a file it made unreadable -- GTMS must still leave a
+// readable error handoff behind. Update cannot do this: it reads the existing
+// file and decodes it into a map before merging, so it re-hits the very
+// read/parse error that triggered recovery and returns before writing anything.
+// Reconstruct sidesteps that by marshalling the caller's trusted contract and
+// replacing the file outright.
+//
+// Ordering matters (REV-164 CODEX-001). The complete replacement is marshalled
+// first, then written to a temporary file in the SAME directory as the target,
+// and only then renamed over the target. Nothing on disk is destroyed until the
+// replacement bytes are already there, so a marshal failure, a full disk or a
+// read-only filesystem leaves the previous handoff exactly as it was instead of
+// deleting the old evidence and failing to write a replacement.
+//
+// A rename within one directory is atomic on POSIX. On Windows, Go's os.Rename
+// calls MoveFileEx with MOVEFILE_REPLACE_EXISTING, which likewise replaces an
+// existing file in one step; where Windows refuses (a read-only target, or one
+// another process holds open), Reconstruct does NOT unlink the target and retry
+// -- that would reopen the very destructive window this ordering closes. It
+// removes the temporary file, leaves the existing handoff untouched, and
+// returns the error. A failed replacement therefore always leaves the old
+// handoff in place, never nothing.
+//
+// The replacement's permissions match a normal handoff write on the same
+// machine: the temporary file is created with mode 0644 through the kernel, so
+// the process umask filters it exactly as it filters Create's and Update's
+// os.WriteFile(..., 0644). See createHandoffTemp for why chmod is not used.
+//
+// A regular file with no permissions (mode 000, e.g. an adapter that chmod
+// 000'd its own handoff) is replaced normally: rename acts through the writable
+// parent directory regardless of the target's own mode. A missing target is not
+// an error -- the recovery must be able to CREATE the handoff, not only rewrite
+// one (BUG-191 tc-969e199b).
+//
+// A DIRECTORY at the target path is refused with an error. Its contents are
+// unknown, and deleting them to make room for the handoff is more destructive
+// than failing: the caller gets a clear message and the directory survives
+// untouched. Callers must still route the task to error/ when Reconstruct
+// fails (see recoverUnusableContract).
+func Reconstruct(path string, rc *ResultContract) error {
+	// ENH-130: never write a contract that would fail validation.
+	if err := Validate(rc); err != nil {
+		return fmt.Errorf("reconstruct contract validation failed: %w", err)
+	}
+
+	// Marshal before touching disk: hold the complete replacement in hand
+	// before anything existing can be disturbed.
+	data, err := yaml.Marshal(rc)
+	if err != nil {
+		return fmt.Errorf("marshalling reconstructed contract: %w", err)
+	}
+
+	// Refuse a directory at the target rather than destroying unknown contents.
+	if info, statErr := os.Stat(path); statErr == nil && info.IsDir() {
+		return fmt.Errorf("cannot reconstruct result contract: %s is a directory, not a file -- inspect and remove it by hand", path)
+	}
+
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("creating results directory: %w", err)
+	}
+
+	tmp, err := createHandoffTemp(dir, filepath.Base(path)+".tmp-")
+	if err != nil {
+		return fmt.Errorf("creating temporary result contract: %w", err)
+	}
+	tmpPath := tmp.Name()
+	// Every failure path below removes the temporary file so a failed recovery
+	// does not litter .gtms/results/ with orphans.
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("writing reconstructed result contract: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("writing reconstructed result contract: %w", err)
+	}
+
+	if err := os.Rename(tmpPath, path); err != nil {
+		// Preserve whatever is at the target: a failed replacement must never
+		// leave the operator with nothing. Drop the temp file and report.
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("replacing unusable result contract: %w", err)
 	}
 
 	return nil

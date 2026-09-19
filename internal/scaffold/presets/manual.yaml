@@ -47,3 +47,16 @@ defaults:
   prime: manual-prime                # built-in
   automate: manual-automate          # built-in (manual framework -- returns the prime/execute hint)
   execute: manual-execute            # built-in (see Execute path note below)
+
+# Triage classification values (ENH-200 / CON-040). Keys must match
+# ^[a-z][a-z0-9-]*$; labels are optional friendly text. These are the built-in
+# defaults; edit or replace them to fit your project. Removing the whole triage
+# block also falls back to these defaults.
+triage:
+  values:
+    app-wrong: ""
+    test-wrong: Test definition problem
+    automation-wrong: Automation implementation problem
+    environment: Environment failure
+    intermittent: Intermittent or order-dependent failure
+    blocked: ""

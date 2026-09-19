@@ -736,35 +736,35 @@ func TestParseStreaming_ForceOverwritesDuplicate(t *testing.T) {
 	assert.Equal(t, "Fresh content\n", string(freshData))
 }
 
-func TestCleanupExistingOutputByTCID(t *testing.T) {
-	dir := t.TempDir()
+func TestCleanupExistingOutputForOwner_RemovesOnlyClaimedFiles(t *testing.T) {
+	root := t.TempDir()
 
-	// Create files: two matching the TC ID prefix, one unrelated
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "tc-abc123-old-slug.bats"), []byte("old"), 0644))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "tc-abc123-another.Tests.ps1"), []byte("old"), 0644))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "tc-other99-unrelated.bats"), []byte("keep"), 0644))
+	// Two files the target's own wiring claims, and one it does not.
+	old := seedClaim(t, root, "tc-abc123", "bats", "out/tc-abc123-old-slug.bats")
+	another := seedClaim(t, root, "tc-abc123", "pester", "out/tc-abc123-another.Tests.ps1")
+	unrelated := seedClaim(t, root, "tc-other99", "bats", "out/tc-other99-unrelated.bats")
 
-	err := cleanupExistingOutputByTCID(dir, "tc-abc123")
+	_, err := cleanupExistingOutputForOwner(mustClaims(t, root), filepath.Join(root, "out"), "tc-abc123")
 	require.NoError(t, err)
 
-	// Matching files should be removed
-	assert.NoFileExists(t, filepath.Join(dir, "tc-abc123-old-slug.bats"))
-	assert.NoFileExists(t, filepath.Join(dir, "tc-abc123-another.Tests.ps1"))
+	// Claimed by the target: removed.
+	assert.NoFileExists(t, old)
+	assert.NoFileExists(t, another)
 
-	// Unrelated file should be preserved
-	assert.FileExists(t, filepath.Join(dir, "tc-other99-unrelated.bats"))
+	// Claimed by another identity: preserved.
+	assert.FileExists(t, unrelated)
 }
 
 func TestCleanupExistingOutputByTCID_EmptyDir(t *testing.T) {
 	// Should not error on empty or non-existent dir
-	err := cleanupExistingOutputByTCID("", "tc-abc123")
+	_, err := cleanupExistingOutputForOwner(mustClaims(t, ""), "", "tc-abc123")
 	assert.NoError(t, err)
 
-	err = cleanupExistingOutputByTCID(filepath.Join(t.TempDir(), "nonexistent"), "tc-abc123")
+	_, err = cleanupExistingOutputForOwner(mustClaims(t, ""), filepath.Join(t.TempDir(), "nonexistent"), "tc-abc123")
 	assert.NoError(t, err)
 }
 
 func TestCleanupExistingOutputByTCID_EmptyTarget(t *testing.T) {
-	err := cleanupExistingOutputByTCID(t.TempDir(), "")
+	_, err := cleanupExistingOutputForOwner(mustClaims(t, ""), t.TempDir(), "")
 	assert.NoError(t, err)
 }

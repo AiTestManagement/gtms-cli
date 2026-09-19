@@ -342,7 +342,7 @@ GTMS owns the identifier and the skeleton file. It generates a `tc-XXXXXXXX` ID,
 
 The agent then fills in the spec body -- title, requirement reference, type, priority, preconditions, steps, expected results, and any other fields the project's spec template asks for. Filling the spec is content work, not GTMS work: GTMS hands the agent an envelope, the agent writes inside it.
 
-Downstream commands (`prime`, `automate`, `execute`) re-validate the file and reject frontmatter / filename ID mismatches, missing required frontmatter, or duplicate IDs in the same folder. The gate runs on single-test-case invocations; bulk automate and execute runs skip it.
+Before they act, `prime`, `automate`, and `execute` work out which test case spec owns the ID you named. Ownership comes from the `test_case_id` in a test case spec's frontmatter, not from its filename. If two test case specs anywhere in the project declare the same ID, or one that might declare it cannot be read or carries no usable `test_case_id`, the command stops and names what it found rather than picking one. Bulk runs over a folder make the same decision for every test case in scope before the first one is touched.
 
 #### Where an unqualified create request stops
 
@@ -407,7 +407,7 @@ gtms create <folder> <name> --adapter agent-create
 
 GTMS stamps an empty test case skeleton file under `<folder>` and allocates a `tc-XXXXXXXX` identifier. The agent does not generate the ID; GTMS owns it and writes it into the test case's frontmatter and filename.
 
-The agent then fills the test case body: title, requirement reference, type, priority, preconditions, steps, expected results, and any other fields the project's test case template asks for. Once the agent has written the test case, downstream commands re-validate the file. Frontmatter / filename ID mismatches, missing required frontmatter, and duplicate IDs in the same folder are caught at the entry to `prime` and `execute` commands.
+The agent then fills the test case body: title, requirement reference, type, priority, preconditions, steps, expected results, and any other fields the project's test case template asks for. The agent must leave `test_case_id` alone -- that field is what makes the file findable. `prime` and `execute` resolve the ID through it, and they stop rather than guess if it is missing, unreadable, or shared with another spec.
 
 #### Step 2: Prime a result template
 
@@ -475,7 +475,7 @@ A single test case can take both paths over its lifetime. The fork is a choice a
 
 `gtms automate` produces two artefacts:
 
-- **A reusable test script** for the framework you ask for. The script is a skeleton at first; the agent fills in the script's code. By default the built-in automate adapters stamp it in the framework-native directory -- `test/acceptance/` for BATS, `gtms/scripts/playwright/` for Playwright. Set `output-dir` on the automate adapter to redirect it (for example, into an existing framework harness so the framework discovers the spec where it already looks); the wiring record's `artefact:` path follows wherever it lands, so `gtms execute` still finds it.
+- **A reusable test script** for the framework you ask for. The script is a skeleton at first; the agent fills in the script's code. Until it is filled in, executing it records `skip`, not `pass`: the shipped Playwright runner reads Playwright's own report and a skeleton whose tests all skip is recorded as skipped, which is the intended signal that the test has not been written yet. By default the built-in automate adapters stamp it in the framework-native directory -- `test/acceptance/` for BATS, `gtms/scripts/playwright/` for Playwright. Set `output-dir` on the automate adapter to redirect it (for example, into an existing framework harness so the framework discovers the spec where it already looks); the wiring record's `artefact:` path follows wherever it lands, so `gtms execute` still finds it.
 - **A wiring record** that links the test case to the script and to the adapter that should run it. The wiring record is what makes `gtms execute <tc-id>` work later without you having to name the adapter again.
 
 The wiring record is the reason the automate path can run bare `gtms execute <tc-id>`: the wiring record names the adapter. The prime path has no wiring record to consult -- it relies on the execute adapter being a prime-path one, either named explicitly (`--adapter agent-execute`) or set as the project default (the manual preset ships `defaults.execute: manual-execute`).
@@ -531,7 +531,7 @@ The following sections cover each of these commands in more detail.
 gtms create <folder> <name> --adapter agent-create
 ```
 
-GTMS stamps an empty test case skeleton under `<folder>` and allocates a `tc-XXXXXXXX` identifier. The agent then fills the test case body (title, requirement reference, type, priority, preconditions, steps, expected results). Frontmatter / filename ID mismatches, missing required frontmatter, and duplicate IDs in the same folder are caught at the entry to `automate` and `execute`.
+GTMS stamps an empty test case skeleton under `<folder>` and allocates a `tc-XXXXXXXX` identifier. The agent then fills the test case body (title, requirement reference, type, priority, preconditions, steps, expected results) and leaves `test_case_id` untouched. `automate` and `execute` find the test case through that field, and stop rather than guess if it is missing, unreadable, or shared with another spec.
 
 ##### Step 2: Automate the test case
 
@@ -773,7 +773,7 @@ What each step does:
 - `gtms execute` reads the filled template, validates it, and records the result in the pipeline.
 - `gtms status` shows the recorded result alongside every other test in the project.
 
-Validation runs at the entry to `prime`, `automate`, and `execute`. Frontmatter / filename ID mismatches, missing required frontmatter, and duplicate IDs in the same folder are caught here, not silently absorbed.
+`prime`, `automate`, and `execute` each resolve the ID to its owning test case spec before doing anything else. A `test_case_id` that is missing, unreadable, or declared by more than one test case spec anywhere in the project stops the command, with the candidates named. A filename that disagrees with `test_case_id` does not: that is a renamed test case, and it works.
 
 The prime path does not produce a reusable test script and does not write a wiring record. If you re-prime and re-execute the same test case, you are recording a fresh one-time result, not replaying an automated run. When you want a repeatable run instead of a one-time result, switch to the automate path.
 
@@ -826,6 +826,8 @@ From then on, `gtms execute <tc-id>` reads the same wiring record and re-runs th
 The hash is there to keep the pipeline honest. A recorded pass or fail is only meaningful if it came from the script GTMS thinks it came from. If someone edits the script after an execution -- fixing a selector, tightening an assertion, adding a step -- the previous result may no longer describe what the script now does. Rather than silently letting a stale result linger against a changed script, GTMS stops the next execute and asks you to acknowledge the change.
 
 The recovery options run from safest to most destructive. `gtms link --refresh <tc-id>` recomputes both hashes in the wiring record and leaves the script untouched -- the usual acknowledgement once you have reviewed the change. `gtms execute --allow-stale <tc-id>` runs once without updating the wiring, for when you want this run's result without marking the wiring current. Re-running `gtms automate` with `--force` regenerates the script through the automate adapter and overwrites the current script content -- reach for it only when the test case spec change needs a fresh script.
+
+`gtms automate --force` is the recovery for a stale script the test case owns. It is not the recovery for an ownership refusal -- see "Automate will not write over a script it cannot prove is yours" in the command reference.
 
 The pending-hash bootstrap runs on every first execute, even with `--allow-stale`. `--allow-stale` lets execute proceed past a stale wiring record, but a wiring record with no real hash is not yet stale -- it is uninitialised. The first run always settles it.
 
@@ -899,7 +901,7 @@ gtms/
 
 Three distinctions to hold in mind:
 
-- The `gtms/` parent is committed. Everything under it -- test case specs, wiring records, manual records, generated scripts, task files, schemas, adapters, guides, and templates -- is part of the repo.
+- The `gtms/` parent is committed. Test case specs, wiring records, manual records, generated scripts, task files, schemas, adapters, guides, and templates are all part of the repo. Three exceptions are called out below: two gitignored execution subdirectories, and `gtms/triage/`, which is a per-project choice to commit or ignore.
 - The `.gtms/` directory is local-only and gitignored. It carries execution state that does not survive across machines: terminal handoff results, the guidance config file, and other per-run scratch. Because it is per-machine, a customised `.gtms/guidance.yaml` is not shared with the rest of the team.
 - Two subdirectories under `gtms/` are also gitignored via `.gitignore`: `gtms/execution/logs/` and `gtms/execution/attachments/`. They are reserved for future execution artefacts and are not created at init; no current command writes them (per-task log spill lands in the gitignored `.gtms/logs/`).
 
@@ -907,6 +909,8 @@ Preset differences:
 
 - `--preset bats` additionally scaffolds `gtms/automation/templates/bats.template.bats`, a `bats-runner` adapter and its `lib/bats-tap.sh` helper under `gtms/adapters/`, and sets `defaults.execute: bats-runner`.
 - `--preset playwright` scaffolds `gtms/automation/templates/playwright.template.spec.ts`, a `playwright-runner` adapter, and `defaults.execute: playwright-runner`. Its stamped `.spec.ts` files land under `gtms/scripts/playwright/`.
+
+One directory is missing from the tree above because `gtms init` does not create it: `gtms/triage/` appears the first time you classify a result, and holds one `tc-XXXXXXXX--<framework>.triage.yaml` per classified (test case, framework) pair. Whether you commit it or gitignore it is a project choice -- see the `gtms triage` command reference.
 
 ### File formats
 
@@ -929,22 +933,21 @@ The subsections below describe each in turn.
 
 - Pre-generates a batch of unique `tc-XXXXXXXX` identifiers and rejects any test case spec whose frontmatter ID is not in the batch.
 - Reads every `.md` guide at the top level of `gtms/test/guides/` (or the adapter's configured `guide-dir`) and hands them to the adapter -- as `{guides}` in a prompt-template adapter's prompt, or as `GTMS_GUIDES` for script adapters -- so the agent writes content that follows your project's authoring conventions.
-- Runs post-fill validation on every produced file: ID format, filename / frontmatter ID match, and folder-scoped duplicate detection.
+- Validates the files it just produced: each ID is well formed, each comes from the batch GTMS handed the adapter, each matches its filename, and no two of those files share an ID. A file whose frontmatter cannot be parsed, or which carries no `test_case_id` at all, is recorded as degraded and listed by filename rather than failing the run. The check covers that one invocation's output -- not the rest of the folder, and not the project.
 
-A hand-stamped test case spec lands on disk but has skipped all three checks. GTMS accepts it until the first downstream command on that test case (automate, prime, or execute) runs its entry validation -- and a structurally well-formed hand-stamped file passes even that silently.
+A hand-stamped test case spec lands on disk but has skipped all three. Downstream commands still find it -- they resolve it through its `test_case_id` like any other test case spec. There is no later check that an ID was ever issued by GTMS, so a unique, well-formed hand-stamped ID simply works. What is not caught at write time is a DUPLICATE: stamp an ID that another spec already claims, and nothing complains until the first command that has to act on it refuses, naming both files.
 
 A test case spec is a markdown file with YAML frontmatter, stored under `gtms/test/cases/<folder>/`. Filename convention: `tc-XXXXXXXX-<slug>.md`. The frontmatter carries identity fields (most importantly `test_case_id`), the requirement reference, the priority, the type, and any other fields the project's test case spec template declares. The body holds the test case content (preconditions, steps, expected results).
 
 Two identity rules to hold in mind:
 
-- The `test_case_id` in the frontmatter must match the `tc-XXXXXXXX` segment in the filename. The entry validation in `gtms automate`, `gtms prime`, and `gtms execute` catches a mismatch.
-- Every `tc-XXXXXXXX` identifier must be unique across the entire project. GTMS enforces this within a single folder today (at create, prime, and execute validation), but does not check across folders.
+- The `test_case_id` in the frontmatter is the identity. The `tc-XXXXXXXX` in the filename is a convenience for reading a folder listing and for tab completion. `gtms create` writes both and keeps them in step; if they later disagree, the frontmatter wins and the test case spec goes on working.
+- Every `tc-XXXXXXXX` identifier must be unique across the entire project. Two checks bear on that, at different moments and with different reach.
 
-If duplicates do end up in different folders, GTMS accepts the writes. What happens afterwards depends on how you address the test case.
+**The two checks, kept apart.** They are separate mechanisms and it is worth knowing which one you are relying on:
 
-Name it by its bare ID -- `gtms status tc-abc12345` -- and GTMS still uses whichever file the directory walk finds first and ignores the other, so results can be recorded against the wrong test case spec.
-
-Put a folder in front of it -- `gtms status login/tc-abc12345` -- and GTMS checks first. If that ID exists under more than one folder, the command stops before doing anything and names every conflicting spec:
+- **When `gtms create` finishes**, it validates the test case specs the adapter just wrote: each ID came from the batch GTMS handed out, each is well formed, each matches its filename, and no two of those files share an ID. The scope is that one invocation's output. Files already sitting in the folder before the run are not part of it, and nothing scans the rest of the project. This is a contract with the adapter, not a uniqueness guarantee.
+- **When a command is about to act on a test case** -- `automate`, `prime`, `execute`, `delete`, `reset`, `link`, and the single-test-case view `gtms status <tc-id>` -- GTMS works out who owns the ID across the whole project. If two test case specs declare it, wherever they sit, the command stops before doing anything and names them:
 
 ```text
 $ gtms delete login/tc-abc12345
@@ -954,15 +957,21 @@ $ gtms delete login/tc-abc12345
     Resolve the duplicate IDs (or use a form that targets a single spec) before targeting 'login/tc-abc12345'.
 ```
 
-`automate`, `execute`, `delete`, `reset`, `link`, `status`, and `map` all make this check. It is a safety net at one boundary, not project-wide enforcement -- GTMS still does not stop you writing the duplicate in the first place. Hold project-wide uniqueness by convention until GTMS checks it end-to-end.
+A folder-qualified target such as `login/tc-abc12345` is checked the same way, and `gtms map` applies that qualified check too.
+
+"Not found" means one thing only: no test case spec body claims that ID. It is never how GTMS reports a problem it could not settle. If two test case specs claim the ID, or one that might claim it cannot be read, you get a refusal that says so and names the files -- not a report that the test case is missing.
+
+Two gaps are worth knowing about. Nothing stops you WRITING a duplicate: hand-stamp a test case spec with an ID that already exists, or create one beside an existing test case spec, and no command complains at the time -- you find out at the next command that has to act on it. And the folder-summary and listing views (`gtms map`, `gtms gaps`, and `gtms status <folder>`) still find test case specs by filename, so a duplicated ID can appear there against one of the two without comment. The commands that ACT on a single test case -- `automate`, `prime`, `execute`, and `triage --value` -- all resolve through the body ID and refuse the duplicate.
 
 One related rule to know when you type a target: a trailing `/` or `\` always means "folder". `gtms delete tc-abc12345/` targets a folder named `tc-abc12345/`, which probably does not exist -- it does not delete the test case `tc-abc12345`. Drop the trailing separator to address the test case.
 
 #### Reorganising test cases
 
-The test case ID is the identity. You can move a test case spec between folders or rename its slug with normal tools such as `git mv`, but keep the `tc-XXXXXXXX` prefix in the filename and keep the same `test_case_id` in frontmatter.
+The `test_case_id` in the frontmatter is the identity. You can move a test case spec between folders or rename the file with normal tools such as `git mv`, and it keeps working as long as that field stays the same.
 
-This means `tc-1a2b3c4d-login-happy-path.md` can become `tc-1a2b3c4d-login-primary-flow.md`, or move from one case folder to another, as long as the ID stays consistent. If the filename ID and frontmatter ID diverge, `gtms automate`, `gtms prime`, and `gtms execute` reject the test case spec during validation.
+Keep the `tc-XXXXXXXX-<slug>.md` filename convention where you can -- it is what makes a folder listing readable. It is a convention, not a rule GTMS enforces: `tc-1a2b3c4d-login-happy-path.md` can become `tc-1a2b3c4d-login-primary-flow.md`, or move to another case folder, and `gtms automate`, `gtms prime`, and `gtms execute` all still reach it as `tc-1a2b3c4d`.
+
+One consequence to expect if you rename a file so that its filename carries a different `tc-XXXXXXXX` from its frontmatter. The ID in the filename is no longer an address. Targeting it reports the test case as not found, and that is the right answer -- no test case spec body claims it. Read the test case spec's `test_case_id:` and use that instead. The stamped artefact is named for the owning ID, so it can end up repeating the old one as part of its descriptive slug; the wiring record section below explains why that is deliberate.
 
 Do not duplicate a `tc-XXXXXXXX` identifier in the same project. If you need a second scenario, create a new test case so GTMS gives it a new ID.
 
@@ -993,6 +1002,8 @@ The six fields:
 When `gtms automate` first stamps a wiring record via the built-in `agent-automate` or `manual-automate` adapters, `artefact-hash` starts as the literal string `pending`. The wiring is fully valid in this state -- `gtms status` and `gtms gaps` treat it as wired. The first `gtms execute` reads the artefact, hashes it, and replaces `pending` with the real value. `--allow-stale` does not bypass that bootstrap.
 
 In the wiring file itself, `pending` is a YAML literal in the `artefact-hash` field, not a separate status field. The status JSON does surface it: each per-framework entry carries `wiring_bootstrap: pending` until first execute flips it to `ready`.
+
+How the artefact gets its name. `gtms automate` names it after the test case that OWNS the spec, followed by a descriptive slug taken from the spec's filename. For a normally named spec these are the same thing: `tc-1a2b3c4d-login-happy-path.md` gives `tc-1a2b3c4d-login-happy-path.bats`. If you rename a spec file without changing its `test_case_id:`, the identity still comes from the frontmatter, so the artefact is named for that -- `tc-aaaaaaaa-file.md` declaring `tc-bbbbbbbb` produces `tc-bbbbbbbb-tc-aaaaaaaa-file.bats`. That looks redundant, and it is deliberate: shortening it to `tc-bbbbbbbb-file.bats` would mean GTMS guessing which part of your filename belongs to some other test case, and a wrong guess lets one test case's cleanup delete another's script.
 
 The reason `pending` exists: at stamp time the artefact (the test script the wiring points at, e.g. `tc-1a2b3c4d-login-happy-path.bats`) is still a template skeleton, and the agent or tester has not yet filled it in. Deferring the hash to first execute lets that authoring happen before GTMS captures the value it will drift-check against later.
 
@@ -1098,7 +1109,7 @@ The key fields:
 - `adapter`, `mode`: which adapter ran and whether it was `sync` or `async`.
 - `created`, `completed`: ISO 8601 timestamps for when GTMS stamped the file and when the adapter finished.
 - `status`: adapter execution state -- `pending`, `in-progress`, `complete`, or `error`.
-- `result`: test outcome -- `pass`, `fail`, `skip`, or `error`. Orthogonal to `status`: a `status: complete` handoff with `result: fail` means the adapter ran cleanly and reported a failing test.
+- `result`: test outcome -- `pass`, `fail`, `skip`, or `error`. Orthogonal to `status`: a `status: complete` handoff with `result: fail` means the adapter ran cleanly and reported a failing test. How an adapter chooses the outcome is its own business; the shipped Playwright runner reads Playwright's JSON report rather than the process exit code, so a run in which every selected test skipped, or in which some passed and some skipped with none failing, is `result: skip`, while no tests discovered, an interrupted run, or a report that is missing, malformed or unrecognised is `status: error` with no result. The exit code still appears in the summary as diagnostic context.
 - `artefact`: relative path to the file the adapter produced.
 - `attempts`, `summary`, `log`: adapter-supplied detail. When `log` is truncated by GTMS, `notes-spill` points to the full log.
 - `git-branch`, `git-commit`, `git-dirty`: git context stamped by GTMS when the handoff is created.
@@ -1317,7 +1328,7 @@ Framework runner scripts also live under `gtms/adapters/` but are preset-specifi
 - `bats-runner.sh` and `lib/bats-tap.sh` -- shipped with the BATS preset.
 - `playwright-runner.sh` -- shipped with the Playwright preset.
 
-Unlike the role scripts, the runners are live defaults: in the bats and playwright presets, `defaults.execute` points at the runner out of the box, so editing the runner changes your execute behaviour immediately. On the automate path, `gtms execute` invokes the adapter named in the test case's wiring record: the runner takes the test script the wiring record names, runs it through the framework, interprets the outcome (TAP parsing for BATS, exit-code mapping for Playwright), and emits the result contract GTMS reads back. `bats-runner.sh` sources `lib/bats-tap.sh` at run time -- if you copy or move one, take both.
+Unlike the role scripts, the runners are live defaults: in the bats and playwright presets, `defaults.execute` points at the runner out of the box, so editing the runner changes your execute behaviour immediately. On the automate path, `gtms execute` invokes the adapter named in the test case's wiring record: the runner takes the test script the wiring record names, runs it through the framework, interprets the outcome (TAP parsing for BATS, the JSON report for Playwright), and emits the result contract GTMS reads back. `bats-runner.sh` sources `lib/bats-tap.sh` at run time -- if you copy or move one, take both. Both runners write the contract's log block as `log: |2`, so a tool's own indentation is recorded as content; a runner scaffolded before v0.3.3 wrote `log: |` instead, and the `gtms init` section describes how `--force` refreshes it.
 
 **Graduating to a script adapter.** Change the relevant `defaults.X` line in `gtms.config` to the script adapter's name:
 
@@ -1373,7 +1384,7 @@ Scaffolds the GTMS layout in a git-initialised project.
 - `--presets` lists the available presets and exits without scaffolding.
 - `--name <name>` overrides the project name, which otherwise defaults to the name of the directory you run `gtms init` in. It is independent of `--repo`.
 - `--repo <org/repo>` records a repository path in the scaffolded `gtms.config`. Without it, GTMS reads the remote named `origin` and uses what it finds there.
-- `--force` (combined with `--preset` or `--demo`) overwrites an existing `gtms.config` or initialises inside an ancestor GTMS project. A bare `gtms init --force` behaves the same as plain `gtms init`.
+- `--force` (combined with `--preset` or `--demo`) overwrites an existing `gtms.config` or initialises inside an ancestor GTMS project. A bare `gtms init --force` behaves the same as plain `gtms init` and does not touch preset assets. With `--preset bats` or `--preset playwright`, `--force` also upgrades the preset's runner (`gtms/adapters/bats-runner.sh` or `gtms/adapters/playwright-runner.sh`) when the file still matches a recognised older shipped version; the run reports that the runner was upgraded to the current shipped version. A runner that already matches the current shipped version is skipped. If the runner has been edited, or is not a version GTMS recognises, GTMS leaves your file exactly as it is and writes the current shipped version beside it as `bats-runner.sh.gtms-new` or `playwright-runner.sh.gtms-new`, with a warning telling you to review and merge it; if a companion already exists and differs, the next free `.gtms-new.N` name is used, and an identical companion is reused. Writing the companion is not an upgrade: your runner stays active until you merge or replace it yourself. One deliberate exception: the bats runner shipped by v0.2.0 (a `#!/bin/bash` script) is not a recognised version, so a project still carrying it gets the companion rather than an in-place upgrade; the bats runners shipped by v0.3.0 through v0.3.2 are recognised. A runner path that is not a regular file, or that resolves outside the project, is left untouched and reported.
 - `--demo` seeds demo content for learning the pipeline. Mutually exclusive with `--preset`.
 - `--guidance-off` / `--guidance-on` control the guidance-messages surface (see Files, Configuration, and Troubleshooting).
 
@@ -1446,11 +1457,37 @@ Stamps a reusable test script and a wiring record. On a project scaffolded with 
 - `--env <name>` records an environment label on the task file and result contract and passes it to the adapter. The adapter may act on it; GTMS does not route on it. It is not part of the wiring record.
 - `--executed-by <name>` records the operator identity.
 - `--context-file <path>` supplies a context file to the adapter.
-- `--force` reprocesses and overwrites existing output files for the test case.
+- `--force` reprocesses the test case and replaces automation scripts it provably owns. It also sweeps the output directory for the test case's own stale scripts. It does not switch off the ownership rule below.
 - `--fail-fast` stops a bulk run on the first failure.
 - `-r` / `--recursive` runs across subfolders when given a folder argument.
 
 Choosing the `agent-automate` or `manual-automate` role does not change the generated skeleton in the first release -- both stamp the same starter file for a given framework. Distinct per-role automate templates are planned for a later release.
+
+#### Automate will not write over a script it cannot prove is yours
+
+Ownership of an automation script is proved by a wiring record: one whose `testcase:` is your target and whose `artefact:` names that file. A name that looks right is not proof, because one test case ID can be the leading part of another.
+
+Every `gtms automate` run, with or without `--force`, stops before writing or deleting anything when:
+
+- the file it is about to write is claimed by a different test case;
+- the file it is about to write is there but no wiring record accounts for it;
+- a wiring record cannot be read or parsed, so the claim that would have vetoed the write might be the one GTMS could not read.
+
+**Those three are not something `--force` turns on or off.** `--force` changes what may be replaced once ownership is proved; it never substitutes for the proof.
+
+`--force` adds a fourth, which a plain run does NOT perform: a sweep of the output directory for stale files this test case owns. If that sweep reaches an entry it cannot examine at all -- a symbolic link that loops, say -- the run stops there. Unlike the three above, this happens after the task and result records exist, so it is recorded as a failed attempt rather than leaving no trace.
+
+One boundary on all of this: it governs what GTMS ITSELF writes and replaces. A Tier 1 or Tier 2 adapter chooses its own output paths, and GTMS cannot police files it never planned.
+
+Three ways out, safest first:
+
+- `gtms link <tc-id> --framework <name> --artefact <path>` records that the file belongs to this test case. It rewrites the wiring record and leaves the file alone.
+- Inspect the file and remove it by hand, once you know what it is.
+- Point the automate adapter at a different output location.
+
+Re-running `gtms automate` is not one of them, with or without `--force`. That is the command doing the refusing, so it cannot also be the way out.
+
+**Where the guarantee stops.** GTMS can only reserve an output path it chose itself, which means the built-in automate adapters: they work out the script's path from the test case that owns the test case spec. An automate adapter you configure with `command:` or `script:` picks its own output path, and GTMS does not learn it until after the write -- so GTMS cannot stop that adapter overwriting a script another test case owns. Keeping the adapter inside its own test case's file stays your responsibility, as it was before. The other half of the rule holds whatever adapter runs: `--force` cleanup removes only files the target's own wiring record names, and never a file that merely resembles the target's.
 
 ### `gtms execute`
 
@@ -1582,6 +1619,10 @@ Flags:
 - `--json` emits a machine-readable JSON representation of the same data the table shows.
 - `-r` / `--recursive` includes test cases from subfolders. With no positional argument and `-r`, status flattens the whole project into one list.
 - `--framework <name>` filters by automation framework. Tests with no wiring for the chosen framework show em-dashes in the AUTOMATE, EXECUTE, and LAST RESULT columns instead of falling back to another framework's record. If the framework comes from a config default rather than this flag, the older fallback behaviour still applies -- GTMS may show a wiring record for a different framework instead.
+- `--show-triage` adds triage classification to the human output: a `TRIAGED` count column on the folder summary, a `TRIAGE` column on a per-test-case table, and a `TRIAGE:` block on a detail card.
+- `--triage <value>` narrows the view to test cases carrying that stored triage value. It implies `--show-triage`, so you do not need both.
+
+Triage presentation is opt-in. Without `--show-triage` or `--triage`, `gtms status` prints exactly what it printed before triage existed, so anything scripted against its text output is unaffected.
 
 Example output (folder summary, bare `gtms status`):
 
@@ -1618,9 +1659,50 @@ EXECUTE:    ✗ (Fail, 2026-08-11 17:34 UTC [bats])
 
 A skipped test shows `⊘` on the detail card, and a run that errored shows `✗`. So pick the view that answers your question: the table to see how far the pipeline has got, the detail card to see how one test actually did. For a wired test case with a result, the detail card also shows a `Runner:` line naming the adapter that produced that result; whenever that differs from the adapter the wiring currently names, the wired default appears in parentheses beside it -- after a one-run `gtms execute --adapter` override, or right after a repoint until the next run. The JSON carries the same pair on each `frameworks[]` entry as `wired_adapter` and `last_run_adapter`.
 
+#### Seeing triage on the dashboard
+
+`--show-triage` turns the classifications recorded by `gtms triage` into columns on the views you already use. On the folder summary it adds a `TRIAGED` count -- the number of test cases in that folder carrying an active classification:
+
+```text
+FOLDER    TC  CREATE  AUTOMATE  EXECUTE  SKIP  TRIAGED
+--------  --  ------  --------  -------  ----  -------
+checkout  3   ✓       ○ 0/3     ○ 0/3    —     1
+```
+
+On a folder or `-r` view it adds a `TRIAGE` column carrying the stored value, and on a detail card a `TRIAGE:` block with the value, the optional summary and defect, and the snapshot result. Both show the classification for the framework that row has selected. A manual-only test case, one whose result came from `gtms execute --adapter manual-execute` with no wiring, selects the `manual` framework and shows its classification like any other. The cell shows an active triage record that the current framework selection exposes; `—` means no active classification is visible for that selection, whether because none was recorded, the record is resolved, or an explicit `--framework` names a framework the record does not belong to. Asking for a framework the test case does not have shows nothing: on a manual-only test case, `--framework bats --show-triage` prints no triage, `--framework bats --triage <value>` does not match it, and `--framework bats --json` carries no `triage` key. No flag, or `--framework manual`, shows it. The folder-summary `TRIAGED` count reads no wiring, so it still counts that test case; it narrows by framework only when `--framework` is passed explicitly. A configured automate default does NOT narrow it -- the root summary is deliberately handed the flag value only, so an unset flag counts every framework.
+
+A resolved classification is treated as untriaged in per-test-case output: the `TRIAGE` column reads `—` and the detail card prints no `TRIAGE:` block. Use `gtms triage <tc-id> --show` to read a resolved record back.
+
+A `⚠` next to a value means the latest execution result VALUE differs from the value recorded in the snapshot -- you classified a `fail` and the test now reports `pass`. That is the whole comparison: raw result against raw result. A later `fail` after the classified `fail` is UNCHANGED and carries no warning, however much later it ran, and the task id, the completion timestamp, and the snapshot hashes take no part in the decision. A footer line spells that out whenever a row carries it. No warning appears when there is no latest result to compare against -- that is "comparison unavailable", not "unchanged".
+
+`--triage <value>` filters to test cases carrying that stored value. It needs a scope, because the root view is a per-folder rollup and a value filter would have to expand it into a row per test case:
+
+```text
+$ gtms status --triage environment
+✗ --triage requires a folder, test-case ID, or --recursive scope.
+    Try 'gtms status -r --triage environment'.
+```
+
+Give it a folder, a test case ID, or `-r` instead. A filter that matches nothing is a success, not an error -- it exits zero and names the value it looked for:
+
+```text
+$ gtms status checkout --triage environment
+Scope: gtms/test/cases/checkout/ (use -r for recursive)
+
+No test cases match triage value 'environment'.
+```
+
+The value you filter on is the stored key, so a classification whose key was later removed from `triage.values` is still findable.
+
+In JSON, triage is not opt-in. Per-test-case JSON carries a `triage` object whenever an active record is exposed by the current framework selection, nested inside the `frameworks[]` entry it belongs to, so a classification can never be attributed to a sibling framework. The one exception is a manual-only test case: its `frameworks` is `[]`, so there is no entry to nest under, and the `triage` object sits at the top level of the test-case object with the same fields. Wired nesting is unchanged; a wired test case that also carries a recorded manual result nests the manual classification under its `manual` framework entry. It holds `value`, `status`, `classified_at`, the `snapshot`, an optional `label`, `summary`, `defect`, `resolved_at`, and `result_changed_since_triage`. That last field is `true`, `false`, or `null`; `null` means there is no latest result to compare against, which is not the same as unchanged.
+
+`--framework` selects, it does not prune. With `--framework bats`, human output shows only the bats classification, but the JSON still carries every `frameworks[]` entry with its own `triage` object. A playwright object under the playwright entry is correct attribution, not a leak. The manual-only top-level `triage` object is the exception: an explicit non-manual `--framework` on a manual-only test case is a strict selection and drops it, in human output, filtering, and JSON alike.
+
+A `--triage` filter does narrow JSON: it drops non-matching rows and attaches only matching classifications. On the list-shaped views (a folder or `-r`) an empty match is `[]`, not `null` and not no output. On a single test case it is the usual object with no `triage` member.
+
 ### `gtms gaps`
 
-`gtms gaps` is the coverage view. It analyses the project for the gaps that block a clean dashboard: requirements without test cases, test cases without automation, currently failing tests, execution errors, runtime-skipped tests, stale wiring (test case or artefact), missing artefacts, and manual test cases with test case spec drift.
+`gtms gaps` is the coverage view. It analyses the project for the gaps that block a clean dashboard: test cases without automation, currently failing tests, execution errors, runtime-skipped tests, stale wiring (test case or artefact), missing artefacts, and manual test cases with test case spec drift.
 
 - `gaps` accepts a folder argument or no argument, never a single `tc-XXXXXXXX` ID. If you pass a test case ID, `gaps` errors and points you at `gtms status <tc-id>` for the detail view.
 - `-r` / `--recursive` includes test cases from subdirectories. With no folder argument, `-r` replaces the folder-summary table with the full gaps report across all test cases.
@@ -1636,14 +1718,12 @@ Scope: gtms/test/cases/login/ (use -r for recursive)
 
 GAPS REPORT
 ───────────
-Requirements without test cases: 0
-
 Test cases without automation: 3
   tc-00d0eec7  Password reset link expiry
   tc-079259ae  Account lockout after N failed attempts
   tc-a3f72b10  Session timeout enforced
 
-Currently failing: 0
+Currently failing: 0 (0 triaged, 0 untriaged)
 Execution errors: 0
 Runtime-skipped tests: 0
 Stale wiring (testcase): 0
@@ -1652,7 +1732,21 @@ Missing artefacts: 0
 Manual results with TC drift: 0
 ```
 
-Bare `gtms gaps` (no folder) emits a folder-summary table instead, with per-folder CREATED, NOT AUTOMATED, and FAILING counts. Run `gtms gaps <folder>` on a hotspot for the full category breakdown.
+The currently-failing heading splits its count into triaged and untriaged, so a failure campaign can see how much classification work is left. A failing test case counts as triaged only when it carries an active classification on the same framework whose latest result is the failure -- a resolved record, or a classification on a different framework, leaves it on the untriaged side. The entry lines underneath are unchanged. In `--json`, the same two numbers are `currently_failing_triaged` and `currently_failing_untriaged`.
+
+Bare `gtms gaps` (no folder) emits a folder-summary table instead, with per-folder CREATED, NOT AUTOMATED, FAILING, TRIAGED, and UNTRIAGED counts:
+
+```text
+FOLDER    CREATED  NOT AUTOMATED  FAILING  TRIAGED  UNTRIAGED
+--------  -------  -------------  -------  -------  ---------
+checkout  3        3              0        1        2
+```
+
+The triage columns are always shown -- there is no flag to turn them on -- and they count classifications, not failures. TRIAGED plus UNTRIAGED always equals CREATED for a row, whatever each test case's result, so a passing test case can be triaged. A test case with several active classifications still counts once. In `--json` the two numbers are `triaged` and `untriaged`; both were added alongside the existing keys, and no existing key changed name, type, or meaning.
+
+The `SKIPPED` count on the JSON folder summary is a result count and deliberately overlaps these two. A skipped test case appears there and in exactly one of TRIAGED or UNTRIAGED; the columns partition the created population, they do not subtract from each other.
+
+Run `gtms gaps <folder>` on a hotspot for the full category breakdown.
 
 ### `gtms map`
 
@@ -1733,7 +1827,9 @@ Removed: test case specs (unless you pass `--keep-spec`), wiring records, manual
 
 Kept by default: the test scripts themselves -- the `.bats`, `.spec.ts`, or other files named by the records' `artefact:` and `executed_artefact:` fields. A wiring record pointing at a file is not a claim to own it, so `gtms delete` leaves those files alone and names them in its summary. Pass `--force-artefact-deletion` when you do want them removed.
 
-One caution about folder deletes. GTMS matches test cases by ID alone, so if the same ID exists in two folders, deleting one folder also deletes the other folder's spec -- with or without `--force-artefact-deletion`. With the flag, a shared script can go too. Check for duplicate IDs first if you are not sure.
+Duplicate IDs are refused, not guessed. `gtms delete` first resolves the target to the one test case that physically owns that ID. If the same ID exists in more than one folder, the delete stops with a non-zero exit and names the candidates, so a bare `gtms delete tc-abc12345` can no longer take out another folder's spec. Qualify the target -- `gtms delete my-feature/tc-abc12345` -- to say which one you mean. Naming a folder grants authority only over the specs that really live in it: a spec symlinked in from somewhere else is not deletable through the link.
+
+The shared-script check is keyed on identity, not on the filename. With `--force-artefact-deletion`, a script is removed only when every record referencing it belongs to the deletion set, and each record's identity is read from its own `testcase:` field. So a same-ID test case in another folder, or a longer `tc-abc12345--variant` sibling, counts as an outside reference: its script is preserved and named in the summary. If any wiring or manual record cannot be parsed, or its declared identity disagrees with its filename, the forced delete refuses outright rather than risk removing a file that is still shared.
 
 `delete` removes files from the repo only. Reader commands like `gtms status` re-derive pipeline state on their next run, so no separate cleanup step is needed. If a record-declared artefact path resolves outside the project root, delete refuses with a non-zero exit before removing anything for that test case; fix the offending path in the automation record first. In folder mode the check runs per test case, so test cases processed before the offending one are already deleted when the run stops.
 
@@ -1749,22 +1845,209 @@ For each matched test case, reset removes its handoff records under `.gtms/resul
 
 ### `gtms triage`
 
-Records a triage decision against a test case and triggers the matching follow-on action.
+Records why a test case is in the state it is in, and reads those records back. Triage is a label on the evidence: it never changes an execution result, queues work, or edits a test case spec, a wiring record, or an automation record.
 
-- Positional argument: `<test-case-id>` (exactly one).
-- Required: exactly one of `--automation-wrong`, `--test-wrong`, `--app-wrong`.
-- `--defect <id>` records a defect identifier in the triage history entry. Both `--app-wrong` and `--test-wrong` persist it. `--automation-wrong` still reports it in `--json` output, but writes a queued automate task rather than a history entry, so the identifier is not stored anywhere -- don't rely on it there.
-- `--framework <name>` selects which framework's wiring to triage; required when a test case is wired for more than one framework.
-- `--summary <text>` records a summary of the triage decision.
-- `--json` prints the triage result as JSON.
+- Positional argument: `<test-case-id>` (exactly one) for `--value`, `--resolve`, and `--show`. Under `--list` the positional is optional and names a folder OR a test-case ID (`[folder|test-case-id]`): an existing folder wins (a trailing `/` forces folder interpretation), otherwise a test-case-shaped argument lists that test case's records.
+- Required: exactly one PRIMARY OPERATION -- `--value <key>`, `--resolve`, `--show`, or `--list`. Under `--list`, `--value` is not a second operation but a filter on the stored key, so `gtms triage --list --value environment` is valid and is one operation, not two.
+- `--value <key>` classifies the latest terminal result for the resolved (test case, framework) pair. Under `--list` it is a filter on the stored key instead.
+- `--resolve` marks the existing record resolved without deleting it; the value, context, and snapshot are retained. Repeating it is idempotent.
+- `--show` prints one record for a test case, active or resolved.
+- `--list [folder|test-case-id]` prints many records. With no positional it covers every record in the project; with a folder it covers the test cases in that folder; with a test-case ID it lists every framework record for that one test case (no `--framework` needed). `-r` recurses a folder scope and is rejected with a test-case target.
+- `--include-resolved` widens a list to include resolved records. Lists are active-only without it.
+- `-r` / `--recursive` recurses into subfolders when listing.
+- `--defect <id>` records a defect identifier. Optional, and valid with any value.
+- `--summary <text>` records your rationale or notes. Optional, and valid with any value.
+- `--framework <name>` selects which framework's result to classify; required when more than one candidate exists. The candidates are every wired framework plus `manual` when a manual execution has been recorded, so a test case wired for bats that also has a recorded manual result must say `--framework bats` or `--framework manual`. A single candidate is selected on its own. For `--resolve` and `--show` it picks an exact record when more than one exists. It is not valid with `--list`.
+- `--json` prints machine-readable JSON: a single object for `--show`, a bare array for `--list`.
 
-Each category names which side of the failure is at fault and acts on it: `--automation-wrong` queues a re-automate task for the automation script, `--test-wrong` records the decision against the test case spec, and `--app-wrong` records it against the application under test. The last two both append an entry to the test case's triage history (`gtms/triage-history/<tc-id>.md`), which is the durable record of the decision.
+#### Configuring the values
 
-The two differ in when they write. `--test-wrong` always appends: the category, the timestamp, and the framework the decision applied to are the decision, so `--summary` is optional enrichment. `--app-wrong` only appends when you give it a summary or a `--defect` link, since without either there would be nothing to read back.
+The permitted keys come from `triage.values` in `gtms.config`. `gtms init` scaffolds the built-in defaults so a new project can classify immediately:
 
-Neither category edits the test case spec. `--test-wrong` used to set the spec's `status` to `needs-review`; it no longer does, because rewriting the file discarded any frontmatter fields GTMS does not model and changed the spec's hash, which made every wiring record for that test case look out of date. After a `--test-wrong` triage the spec is byte-for-byte unchanged -- so updating it is your call, and your edit is the thing that legitimately marks it as drifted.
+```yaml
+triage:
+  values:
+    app-wrong: ""
+    test-wrong: Test definition problem
+    automation-wrong: Automation implementation problem
+    environment: Environment failure
+    intermittent: Intermittent or order-dependent failure
+    blocked: ""
+```
 
-`triage` needs an executed test case: it errors if the test case has no wiring record or no execution results yet.
+Edit or replace that block with your own vocabulary. The rules:
+
+- A key must match `^[a-z][a-z0-9-]*$` -- a lowercase letter, then lowercase letters, digits, or hyphens. Spaces are not allowed.
+- The text after the colon is an optional friendly label. It may be empty.
+- Commands, mutation output, and the stored record all use the key. The label is decoration: it appears only in JSON, and only when it is non-empty.
+- A non-empty `values` map replaces the defaults; it does not extend them. List every key you want, including any default you are keeping.
+- No `triage` block at all, a bare `triage:`, `triage: {}`, or `values: null` all fall back to the built-in defaults.
+- An explicit `values: {}` is a refusal, not an empty set. GTMS reports it rather than guessing:
+
+```text
+✗ gtms.config: 'triage.values' is empty, so no triage classification is permitted. Add at least one 'key: label' entry under triage.values, or remove the triage block to use the built-in defaults.
+```
+
+A value is opaque. GTMS stores and displays the key and attaches no behaviour to any name: nothing queues an automate task, rewrites a test case spec, amends wiring, or changes a result. The scaffolded names read like instructions, but a value called `automation-wrong` does exactly as much as one called `banana` -- it is a label you can filter on. Deciding what happens next is your workflow, not GTMS's.
+
+An already-stored value stays valid data if you later remove its key from `gtms.config`. Configuration governs new classifications only; it never migrates or erases what is already recorded, and a record with a removed key stays readable and filterable, just without a label.
+
+#### Classifying and resolving
+
+```bash
+# Each block below is an independent example on its own test case.
+
+# tc-a1b2c3d4, one framework wired: --framework is not needed
+gtms triage tc-a1b2c3d4 --value environment --summary "Shared sandbox credentials expired"
+
+# tc-b2c3d4e5, manual-only: prime, record, execute, then classify. manual is
+# the only candidate, so --framework manual is optional here
+gtms prime tc-b2c3d4e5 --framework manual
+# edit gtms/manual/records/tc-b2c3d4e5--manual.result.yaml: result: fail
+gtms execute tc-b2c3d4e5 --adapter manual-execute
+gtms triage tc-b2c3d4e5 --value environment --summary "Shared sandbox credentials expired"
+
+# tc-c3d4e5f6, wired for bats and playwright: say which result you are classifying
+gtms triage tc-c3d4e5f6 --framework bats --value app-wrong --defect JIRA-789
+
+# tc-d4e5f6a7, wired for bats AND a recorded manual execution: name the one you mean
+gtms triage tc-d4e5f6a7 --framework manual --value app-wrong --defect JIRA-789
+gtms triage tc-d4e5f6a7 --framework bats --value environment
+
+# Machine-readable
+gtms triage tc-a1b2c3d4 --value environment --json
+
+# Close it out, and reopen it later by classifying again
+gtms triage tc-a1b2c3d4 --resolve
+gtms triage tc-a1b2c3d4 --value intermittent
+```
+
+The two operations do not need the same things. `--value` needs a readable test case spec and an execution result for the chosen framework. A wired framework proves its result through its wiring record; the `manual` framework proves it through the execution that `gtms execute --adapter manual-execute` recorded, and needs no wiring. A primed result file that has not been executed is not enough, and neither is an execution whose local evidence is gone, as after a fresh clone: execute again first. `manual-execute` is an adapter name, not a framework: `--framework manual-execute` on a manual-only test case is refused as having no execution result and writes nothing; use `--framework manual`. When a test case has both a recorded manual execution and wired frameworks, omitting `--framework` is refused and the message names every candidate, `manual` included. A test case with no classifiable evidence at all is refused with:
+
+```text
+✗ no wiring record found for 'tc-a1b2c3d4' and no manual execution recorded. Automate and execute the test case, or record a manual result with 'gtms execute tc-a1b2c3d4 --adapter manual-execute'.
+```
+
+Editing the manual result file after executing does not change what triage classifies: `gtms status` reads the editable file and shows the edited value, while triage classifies the execution that actually ran. Execute again to classify the new result. Any terminal result can be classified -- pass, fail, skip, and error alike, so a passing test case can carry a classification. `--resolve` needs only an existing triage record, so a fresh clone whose transient handoffs under `.gtms/` are gone can still close a tracked classification, and it does not care whether the old value is still configured.
+
+When `--framework` is omitted on `--resolve` or `--show`, GTMS selects the sole record for that test case. More than one record, and it asks you to name the framework.
+
+#### Reading classifications back
+
+`--show` prints one record. It is never filtered by lifecycle: ask for a specific record and you get it, active or resolved.
+
+```bash
+gtms triage tc-a1b2c3d4 --show
+gtms triage tc-a1b2c3d4 --framework bats --show --json
+```
+
+```text
+  ✓ tc-11111111 [bats] active -- environment
+    Snapshot result: fail (result comparison unavailable -- no latest execution result)
+    Summary: Shared credentials expired
+    Defect:  JIRA-789
+```
+
+The `Summary:` and `Defect:` lines appear only when the record carries those fields, so a record classified with neither still prints just the identity and snapshot lines. Both are the values you supplied when classifying with `--summary` / `--defect`.
+
+`--list` prints many. Scope decides which:
+
+```bash
+gtms triage --list                                    # every record in the project
+gtms triage --list checkout                           # scoped to one folder's test cases
+gtms triage --list checkout -r                        # and its subfolders
+gtms triage --list tc-a1b2c3d4                        # every framework record for one test case
+gtms triage --list --value environment                # filter by stored value
+gtms triage --list --value environment --include-resolved --json
+```
+
+```text
+  ✓ tc-11111111 [bats] active -- environment [JIRA-789]
+  ✓ tc-99999999 [bats] active -- blocked [spec missing]
+```
+
+A stored defect is appended to its row as a trailing `[<defect>]` marker; a record without one is unchanged. When a record is both an orphan and carries a defect, the order is `[<defect>] [spec missing]`, with `[spec missing]` last. The summary is never printed in `--list` (use `--show` or `--json`).
+
+The `--list` positional is a folder or a test-case ID, and GTMS decides which the same way `gtms status` does: an existing directory wins even when its name is shaped like a test-case ID, and a trailing `/` always means a folder. A test-case target lists that test case's records across every framework, so `--framework` is not needed. `-r` is rejected with a test-case target, because recursion applies to folder scopes only.
+
+Stored text is rendered safely. Control characters in a stored summary or defect render as `?` in every human surface; JSON returns the stored text unchanged. Inside the `--list` marker only, GTMS also escapes the defect so it cannot fake or close a marker: every backslash is doubled first, then every `[` and `]` gets a backslash in front of it. `--show` and the status card print the defect as stored. For a stored defect of `JIRA-[42]\x`, `--show` prints `Defect:  JIRA-[42]\x` and the list row ends `[JIRA-\[42\]\\x]`.
+
+A record can outlive its test case. Records are keyed on (test case, framework) and survive when the test case spec is deleted or moved, so the root list marks an orphan `[spec missing]`. A test-case-target list behaves the same way: it finds the record and marks it. A folder or recursive list is scoped by test case spec, so an orphan never appears in one.
+
+Lists are ordered by test case ID, then framework, so repeated runs and diffs are stable.
+
+In JSON, `--show` prints a single object and `--list` prints a bare array -- `[]` when nothing matches, never `null` and never no output. Both add a `result_changed_since_triage` field to the stored record:
+
+- `true` -- the latest execution result differs from the one that was classified.
+- `false` -- it still matches.
+- `null` -- there is no execution result to compare against. That is "comparison unavailable", which is not the same as unchanged.
+
+Human output says the same thing in words rather than leaving you to read a glyph.
+
+Reads never change anything. They do not create, repair, or normalise a record, and a problem in `triage.values` does not suppress one -- an unusable label configuration just means no labels.
+
+#### What is stored, and whether to commit it
+
+Classification writes exactly one file per (test case, framework) pair:
+
+```yaml
+# gtms/triage/tc-a1b2c3d4--bats.triage.yaml
+version: 1
+test_case_id: tc-a1b2c3d4
+framework: bats
+status: active
+value: environment
+summary: Shared sandbox credentials expired
+defect: JIRA-789
+classified_at: "2026-08-27T09:00:00Z"
+snapshot:
+  task: task-4f2a10bc
+  result: fail
+  completed_at: "2026-08-27T08:55:00Z"
+  artefact: gtms/automation/specs/tc-a1b2c3d4-checkout.bats
+  artefact_hash: sha256:1f0c...
+  testcase_hash_at_triage: sha256:9ab3...
+```
+
+The example is a wired framework's record. `artefact_hash` is optional: a classification recorded through the built-in `manual-execute` path normally has no `artefact_hash` key, because that path records no hash, and the `artefact` is the manual result file at `gtms/manual/records/<tc-id>--manual.result.yaml`. If a manual execution does carry a hash, it is copied as-is.
+
+The record is the current classification, not a history. `--resolve` sets `status: resolved` and stamps `resolved_at`; reclassifying makes it active again and replaces the value and the snapshot. The snapshot records which execution was classified. Its hashes are provenance only, and provenance means WRITTEN, not read: GTMS records them so you can see which execution and which spec were in play at classification time, and reads none of them back. The result-changed warning compares `snapshot.result` against the latest raw result and consults nothing else. No staleness state is derived from the hashes.
+
+Committing `gtms/triage/` makes classification shared, reviewable state, and Git supplies the history GTMS deliberately does not keep. Adding it to `.gitignore` keeps classifications local; that is a supported choice, but it gives up both the collaboration and the Git-backed audit trail.
+
+Whichever you choose, `gtms/triage/` must be a real directory inside your project, or a symbolic link to one. Pointing it at a directory outside the project is refused, and every triage read and write fails while it stays that way -- GTMS creates, changes and removes nothing outside the project. An in-project alias is fine: link `gtms/triage` to `gtms/triage-store` and records land in the real directory. Reaching your project through a symbolic link is unaffected, because only the store's own target is judged, not the route you took to the project.
+
+Reads validate what they find. A record with a missing required field, an unrecognised status or result, contradictory lifecycle fields, or a filename that disagrees with its body identity is reported as malformed, with its path:
+
+```text
+✗ malformed triage record /repo/gtms/triage/tc-44444444--bats.triage.yaml: required field 'value' is empty
+```
+
+A list containing a malformed record in scope fails outright rather than returning partial output. That matters if you have edited a `.triage.yaml` by hand: correct the file, or delete it and record the classification again.
+
+Reads also check what each entry **is**, not only what it says. A triage record must be a regular file -- an ordinary file, not a link, directory, pipe, socket or device. Anything else with a record-shaped name is refused by name rather than read:
+
+```text
+✗ refusing triage record /repo/gtms/triage/tc-a1b2c3d4--bats.triage.yaml: it is a symbolic link, not a regular file; GTMS will not read it
+```
+
+A link is refused because it is not a direct regular entry, so the refusal stands even when it points at a valid record inside your project. GTMS checks where an entry is and what kind of entry it is; it does not track which program wrote it, which is why a record you corrected by hand reads back normally.
+
+The refusal is consistent across `--show`, `--list`, `--value`, `--resolve` and the triage overlays on `gtms status` and `gtms gaps`. An in-scope record-shaped entry is refused rather than skipped, so the scope you asked for is either complete or an error -- a forged entry cannot sit in the store while a listing reports success. On the write side, `--value` and `--resolve` refuse to replace a non-regular entry: the entry and anything it points at are left exactly as they were.
+
+#### Upgrading from the old triage
+
+- Existing projects need no config change. Without a `triage.values` block the built-in defaults apply, so classification works immediately.
+- Newly initialised projects get the default block and can replace it with their own vocabulary.
+- The old `--automation-wrong`, `--test-wrong`, and `--app-wrong` flags no longer exist. They are not registered and are not aliases: a script still passing one gets Cobra's unknown-flag error and writes nothing. Use `--value <key>` with a configured value instead.
+
+```text
+Error: unknown flag: --test-wrong
+```
+
+- The three names survive only as ordinary `--value` keys. `--value app-wrong`, `--value test-wrong`, and `--value automation-wrong` still classify, since those names remain in the built-in default value set and in the scaffolded config.
+- There is no category-action model to fall back on. If a script relied on triage creating a task, editing a test case spec, or appending Markdown history, that workflow now lives outside GTMS and runs after classification.
+- Legacy `gtms/triage-history/*.md` files written by earlier versions are left untouched. They are not read as current state and are not imported.
 
 ### `gtms version`
 
@@ -1796,7 +2079,7 @@ A short note on a literal that shows up in `gtms list adapters` output. The `FRA
 
 ## Troubleshooting
 
-Most GTMS troubleshooting traces back to one of three patterns: the wrong adapter ran, a stale task file is overriding a newer result, or the dashboard is reading state from the wrong directory. Walk the symptoms in the order below.
+Most GTMS troubleshooting traces back to one of four patterns: the wrong adapter ran, a stale task file is overriding a newer result, the dashboard is reading state from the wrong directory, or a scaffolded runner is out of date. Walk the symptoms in the order below.
 
 ### The dashboard shows a result that does not match the latest run
 
@@ -1808,6 +2091,25 @@ Start with `gtms status <tc-id>` to see the detail view, then check which adapte
 4. For automate-path results, read the wiring record under `gtms/automation/wiring/{tc-id}--{framework}.wiring.yaml` and confirm `artefact` and `adapter` point where you expect.
 
 A common root cause is a wiring record that names the wrong runner or artefact: execute runs what the record says, so the dashboard shows the failure even though an earlier correct run passed.
+
+### A scaffolded runner records an adapter error on ordinary output
+
+If `gtms execute` files a task under `gtms/tasks/error/` with a diagnostic that reads `adapter result contract unusable: parsing result contract: ...`, and the test's own output looks normal, the runner may be out of date. Any malformed result contract produces the same diagnostic, so check the runner first. Open the runner that ran (`gtms/adapters/bats-runner.sh` or `gtms/adapters/playwright-runner.sh`) and look for lines that read exactly `log: |`. Runners scaffolded by `gtms init` before v0.3.3 write the contract's log block that way, and it breaks whenever the tool's first output line is indented more than a later line. dotnet, Pester and any test that prints an indented diagnostic first can trigger it. If the runner already writes `log: |2`, this section does not apply: something else in the contract the adapter wrote is malformed.
+
+You have two ways to fix an out-of-date runner.
+
+**Edit the two lines.** Change each `log: |` to `log: |2` and save. This fixes only the log-block problem. It does not bring the rest of the runner up to v0.3.3 behaviour: a Playwright runner scaffolded before v0.3.3 still decides the outcome from the exit code and records an all-skipped run as a pass, and an older BATS runner may lack later fixes. Use the edit when you have customised `gtms.config` or the runner and only need this fix. To pick up every runner fix since your release, take the refresh below, or merge the `.gtms-new` companion it writes into your edited runner.
+
+**Refresh the runner with `--force`.** This also rewrites `gtms.config` to the preset's shipped defaults, with no backup, so copy `gtms.config` aside first and re-apply your customised adapters, defaults and guidance settings afterwards:
+
+```sh
+cp gtms.config gtms.config.before-refresh
+gtms init --force --preset bats          # or --preset playwright
+```
+
+A runner that still matches an older version GTMS recognises is upgraded in place and the run reports it; for the bats preset that is the runner shipped by v0.3.0 through v0.3.2. A runner you have edited is left alone, and the current version is written beside it as `bats-runner.sh.gtms-new` (or `playwright-runner.sh.gtms-new`) for you to merge. The bats runner shipped by v0.2.0 is not a version GTMS recognises, so it also gets the companion; use the two-line edit for it, or adopt the companion.
+
+Either way, re-run the affected test cases afterwards. A pass recorded for this output shape before v0.3.3 was never verified.
 
 ### `gtms status` shows nothing for a test case you just executed
 
@@ -1822,7 +2124,7 @@ Check the same chain in reverse. Likely causes:
 When a sequence of partial or wrong runs has left the dashboard misleading, the safest move is to clear the run history and rerun:
 
 - `gtms reset <tc-id>` (or `gtms reset <folder>`, or `gtms reset -r` for everything) clears the local handoff history and finished execute task files for the matched test cases; wiring is untouched, so the next `gtms execute` populates a fresh view. Bare `gtms reset` only covers test cases at the root of `gtms/test/cases/`. Add `--dry-run` to preview.
-- If a wiring record is wrong (wrong artefact path, wrong adapter), overwrite it with `gtms link <tc-id> --framework <name> --artefact <path> --force`, or re-run `gtms automate` with `--force`. Reach for `gtms delete <tc-id>` only when you want to remove the whole test case -- it deletes the spec, all wiring records, the manual result record, task files, and handoffs, and keeps the test script itself unless you add `--force-artefact-deletion` (preview with `--dry-run`).
+- If a wiring record is wrong (wrong artefact path, wrong adapter), overwrite it with `gtms link <tc-id> --framework <name> --artefact <path> --force`, or re-run `gtms automate` with `--force`. If `gtms automate` refuses because it cannot prove the script belongs to this test case, `gtms link` is the repair -- re-running automate is not. Reach for `gtms delete <tc-id>` only when you want to remove the whole test case -- it deletes the spec, all wiring records, the manual result record, task files, and handoffs, and keeps the test script itself unless you add `--force-artefact-deletion` (preview with `--dry-run`).
 
 ### Investigate before re-running
 

@@ -30,6 +30,8 @@ func TestDefaultFieldValues(t *testing.T) {
 	assert.Equal(t, "gtms/scripts", paths.Scripts)
 	assert.Equal(t, "gtms/manual", paths.Manual)
 	assert.Equal(t, "gtms/schemas", paths.Schemas)
+	// ENH-200: structured triage store under the parent.
+	assert.Equal(t, "gtms/triage", paths.Triage)
 }
 
 func TestAutomationDir(t *testing.T) {
@@ -91,6 +93,7 @@ func TestInitFromParent(t *testing.T) {
 	assert.Equal(t, "testing/scripts", paths.Scripts)
 	assert.Equal(t, "testing/manual", paths.Manual)
 	assert.Equal(t, "testing/schemas", paths.Schemas)
+	assert.Equal(t, "testing/triage", paths.Triage)
 }
 
 func TestParentDir(t *testing.T) {
@@ -171,6 +174,20 @@ func TestManualTemplatesDir(t *testing.T) {
 func TestSchemasDir(t *testing.T) {
 	root := "/project"
 	assert.Equal(t, filepath.Join(root, "gtms", "schemas"), SchemasDir(root))
+}
+
+// ENH-200: triage store helper.
+func TestTriageDir(t *testing.T) {
+	root := "/project"
+	assert.Equal(t, filepath.Join(root, "gtms", "triage"), TriageDir(root))
+}
+
+func TestTriageDir_WithRenamedParent(t *testing.T) {
+	resetLayoutForTest(t)
+
+	InitFromParent("testing")
+	root := "/project"
+	assert.Equal(t, filepath.Join(root, "testing", "triage"), TriageDir(root))
 }
 
 func TestManualDir_WithRenamedParent(t *testing.T) {

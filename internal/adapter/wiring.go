@@ -28,6 +28,7 @@ import (
 	"github.com/aitestmanagement/gtms-cli/internal/pipeline"
 	"github.com/aitestmanagement/gtms-cli/internal/result"
 	"github.com/aitestmanagement/gtms-cli/internal/task"
+	"github.com/aitestmanagement/gtms-cli/internal/testcase"
 	"github.com/aitestmanagement/gtms-cli/internal/wiring"
 )
 
@@ -186,11 +187,11 @@ func describeExecuteAdapters(adapters map[string]*config.AdapterConfig) string {
 //
 //   - tf.Type != "automate"               — only automate writes wiring here
 //   - tf.Framework == "manual"            — manual-only TCs have no wiring
-//                                           (CON-023 Q#12 / Edge Case 1)
+//     (CON-023 Q#12 / Edge Case 1)
 //   - rc.Artefact == ""                   — skeleton / dry-run / trial-run
-//                                           produced nothing to wire
+//     produced nothing to wire
 //   - rc.Status != "complete"             — failures don't write wiring;
-//                                           the user re-runs or triages
+//     the user re-runs or triages
 //
 // Returns warnings the caller should surface to the user. The canonical
 // adapter resolver may pick a deterministic lexical fallback when multiple
@@ -212,7 +213,7 @@ func isBuiltinAutomateAdapter(name string) bool {
 
 // ENH-191: return value extended to (adapterName, warnings, error) so callers
 // can emit the wiring-time report "Execute adapter for wiring: <name>".
-func WriteAutomateWiring(projectRoot string, cfg *config.Config, tf *task.TaskFile, rc *result.ResultContract) (string, []string, error) {
+func WriteAutomateWiring(projectRoot string, cfg *config.Config, tf *task.TaskFile, rc *result.ResultContract, owner *testcase.Owner) (string, []string, error) {
 	if tf == nil || rc == nil {
 		return "", nil, errors.New("task file and result contract are required")
 	}
@@ -273,12 +274,15 @@ func WriteAutomateWiring(projectRoot string, cfg *config.Config, tf *task.TaskFi
 		warnings = append(warnings, w)
 	}
 
-	// Compute testcase-hash from the resolved spec file.
-	specPath, err := pipeline.ResolveTestCaseSpec(projectRoot, tf.Target)
-	if err != nil {
-		return "", warnings, fmt.Errorf("resolving test case spec for wiring: %w", err)
+	// Compute testcase-hash from the spec the caller RESOLVED as the owner
+	// (ADR-024 s5). The wiring record's testcase-hash is the drift baseline for
+	// every later execute, so it has to be the hash of the exact spec this run was
+	// about -- not whatever a fresh lookup of the bare id would land on.
+	specAbs := testcase.OwnerAbsFor(projectRoot, owner)
+	if specAbs == "" {
+		return "", warnings, fmt.Errorf("resolving test case spec for wiring: no resolved owner for %s", tf.Target)
 	}
-	testCaseHash, err := pipeline.HashFile(filepath.Join(projectRoot, filepath.FromSlash(specPath)))
+	testCaseHash, err := pipeline.HashFile(specAbs)
 	if err != nil {
 		return "", warnings, fmt.Errorf("hashing test case spec for wiring: %w", err)
 	}

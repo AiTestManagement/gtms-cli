@@ -26,11 +26,11 @@ func InvokeBuiltin(ctx context.Context, command string, args []string, projectRo
 		return reader.Gaps(projectRoot, nil, defaultFramework, false)
 
 	case "triage":
-		testCaseID := ""
-		if len(args) > 0 {
-			testCaseID = args[0]
-		}
-		return reader.Triage(projectRoot, testCaseID)
+		// ENH-200 / CON-040: triage is a mutation command (--value / --resolve)
+		// handled directly by the CLI RunE, not a built-in reader dispatch. The
+		// old read-only current-state model (reader.Triage -> TriageInfo) is
+		// retired; the supported read surface (show/list) is ENH-201.
+		return nil, fmt.Errorf("triage is a mutation command; run 'gtms triage <test-case-id> --value <key>' or '--resolve'")
 
 	default:
 		return nil, fmt.Errorf("unknown built-in command: %s", command)

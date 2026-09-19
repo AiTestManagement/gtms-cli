@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/aitestmanagement/gtms-cli/internal/pathsafe"
 	"github.com/aitestmanagement/gtms-cli/internal/target"
 )
 
@@ -71,6 +72,10 @@ func TestRequireScopedSpec_AmbiguityError_SanitizesPaths(t *testing.T) {
 // TestSanitizeControlChars covers the display sanitizer directly. Unlike the
 // filesystem fixture above it is portable -- it runs on Windows, where a
 // control-character path cannot exist, so the sanitizer logic still has coverage.
+//
+// BUG-187 promoted the helper to pathsafe.SanitizeControlChars; this test now
+// pins the CLI caller's dependency on that shared rule. The rule itself is also
+// pinned at its new home by internal/pathsafe TestSanitizeControlChars.
 func TestSanitizeControlChars(t *testing.T) {
 	cases := []struct{ in, want string }{
 		{"gtms/test/cases/foo/tc-abc12345.md", "gtms/test/cases/foo/tc-abc12345.md"}, // clean path untouched
@@ -79,11 +84,11 @@ func TestSanitizeControlChars(t *testing.T) {
 		{"tab\there", "tab?here"},     // C0 control (tab, 0x09)
 	}
 	for _, c := range cases {
-		assert.Equalf(t, c.want, sanitizeControlChars(c.in), "sanitizeControlChars(%q)", c.in)
+		assert.Equalf(t, c.want, pathsafe.SanitizeControlChars(c.in), "SanitizeControlChars(%q)", c.in)
 	}
 	// No truncation (unlike sanitizeForError): a long clean path returns intact.
 	long := strings.Repeat("gtms/test/cases/deep/", 10) + "tc-abc12345.md"
-	assert.Equal(t, long, sanitizeControlChars(long))
+	assert.Equal(t, long, pathsafe.SanitizeControlChars(long))
 }
 
 func TestDelete_CrossFolderDuplicate_Aborts_NoDeletion(t *testing.T) {

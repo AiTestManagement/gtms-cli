@@ -36,6 +36,15 @@ type PipelineEntry struct {
 	SelectedFramework string           `json:"-"` // emitted via (Un)MarshalJSON as `selected_framework: null|string`
 	Frameworks        []FrameworkEntry `json:"frameworks"`
 
+	// BUG-193: test-case-level triage carrier for a MANUAL-ONLY test case, whose
+	// frameworks[] stays [] (ENH-146) so the manual triage object has no framework
+	// entry to nest under. On a WIRED test case the manual triage nests under the
+	// synthesised BUG-127 `manual` FrameworkEntry instead and this stays nil, so
+	// omitempty keeps default and wired-case JSON byte-identical (the
+	// triage-status-gaps-visibility suites assert `has("triage") == false` at this
+	// level for wired cases). Populated by AttachTriageToEntries.
+	Triage *FrameworkTriage `json:"triage,omitempty"`
+
 	// --- Legacy Go-internal carriers (json:"-") ---
 	// These power the existing TTY table renderer in internal/cli/.
 	// JSON consumers see only the ENH-146 shape above.
@@ -129,6 +138,50 @@ type FrameworkEntry struct {
 	LogExcerpt  string `json:"log_excerpt,omitempty"`
 	ExecutedBy  string `json:"executed_by,omitempty"`
 	Environment string `json:"environment,omitempty"`
+
+	// ENH-202: the triage classification for THIS (test case, framework) pair,
+	// nested here so it can never be attributed to a sibling framework. nil when
+	// no triage record exists (or, under a --triage filter, when the record does
+	// not match the filter), so default per-TC JSON is unchanged by this field.
+	// Populated by AttachTriage (internal/reader/triage_visibility.go); the CLI
+	// gates whether it also renders in human output.
+	Triage *FrameworkTriage `json:"triage,omitempty"`
+}
+
+// FrameworkTriage is the ENH-202 triage object nested under a FrameworkEntry.
+// Its JSON field set mirrors the internal/cli triage read contract
+// (triageShowJSON) minus the redundant test_case_id/framework: the object
+// already sits under the framework entry it describes, so those would only
+// invite cross-framework confusion.
+type FrameworkTriage struct {
+	Value        string                  `json:"value"`
+	Label        string                  `json:"label,omitempty"`
+	Status       string                  `json:"status"`
+	Summary      string                  `json:"summary,omitempty"`
+	Defect       string                  `json:"defect,omitempty"`
+	ClassifiedAt string                  `json:"classified_at"`
+	ResolvedAt   string                  `json:"resolved_at,omitempty"`
+	Snapshot     FrameworkTriageSnapshot `json:"snapshot"`
+	// ResultChangedSinceTriage is ALWAYS present -- true, false, or null. null
+	// ("no latest terminal result to compare against") is a distinct state a
+	// plain Boolean cannot express, so it carries no omitempty.
+	ResultChangedSinceTriage *bool `json:"result_changed_since_triage"`
+	// LatestResult is renderer-only (never serialised): the raw latest terminal
+	// result used by the single-TC detail view's
+	// "Snapshot: <snap>; latest result: <latest|unavailable>" line. Empty when
+	// no latest terminal result exists (comparison unavailable).
+	LatestResult string `json:"-"`
+}
+
+// FrameworkTriageSnapshot is the execution-provenance snapshot copied from the
+// triage record. Field set matches the triage read contract's snapshot.
+type FrameworkTriageSnapshot struct {
+	Task                 string `json:"task"`
+	Result               string `json:"result"`
+	CompletedAt          string `json:"completed_at,omitempty"`
+	Artefact             string `json:"artefact,omitempty"`
+	ArtefactHash         string `json:"artefact_hash,omitempty"`
+	TestcaseHashAtTriage string `json:"testcase_hash_at_triage,omitempty"`
 }
 
 // PipelineDetailEntry provides detailed pipeline information for a single test case.
@@ -164,6 +217,11 @@ type PipelineDetailEntry struct {
 	ManualReady       bool             `json:"manual_ready"`
 	SelectedFramework string           `json:"-"` // emitted via (Un)MarshalJSON as `selected_framework: null|string`
 	Frameworks        []FrameworkEntry `json:"frameworks"`
+
+	// BUG-193: test-case-level triage carrier for a MANUAL-ONLY test case (see
+	// PipelineEntry.Triage). nil on wired cases, so wired-case detail JSON is
+	// unchanged. Populated by AttachTriageToDetail.
+	Triage *FrameworkTriage `json:"triage,omitempty"`
 
 	Tags []string `json:"tags,omitempty"`
 	// Per-stage timestamps for the detail view.
@@ -292,6 +350,15 @@ type GapReport struct {
 	MissingArtefact   []GapEntry `json:"missing_artefact"`
 	DriftDetected     []GapEntry `json:"drift_detected"`
 
+	// ENH-202: the failure-specific triage partition for detailed gaps. These
+	// partition the existing CurrentlyFailing population exactly:
+	// CurrentlyFailingTriaged + CurrentlyFailingUntriaged == len(CurrentlyFailing).
+	// A failing TC is triaged only when its applicable active classification
+	// corresponds to a framework whose latest result is fail (a resolved record
+	// counts as untriaged). Always emitted, including zero -- no omitempty.
+	CurrentlyFailingTriaged   int `json:"currently_failing_triaged"`
+	CurrentlyFailingUntriaged int `json:"currently_failing_untriaged"`
+
 	// Legacy Go-internal carriers (json:"-") — kept temporarily so
 	// existing CLI formatters compile during the transition. Always nil.
 	NeverExecuted   []GapEntry `json:"-"`
@@ -337,6 +404,13 @@ type FolderSummaryEntry struct {
 	// ENH-134: manual-coverage sub-state counts.
 	ManualPrepared int `json:"manual_prepared,omitempty"`
 	ManualRecorded int `json:"manual_recorded,omitempty"`
+	// ENH-202: per-folder count of test cases with at least one applicable
+	// active triage classification (deduped once per TC, framework-aware).
+	// It is a *int and json-omitempty so the ROOT status-summary JSON gains
+	// `triaged` ONLY under --show-triage (the CLI sets the pointer then, and
+	// leaves it nil otherwise -- see tc-db0624fc step 8). A non-nil pointer to
+	// 0 still serialises, so a requested zero count is visible.
+	Triaged *int `json:"triaged,omitempty"`
 }
 
 // GapsFolderSummaryEntry represents aggregate gap counts for one folder.
@@ -361,35 +435,20 @@ type GapsFolderSummaryEntry struct {
 	StaleTestCaseHash int `json:"stale_testcase_hash,omitempty"`
 	// BUG-079: count of TCs with drift-detected: true in their manual result file.
 	DriftDetected int `json:"drift_detected,omitempty"`
+	// ENH-202: folder-wide triage partition. For every folder row,
+	// Triaged + Untriaged == Created, independent of execution result: a TC with
+	// one or more applicable active classifications is triaged (once), otherwise
+	// untriaged; a resolved record is not active and counts as untriaged. Both
+	// fields are ALWAYS emitted, including explicit zero -- no omitempty -- so a
+	// consumer never has to distinguish absent from zero.
+	Triaged   int `json:"triaged"`
+	Untriaged int `json:"untriaged"`
 }
 
-// TriageInfo holds the current state of a test case for triage decision-making.
-type TriageInfo struct {
-	TestCaseID       string
-	AutomationRecord *automationFrontmatter // current automation state
-	LastResult       string                 // pass or fail
-	LastRun          string                 // path or URL to results
-	Stale            bool                   // true when artefact hash differs from stored hash
-	FailureHistory   []TriageEntry          // previous triage decisions
-}
-
-// TriageEntry represents a single triage decision in the history.
-type TriageEntry struct {
-	Date     string // ISO 8601
-	Category string // automation-wrong, test-wrong, app-wrong
-	Summary  string
-	Defect   string // optional defect link
-}
-
-// TriageResult describes what was done by a triage operation.
-type TriageResult struct {
-	TestCaseID string   `json:"test_case_id"`
-	Category   string   `json:"category"`
-	Summary    string   `json:"summary"`
-	Defect     string   `json:"defect,omitempty"`
-	Actions    []string `json:"actions"`
-	NewTaskID  string   `json:"new_task_id,omitempty"`
-}
+// ENH-200 / CON-040: the old triage read/result model (TriageInfo,
+// TriageEntry, TriageResult) is retired. Triage now writes structured records
+// via internal/triage; the reader orchestration lives in triage.go
+// (ClassifyTriage / ResolveTriage). The read/show model is ENH-201.
 
 // testCaseFrontmatter represents the YAML frontmatter of a test case file.
 type testCaseFrontmatter struct {

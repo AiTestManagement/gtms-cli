@@ -748,7 +748,7 @@ func TestInstallPresetAssetsBats(t *testing.T) {
 	dir := initGitRepo(t)
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "gtms", "adapters"), 0o755))
 	result := &Result{}
-	err := installPresetAssets(dir, PresetBats, result)
+	err := installPresetAssets(dir, PresetBats, false, result)
 	require.NoError(t, err)
 	assert.FileExists(t, filepath.Join(dir, "gtms", "adapters", "bats-runner.sh"))
 	assert.FileExists(t, filepath.Join(dir, "gtms", "adapters", "lib", "bats-tap.sh"))
@@ -761,7 +761,7 @@ func TestInstallPresetAssetsManualEmpty(t *testing.T) {
 	dir := initGitRepo(t)
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "gtms", "adapters"), 0o755))
 	result := &Result{}
-	err := installPresetAssets(dir, PresetManual, result)
+	err := installPresetAssets(dir, PresetManual, false, result)
 	require.NoError(t, err)
 	assert.Empty(t, result.FilesCreated, "manual preset should not install extra assets")
 }
@@ -771,12 +771,368 @@ func TestInstallPresetAssetsPlaywright(t *testing.T) {
 	dir := initGitRepo(t)
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "gtms", "adapters"), 0o755))
 	result := &Result{}
-	err := installPresetAssets(dir, PresetPlaywright, result)
+	err := installPresetAssets(dir, PresetPlaywright, false, result)
 	require.NoError(t, err)
 	assert.FileExists(t, filepath.Join(dir, "gtms", "adapters", "playwright-runner.sh"))
 	assert.Contains(t, result.FilesCreated, "gtms/adapters/playwright-runner.sh")
 	// No BATS assets
 	assert.NoFileExists(t, filepath.Join(dir, "gtms", "adapters", "bats-runner.sh"))
+}
+
+// BUG-189 (tc-65df1eb5): the gtms init --force upgrade path must refresh a
+// pristine pre-fix Playwright runner in place, and must never clobber a
+// user-modified runner (it writes a .gtms-new companion instead). Without
+// --force, an existing runner is always left untouched.
+func TestInstallPresetAssetsUpgradePath(t *testing.T) {
+	skipIfShort(t)
+	runnerRel := "gtms/adapters/playwright-runner.sh"
+
+	writeRunner := func(dir, content string) {
+		p := filepath.Join(dir, "gtms", "adapters", "playwright-runner.sh")
+		require.NoError(t, os.MkdirAll(filepath.Dir(p), 0o755))
+		require.NoError(t, os.WriteFile(p, []byte(content), 0o755))
+	}
+	readRunner := func(dir string) string {
+		b, err := os.ReadFile(filepath.Join(dir, "gtms", "adapters", "playwright-runner.sh"))
+		require.NoError(t, err)
+		return string(b)
+	}
+
+	t.Run("pristine pre-fix runner + force -> refreshed in place", func(t *testing.T) {
+		dir := initGitRepo(t)
+		writeRunner(dir, playwrightRunnerScriptV1)
+		result := &Result{}
+		require.NoError(t, installPresetAssets(dir, PresetPlaywright, true, result))
+		assert.Equal(t, playwrightRunnerScript, readRunner(dir),
+			"a pristine pre-fix runner must be upgraded to the current shipped content")
+		assert.Contains(t, result.FilesCreated, runnerRel)
+		assert.NoFileExists(t, filepath.Join(dir, "gtms", "adapters", "playwright-runner.sh.gtms-new"),
+			"no companion should be written when the runner is a known prior version")
+	})
+
+	t.Run("user-modified runner + force -> original kept, companion written", func(t *testing.T) {
+		dir := initGitRepo(t)
+		custom := "#!/bin/sh\n# my custom playwright runner\necho hi\n"
+		writeRunner(dir, custom)
+		result := &Result{}
+		require.NoError(t, installPresetAssets(dir, PresetPlaywright, true, result))
+		assert.Equal(t, custom, readRunner(dir),
+			"a user-modified runner must not be clobbered")
+		companion := filepath.Join(dir, "gtms", "adapters", "playwright-runner.sh.gtms-new")
+		assert.FileExists(t, companion)
+		cb, err := os.ReadFile(companion)
+		require.NoError(t, err)
+		assert.Equal(t, playwrightRunnerScript, string(cb),
+			"the companion must carry the current shipped content")
+		require.NotEmpty(t, result.Warnings)
+		joined := strings.Join(result.Warnings, "\n")
+		assert.Contains(t, joined, runnerRel)
+		assert.Contains(t, joined, ".gtms-new")
+	})
+
+	t.Run("current runner + force -> skipped", func(t *testing.T) {
+		dir := initGitRepo(t)
+		writeRunner(dir, playwrightRunnerScript)
+		result := &Result{}
+		require.NoError(t, installPresetAssets(dir, PresetPlaywright, true, result))
+		assert.Contains(t, result.FilesSkipped, runnerRel)
+		assert.NotContains(t, result.FilesCreated, runnerRel)
+	})
+
+	t.Run("pre-fix runner WITHOUT force -> left untouched (skip)", func(t *testing.T) {
+		dir := initGitRepo(t)
+		writeRunner(dir, playwrightRunnerScriptV1)
+		result := &Result{}
+		require.NoError(t, installPresetAssets(dir, PresetPlaywright, false, result))
+		assert.Equal(t, playwrightRunnerScriptV1, readRunner(dir),
+			"without --force an existing runner is never modified")
+		assert.Contains(t, result.FilesSkipped, runnerRel)
+	})
+
+	// REV-165 (CODEX-003): os.ReadFile and os.WriteFile both follow symlinks, so
+	// a symlinked runner pointing at a file OUTSIDE the project had that external
+	// file overwritten by --force. The upgrade must refuse anything that is not a
+	// regular file.
+	t.Run("symlinked runner + force -> external target untouched", func(t *testing.T) {
+		dir := initGitRepo(t)
+		outside := t.TempDir()
+		target := filepath.Join(outside, "shared-playwright-runner.sh")
+		require.NoError(t, os.WriteFile(target, []byte(playwrightRunnerScriptV1), 0o755))
+
+		link := filepath.Join(dir, "gtms", "adapters", "playwright-runner.sh")
+		require.NoError(t, os.MkdirAll(filepath.Dir(link), 0o755))
+		if err := os.Symlink(target, link); err != nil {
+			t.Skipf("symlinks unavailable on this platform: %v", err)
+		}
+
+		result := &Result{}
+		require.NoError(t, installPresetAssets(dir, PresetPlaywright, true, result))
+
+		// The EXTERNAL file still holds its original bytes -- the whole point.
+		after, err := os.ReadFile(target)
+		require.NoError(t, err)
+		assert.Equal(t, playwrightRunnerScriptV1, string(after),
+			"a --force upgrade must never write through a symlink to a file outside the project")
+
+		// The link itself is still a link, and nothing was created in its place.
+		info, err := os.Lstat(link)
+		require.NoError(t, err)
+		assert.Equal(t, os.ModeSymlink, info.Mode()&os.ModeSymlink,
+			"the symlink must be left in place, not replaced")
+		assert.Contains(t, result.FilesSkipped, runnerRel)
+		assert.NotContains(t, result.FilesCreated, runnerRel)
+		assert.Contains(t, strings.Join(result.Warnings, "\n"), "not a regular file",
+			"the operator must be told why the asset was skipped")
+	})
+
+	// REV-165 (CODEX-003): a hard-linked twin must not be mutated either. The
+	// atomic rename replaces the directory entry rather than the inode's bytes.
+	t.Run("hard-linked pristine runner + force -> twin keeps old content", func(t *testing.T) {
+		dir := initGitRepo(t)
+		outside := t.TempDir()
+		twin := filepath.Join(outside, "twin-playwright-runner.sh")
+		require.NoError(t, os.WriteFile(twin, []byte(playwrightRunnerScriptV1), 0o755))
+
+		runner := filepath.Join(dir, "gtms", "adapters", "playwright-runner.sh")
+		require.NoError(t, os.MkdirAll(filepath.Dir(runner), 0o755))
+		if err := os.Link(twin, runner); err != nil {
+			t.Skipf("hard links unavailable across these paths: %v", err)
+		}
+
+		result := &Result{}
+		require.NoError(t, installPresetAssets(dir, PresetPlaywright, true, result))
+
+		assert.Equal(t, playwrightRunnerScript, readRunner(dir),
+			"the in-project runner is still upgraded")
+		after, err := os.ReadFile(twin)
+		require.NoError(t, err)
+		assert.Equal(t, playwrightRunnerScriptV1, string(after),
+			"the hard-linked twin outside the project must keep its own content")
+	})
+
+	// REV-165 (CODEX-004): a repeated --force used to truncate whatever the
+	// operator had merged into the .gtms-new companion.
+	t.Run("edited companion + repeated force -> edits preserved, new companion written", func(t *testing.T) {
+		dir := initGitRepo(t)
+		custom := "#!/bin/sh\n# my custom playwright runner\necho hi\n"
+		writeRunner(dir, custom)
+
+		first := &Result{}
+		require.NoError(t, installPresetAssets(dir, PresetPlaywright, true, first))
+		companion := filepath.Join(dir, "gtms", "adapters", "playwright-runner.sh.gtms-new")
+		require.FileExists(t, companion)
+
+		// The operator merges by hand in the companion.
+		merged := playwrightRunnerScript + "\n# merged by hand -- do not lose this\n"
+		require.NoError(t, os.WriteFile(companion, []byte(merged), 0o755))
+
+		second := &Result{}
+		require.NoError(t, installPresetAssets(dir, PresetPlaywright, true, second))
+
+		got, err := os.ReadFile(companion)
+		require.NoError(t, err)
+		assert.Equal(t, merged, string(got),
+			"a second --force must not truncate the operator's hand-merged companion")
+
+		next := companion + ".2"
+		assert.FileExists(t, next, "the shipped version goes to the next free companion slot")
+		nb, err := os.ReadFile(next)
+		require.NoError(t, err)
+		assert.Equal(t, playwrightRunnerScript, string(nb))
+		assert.Contains(t, strings.Join(second.Warnings, "\n"), "left untouched")
+	})
+
+	// An untouched companion holding exactly the shipped bytes is a no-op: there
+	// is nothing to write and nothing of the operator's to preserve.
+	t.Run("identical companion + repeated force -> no extra companion", func(t *testing.T) {
+		dir := initGitRepo(t)
+		custom := "#!/bin/sh\n# my custom playwright runner\necho hi\n"
+		writeRunner(dir, custom)
+
+		require.NoError(t, installPresetAssets(dir, PresetPlaywright, true, &Result{}))
+		companion := filepath.Join(dir, "gtms", "adapters", "playwright-runner.sh.gtms-new")
+		require.FileExists(t, companion)
+
+		second := &Result{}
+		require.NoError(t, installPresetAssets(dir, PresetPlaywright, true, second))
+		assert.NoFileExists(t, companion+".2",
+			"an identical companion needs no second copy")
+		assert.Equal(t, custom, readRunner(dir))
+	})
+}
+
+// TestInstallPresetAssetsParentContainment covers REV-165 (CODEX-R2-001): the
+// CODEX-003 leaf veto only ever inspected the asset's own final component, so a
+// symlinked (or Windows-junctioned) gtms/adapters/ pointing outside the project
+// still had the runner, its temporary file and its .gtms-new companions created
+// in that EXTERNAL directory -- the same data-loss class one level up, and
+// reachable on the absent-leaf path as well as on a forced upgrade.
+//
+// Containment is resolved through pathsafe.ResolveUnderRoot BEFORE any MkdirAll,
+// read or write, and every subsequent operation uses the canonical in-root path.
+func TestInstallPresetAssetsParentContainment(t *testing.T) {
+	skipIfShort(t)
+	runnerRel := "gtms/adapters/playwright-runner.sh"
+
+	// escapingAdapters points <project>/gtms/adapters at a directory outside the
+	// project and returns that external directory. Skips where symlinks are
+	// unavailable (e.g. unprivileged Windows).
+	escapingAdapters := func(t *testing.T, dir string) string {
+		t.Helper()
+		outside := t.TempDir()
+		external := filepath.Join(outside, "shared-adapters")
+		require.NoError(t, os.MkdirAll(external, 0o755))
+		link := filepath.Join(dir, "gtms", "adapters")
+		require.NoError(t, os.MkdirAll(filepath.Dir(link), 0o755))
+		if err := os.Symlink(external, link); err != nil {
+			t.Skipf("symlinks unavailable on this platform: %v", err)
+		}
+		return external
+	}
+
+	// externalEntries lists the external directory's contents by name so a test
+	// can assert on EVERYTHING that appeared there, not just the asset path --
+	// a stray .gtms-asset-* temporary file or a .gtms-new companion is an escape
+	// just as much as the runner itself is.
+	externalEntries := func(t *testing.T, external string) []string {
+		t.Helper()
+		entries, err := os.ReadDir(external)
+		require.NoError(t, err)
+		names := make([]string, 0, len(entries))
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		return names
+	}
+
+	// Case 1: an existing pristine PRIOR-version runner beneath an escaping
+	// directory symlink. This is the in-place refresh branch -- without
+	// containment the external file is rewritten with the current shipped bytes.
+	t.Run("existing prior-version runner under escaping parent -> refused, external bytes intact", func(t *testing.T) {
+		dir := initGitRepo(t)
+		external := escapingAdapters(t, dir)
+		target := filepath.Join(external, "playwright-runner.sh")
+		require.NoError(t, os.WriteFile(target, []byte(playwrightRunnerScriptV1), 0o755))
+
+		result := &Result{}
+		require.NoError(t, installPresetAssets(dir, PresetPlaywright, true, result))
+
+		after, err := os.ReadFile(target)
+		require.NoError(t, err)
+		assert.Equal(t, playwrightRunnerScriptV1, string(after),
+			"a forced upgrade must never write through an escaping PARENT directory")
+		assert.Contains(t, result.FilesSkipped, runnerRel)
+		assert.NotContains(t, result.FilesCreated, runnerRel)
+		assert.Contains(t, strings.Join(result.Warnings, "\n"), "outside the project",
+			"the operator must be told why the asset was skipped")
+		assert.Equal(t, []string{"playwright-runner.sh"}, externalEntries(t, external),
+			"nothing new may be created in the external directory")
+	})
+
+	// Case 2: the write path is reachable with the asset ABSENT too. Without
+	// containment the runner is simply created in the external directory.
+	t.Run("absent runner under escaping parent -> nothing created externally", func(t *testing.T) {
+		dir := initGitRepo(t)
+		external := escapingAdapters(t, dir)
+
+		result := &Result{}
+		require.NoError(t, installPresetAssets(dir, PresetPlaywright, false, result))
+
+		assert.NoFileExists(t, filepath.Join(external, "playwright-runner.sh"),
+			"an absent asset must not be created beyond the project root")
+		assert.Empty(t, externalEntries(t, external),
+			"the external directory must be left completely untouched")
+		assert.Contains(t, result.FilesSkipped, runnerRel)
+		assert.NotContains(t, result.FilesCreated, runnerRel)
+	})
+
+	// Case 3: regression guard for the implementation trap. pathsafe.ResolveUnderRoot
+	// EVALUATES symlinks where the target exists, so Lstat-ing its OUTPUT would see
+	// an in-project leaf symlink already resolved to its regular target and the
+	// CODEX-003 veto would silently stop firing. The leaf is deliberately in-root
+	// here, so containment does NOT refuse it: only the lexical-leaf veto can.
+	t.Run("in-project leaf symlink still refused after containment", func(t *testing.T) {
+		dir := initGitRepo(t)
+		inside := filepath.Join(dir, "gtms", "adapters", "shared", "runner.sh")
+		require.NoError(t, os.MkdirAll(filepath.Dir(inside), 0o755))
+		require.NoError(t, os.WriteFile(inside, []byte(playwrightRunnerScriptV1), 0o755))
+
+		link := filepath.Join(dir, "gtms", "adapters", "playwright-runner.sh")
+		if err := os.Symlink(inside, link); err != nil {
+			t.Skipf("symlinks unavailable on this platform: %v", err)
+		}
+
+		result := &Result{}
+		require.NoError(t, installPresetAssets(dir, PresetPlaywright, true, result))
+
+		after, err := os.ReadFile(inside)
+		require.NoError(t, err)
+		assert.Equal(t, playwrightRunnerScriptV1, string(after),
+			"the leaf-symlink veto must still fire once containment is resolved")
+		info, err := os.Lstat(link)
+		require.NoError(t, err)
+		assert.Equal(t, os.ModeSymlink, info.Mode()&os.ModeSymlink,
+			"the symlink must be left in place, not replaced")
+		assert.Contains(t, result.FilesSkipped, runnerRel)
+		assert.Contains(t, strings.Join(result.Warnings, "\n"), "not a regular file")
+	})
+
+	// Case 4: a user-modified external file takes the .gtms-new companion branch.
+	// Assert on the external DIRECTORY's contents, so a companion or a leftover
+	// .gtms-asset-* temporary file is caught as well as the asset itself.
+	t.Run("user-modified runner under escaping parent -> no companion or temp file escapes", func(t *testing.T) {
+		dir := initGitRepo(t)
+		external := escapingAdapters(t, dir)
+		target := filepath.Join(external, "playwright-runner.sh")
+		custom := "#!/usr/bin/env bash\n# hand-edited by the operator\n"
+		require.NoError(t, os.WriteFile(target, []byte(custom), 0o755))
+
+		result := &Result{}
+		require.NoError(t, installPresetAssets(dir, PresetPlaywright, true, result))
+
+		after, err := os.ReadFile(target)
+		require.NoError(t, err)
+		assert.Equal(t, custom, string(after))
+		assert.Equal(t, []string{"playwright-runner.sh"}, externalEntries(t, external),
+			"no .gtms-new companion and no .gtms-asset-* temporary file may appear outside the project")
+	})
+
+	// Case 5: chosen semantics. Containment is about escaping the PROJECT, not
+	// about aliasing WITHIN it. A gtms/adapters -> gtms/real-adapters symlink that
+	// stays inside the project resolves to an in-root path, so it is allowed and
+	// the write lands on the canonical target. Refusing it would break the common
+	// layout where a project keeps its adapters in one shared in-repo directory,
+	// and nothing outside the project can be reached through it.
+	t.Run("in-root directory alias is allowed and writes to the canonical target", func(t *testing.T) {
+		dir := initGitRepo(t)
+		real := filepath.Join(dir, "gtms", "real-adapters")
+		require.NoError(t, os.MkdirAll(real, 0o755))
+		link := filepath.Join(dir, "gtms", "adapters")
+		if err := os.Symlink(real, link); err != nil {
+			t.Skipf("symlinks unavailable on this platform: %v", err)
+		}
+
+		// Absent leaf -> created through the alias.
+		first := &Result{}
+		require.NoError(t, installPresetAssets(dir, PresetPlaywright, false, first))
+		assert.Contains(t, first.FilesCreated, runnerRel,
+			"an in-root alias must not be spuriously refused")
+		written := filepath.Join(real, "playwright-runner.sh")
+		body, err := os.ReadFile(written)
+		require.NoError(t, err)
+		assert.Equal(t, playwrightRunnerScript, string(body),
+			"the write must land on the canonical in-root target")
+
+		// Existing pristine prior version -> upgraded in place through the alias.
+		require.NoError(t, os.WriteFile(written, []byte(playwrightRunnerScriptV1), 0o755))
+		second := &Result{}
+		require.NoError(t, installPresetAssets(dir, PresetPlaywright, true, second))
+		upgraded, err := os.ReadFile(written)
+		require.NoError(t, err)
+		assert.Equal(t, playwrightRunnerScript, string(upgraded),
+			"the forced upgrade must still work through an in-root alias")
+		assert.Contains(t, second.FilesCreated, runnerRel)
+	})
 }
 
 func TestValidPresets(t *testing.T) {

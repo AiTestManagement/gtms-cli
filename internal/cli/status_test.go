@@ -48,7 +48,7 @@ func TestRunStatusOverview_Table(t *testing.T) {
 	root := setupStatusFixture(t)
 	var buf bytes.Buffer
 
-	err := runStatusOverview(&buf, root, nil, false, "", false)
+	err := runStatusOverview(&buf, root, nil, false, "", false, false, "", nil)
 	require.NoError(t, err)
 
 	out := buf.String()
@@ -65,7 +65,7 @@ func TestRunStatusOverview_JSON(t *testing.T) {
 	root := setupStatusFixture(t)
 	var buf bytes.Buffer
 
-	err := runStatusOverview(&buf, root, nil, true, "", false)
+	err := runStatusOverview(&buf, root, nil, true, "", false, false, "", nil)
 	require.NoError(t, err)
 
 	out := buf.String()
@@ -92,7 +92,7 @@ func TestRunStatusOverview_JSON_Empty(t *testing.T) {
 	root := t.TempDir()
 	var buf bytes.Buffer
 
-	err := runStatusOverview(&buf, root, nil, true, "", false)
+	err := runStatusOverview(&buf, root, nil, true, "", false, false, "", nil)
 	require.NoError(t, err)
 
 	out := buf.String()
@@ -114,7 +114,7 @@ func TestRunStatusDetail_JSON(t *testing.T) {
 	root := setupStatusFixture(t)
 	var buf bytes.Buffer
 
-	err := runStatusDetail(&buf, root, "tc-aaa1111", true, "", false)
+	err := runStatusDetail(&buf, root, "tc-aaa1111", true, "", false, false, "", nil)
 	require.NoError(t, err)
 
 	out := buf.String()
@@ -139,7 +139,7 @@ func TestRunStatusDetail_ShowsSlugInHeader(t *testing.T) {
 	root := setupStatusFixture(t)
 	var buf bytes.Buffer
 
-	err := runStatusDetail(&buf, root, "tc-aaa1111", false, "", false)
+	err := runStatusDetail(&buf, root, "tc-aaa1111", false, "", false, false, "", nil)
 	require.NoError(t, err)
 
 	out := buf.String()
@@ -152,7 +152,7 @@ func TestRunStatusDetail_JSON_NotFound(t *testing.T) {
 	root := setupStatusFixture(t)
 	var buf bytes.Buffer
 
-	err := runStatusDetail(&buf, root, "tc-nonexistent", true, "", false)
+	err := runStatusDetail(&buf, root, "tc-nonexistent", true, "", false, false, "", nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not found")
 }
@@ -178,7 +178,7 @@ func TestRunStatusOverview_StatusKey(t *testing.T) {
 	root := setupStatusFixture(t)
 	var buf bytes.Buffer
 
-	err := runStatusOverview(&buf, root, nil, false, "", false)
+	err := runStatusOverview(&buf, root, nil, false, "", false, false, "", nil)
 	require.NoError(t, err)
 
 	out := buf.String()
@@ -199,7 +199,7 @@ func TestRunStatusOverview_NoKeyInJSON(t *testing.T) {
 	root := setupStatusFixture(t)
 	var buf bytes.Buffer
 
-	err := runStatusOverview(&buf, root, nil, true, "", false)
+	err := runStatusOverview(&buf, root, nil, true, "", false, false, "", nil)
 	require.NoError(t, err)
 
 	out := buf.String()
@@ -233,7 +233,7 @@ branch: main
 `)
 
 	var buf bytes.Buffer
-	err := runStatusOverview(&buf, root, nil, false, "", false)
+	err := runStatusOverview(&buf, root, nil, false, "", false, false, "", nil)
 	require.NoError(t, err)
 
 	out := buf.String()
@@ -270,7 +270,7 @@ branch: main
 `)
 
 	var buf bytes.Buffer
-	err := runStatusOverview(&buf, root, nil, true, "", false)
+	err := runStatusOverview(&buf, root, nil, true, "", false, false, "", nil)
 	require.NoError(t, err)
 
 	// CON-023 / ENH-146 retired the legacy AutomateStatus/ExecuteStatus JSON
@@ -318,7 +318,7 @@ branch: main
 `)
 
 	var buf bytes.Buffer
-	err := runStatusDetail(&buf, root, "tc-aaa1111", false, "", false)
+	err := runStatusDetail(&buf, root, "tc-aaa1111", false, "", false, false, "", nil)
 	require.NoError(t, err)
 
 	out := buf.String()
@@ -337,7 +337,7 @@ func TestRunStatusOverview_ScopeFeedback(t *testing.T) {
 		RelPath:   "gtms/test/cases/login/",
 		Recursive: false,
 	}
-	err := runStatusOverview(&buf, root, scope, false, "", false)
+	err := runStatusOverview(&buf, root, scope, false, "", false, false, "", nil)
 	require.NoError(t, err)
 
 	out := buf.String()
@@ -354,7 +354,7 @@ func TestRunStatusOverview_ScopeFeedbackRecursive(t *testing.T) {
 		RelPath:   "gtms/test/cases/login/",
 		Recursive: true,
 	}
-	err := runStatusOverview(&buf, root, scope, false, "", false)
+	err := runStatusOverview(&buf, root, scope, false, "", false, false, "", nil)
 	require.NoError(t, err)
 
 	out := buf.String()
@@ -371,7 +371,7 @@ func TestRunStatusOverview_ScopeFeedbackBeforeEmpty(t *testing.T) {
 		RelPath:   "gtms/test/cases/empty/",
 		Recursive: false,
 	}
-	err := runStatusOverview(&buf, root, scope, false, "", false)
+	err := runStatusOverview(&buf, root, scope, false, "", false, false, "", nil)
 	require.NoError(t, err)
 
 	out := buf.String()
@@ -384,7 +384,7 @@ func TestRunStatusOverview_NilScopeNoFeedback(t *testing.T) {
 	root := setupStatusFixture(t)
 	var buf bytes.Buffer
 
-	err := runStatusOverview(&buf, root, nil, false, "", false)
+	err := runStatusOverview(&buf, root, nil, false, "", false, false, "", nil)
 	require.NoError(t, err)
 
 	out := buf.String()
@@ -432,7 +432,7 @@ func TestRunStatusFolderSummary_Table(t *testing.T) {
 	root := setupFolderSummaryFixture(t)
 	var buf bytes.Buffer
 
-	err := runStatusFolderSummary(&buf, root, false, "")
+	err := runStatusFolderSummary(&buf, root, false, "", false, nil)
 	require.NoError(t, err)
 
 	out := buf.String()
@@ -468,7 +468,7 @@ title: Ready Test
 `)
 
 	var buf bytes.Buffer
-	err := runStatusFolderSummary(&buf, root, false, "")
+	err := runStatusFolderSummary(&buf, root, false, "", false, nil)
 	require.NoError(t, err)
 
 	out := buf.String()
@@ -497,7 +497,7 @@ title: Ready Test
 `)
 
 	var buf bytes.Buffer
-	err := runStatusFolderSummary(&buf, root, false, "")
+	err := runStatusFolderSummary(&buf, root, false, "", false, nil)
 	require.NoError(t, err)
 
 	out := buf.String()
@@ -508,7 +508,7 @@ func TestRunStatusFolderSummary_JSON(t *testing.T) {
 	root := setupFolderSummaryFixture(t)
 	var buf bytes.Buffer
 
-	err := runStatusFolderSummary(&buf, root, true, "")
+	err := runStatusFolderSummary(&buf, root, true, "", false, nil)
 	require.NoError(t, err)
 
 	out := buf.String()
@@ -522,7 +522,7 @@ func TestRunStatusFolderSummary_JSON_Empty(t *testing.T) {
 	root := t.TempDir()
 	var buf bytes.Buffer
 
-	err := runStatusFolderSummary(&buf, root, true, "")
+	err := runStatusFolderSummary(&buf, root, true, "", false, nil)
 	require.NoError(t, err)
 
 	out := buf.String()
@@ -534,7 +534,7 @@ func TestRunStatusFolderSummary_Empty(t *testing.T) {
 	root := t.TempDir()
 	var buf bytes.Buffer
 
-	err := runStatusFolderSummary(&buf, root, false, "")
+	err := runStatusFolderSummary(&buf, root, false, "", false, nil)
 	require.NoError(t, err)
 
 	out := buf.String()
@@ -546,7 +546,7 @@ func TestRunStatusFolderSummary_NoScopeLine(t *testing.T) {
 	root := setupFolderSummaryFixture(t)
 	var buf bytes.Buffer
 
-	err := runStatusFolderSummary(&buf, root, false, "")
+	err := runStatusFolderSummary(&buf, root, false, "", false, nil)
 	require.NoError(t, err)
 
 	out := buf.String()
@@ -562,7 +562,7 @@ func TestRunStatusOverview_RecursiveFlatList(t *testing.T) {
 	var buf bytes.Buffer
 
 	scope, _ := buildScopeFromArg(root, "", true)
-	err := runStatusOverview(&buf, root, scope, false, "", false)
+	err := runStatusOverview(&buf, root, scope, false, "", false, false, "", nil)
 	require.NoError(t, err)
 
 	out := buf.String()
@@ -598,7 +598,7 @@ title: Manual Test
 	seedLegacyRecord(t, root, legacyRecord{TC: "tc-aaa1111", Framework: "manual", Result: "pass"})
 
 	var buf bytes.Buffer
-	err := runStatusOverview(&buf, root, nil, false, "", false)
+	err := runStatusOverview(&buf, root, nil, false, "", false, false, "", nil)
 	require.NoError(t, err)
 
 	out := buf.String()
@@ -617,7 +617,7 @@ title: Manual Test
 	seedLegacyRecord(t, root, legacyRecord{TC: "tc-aaa1111", Framework: "manual", Result: "pass"})
 
 	var buf bytes.Buffer
-	err := runStatusOverview(&buf, root, nil, true, "", false)
+	err := runStatusOverview(&buf, root, nil, true, "", false, false, "", nil)
 	require.NoError(t, err)
 
 	var entries []reader.PipelineEntry
@@ -653,7 +653,7 @@ title: Automated Test
 	seedLegacyRecord(t, root, legacyRecord{TC: "tc-bbb2222", Framework: "bats", Result: "pass"})
 
 	var buf bytes.Buffer
-	err := runStatusFolderSummary(&buf, root, false, "")
+	err := runStatusFolderSummary(&buf, root, false, "", false, nil)
 	require.NoError(t, err)
 
 	out := buf.String()
@@ -668,7 +668,7 @@ func TestRunStatusOverview_RecursiveFlatList_JSON(t *testing.T) {
 	var buf bytes.Buffer
 
 	scope, _ := buildScopeFromArg(root, "", true)
-	err := runStatusOverview(&buf, root, scope, true, "", false)
+	err := runStatusOverview(&buf, root, scope, true, "", false, false, "", nil)
 	require.NoError(t, err)
 
 	var entries []reader.PipelineEntry
@@ -706,7 +706,7 @@ func TestRunStatusOverview_FrameworkInLastResult(t *testing.T) {
 	root := setupStatusFixture(t)
 	var buf bytes.Buffer
 
-	err := runStatusOverview(&buf, root, nil, false, "", false)
+	err := runStatusOverview(&buf, root, nil, false, "", false, false, "", nil)
 	require.NoError(t, err)
 
 	out := buf.String()
@@ -723,7 +723,7 @@ func TestRunStatusOverview_JSON_FrameworkField(t *testing.T) {
 	root := setupStatusFixture(t)
 	var buf bytes.Buffer
 
-	err := runStatusOverview(&buf, root, nil, true, "", false)
+	err := runStatusOverview(&buf, root, nil, true, "", false, false, "", nil)
 	require.NoError(t, err)
 
 	var entries []reader.PipelineEntry
@@ -746,7 +746,7 @@ func TestRunStatusDetail_FrameworkOnExecuteLine(t *testing.T) {
 	root := setupStatusFixture(t)
 	var buf bytes.Buffer
 
-	err := runStatusDetail(&buf, root, "tc-aaa1111", false, "", false)
+	err := runStatusDetail(&buf, root, "tc-aaa1111", false, "", false, false, "", nil)
 	require.NoError(t, err)
 
 	out := buf.String()
@@ -758,7 +758,7 @@ func TestRunStatusDetail_NoFrameworkWhenNoResult(t *testing.T) {
 	var buf bytes.Buffer
 
 	// tc-bbb1111 has no automation record, so no result and no framework
-	err := runStatusDetail(&buf, root, "tc-bbb1111", false, "", false)
+	err := runStatusDetail(&buf, root, "tc-bbb1111", false, "", false, false, "", nil)
 	require.NoError(t, err)
 
 	out := buf.String()
@@ -791,7 +791,7 @@ requirement: REQ-X
 	})
 
 	var buf bytes.Buffer
-	err := runStatusDetail(&buf, root, "tc-bug085", false, "", false)
+	err := runStatusDetail(&buf, root, "tc-bug085", false, "", false, false, "", nil)
 	require.NoError(t, err)
 	out := buf.String()
 
@@ -912,7 +912,7 @@ title: Pass
 `)
 
 	var buf bytes.Buffer
-	err := runStatusFolderSummary(&buf, root, false, "")
+	err := runStatusFolderSummary(&buf, root, false, "", false, nil)
 	require.NoError(t, err)
 
 	out := buf.String()
@@ -944,7 +944,7 @@ title: Passing
 	seedLegacyRecord(t, root, legacyRecord{TC: "tc-30303030", Framework: "bats", Result: "pass"})
 
 	var buf bytes.Buffer
-	err := runStatusFolderSummary(&buf, root, false, "")
+	err := runStatusFolderSummary(&buf, root, false, "", false, nil)
 	require.NoError(t, err)
 
 	out := buf.String()
@@ -973,7 +973,7 @@ func TestRunStatusFolderSummary_HeadersRenamed(t *testing.T) {
 	root := setupFolderSummaryFixture(t)
 	var buf bytes.Buffer
 
-	err := runStatusFolderSummary(&buf, root, false, "")
+	err := runStatusFolderSummary(&buf, root, false, "", false, nil)
 	require.NoError(t, err)
 
 	out := buf.String()
@@ -992,7 +992,7 @@ func TestRunStatusFolderSummary_KeyFooter(t *testing.T) {
 	root := setupFolderSummaryFixture(t)
 	var buf bytes.Buffer
 
-	err := runStatusFolderSummary(&buf, root, false, "")
+	err := runStatusFolderSummary(&buf, root, false, "", false, nil)
 	require.NoError(t, err)
 
 	out := buf.String()
@@ -1014,7 +1014,7 @@ title: Fresh test case
 `)
 
 	var buf bytes.Buffer
-	err := runStatusFolderSummary(&buf, root, false, "")
+	err := runStatusFolderSummary(&buf, root, false, "", false, nil)
 	require.NoError(t, err)
 
 	out := buf.String()
@@ -1039,7 +1039,7 @@ title: Ready Test
 `)
 
 	var buf bytes.Buffer
-	err := runStatusFolderSummary(&buf, root, false, "")
+	err := runStatusFolderSummary(&buf, root, false, "", false, nil)
 	require.NoError(t, err)
 
 	out := buf.String()
@@ -1056,7 +1056,7 @@ title: Checkout
 	seedLegacyRecord(t, root, legacyRecord{TC: "tc-aaa1111", Framework: "bats", Result: "fail"})
 
 	var buf bytes.Buffer
-	err := runStatusFolderSummary(&buf, root, false, "")
+	err := runStatusFolderSummary(&buf, root, false, "", false, nil)
 	require.NoError(t, err)
 
 	out := buf.String()
@@ -1084,7 +1084,7 @@ branch: main
 `)
 
 	var buf bytes.Buffer
-	err := runStatusFolderSummary(&buf, root, false, "")
+	err := runStatusFolderSummary(&buf, root, false, "", false, nil)
 	require.NoError(t, err)
 
 	out := buf.String()
@@ -1109,7 +1109,7 @@ title: Fail
 	seedLegacyRecord(t, root, legacyRecord{TC: "tc-aaa2222", Framework: "bats", Result: "fail"})
 
 	var buf bytes.Buffer
-	err := runStatusFolderSummary(&buf, root, true, "")
+	err := runStatusFolderSummary(&buf, root, true, "", false, nil)
 	require.NoError(t, err)
 
 	var entries []reader.FolderSummaryEntry
@@ -1191,7 +1191,7 @@ func TestRunStatusDetail_ShowsLogBlockOnFail(t *testing.T) {
 		"not ok 1 - expected 1 got 0\n# in tc-logui01.bats line 12\n", "")
 
 	var buf bytes.Buffer
-	require.NoError(t, runStatusDetail(&buf, root, "tc-logui01", false, "", false))
+	require.NoError(t, runStatusDetail(&buf, root, "tc-logui01", false, "", false, false, "", nil))
 	out := buf.String()
 
 	assert.Contains(t, out, "Notes:", "detail view must render Notes: header on fail")
@@ -1204,7 +1204,7 @@ func TestRunStatusDetail_ShowsLogBlockOnError(t *testing.T) {
 	root := setupLogDetailFixture(t, "error", "pwsh: command not found\n", "")
 
 	var buf bytes.Buffer
-	require.NoError(t, runStatusDetail(&buf, root, "tc-logui01", false, "", false))
+	require.NoError(t, runStatusDetail(&buf, root, "tc-logui01", false, "", false, false, "", nil))
 	out := buf.String()
 
 	assert.Contains(t, out, "Notes:", "detail view must render Notes: header on error")
@@ -1217,7 +1217,7 @@ func TestRunStatusDetail_HidesLogBlockOnPass(t *testing.T) {
 	root := setupLogDetailFixture(t, "pass", "stale failure text\n", "")
 
 	var buf bytes.Buffer
-	require.NoError(t, runStatusDetail(&buf, root, "tc-logui01", false, "", false))
+	require.NoError(t, runStatusDetail(&buf, root, "tc-logui01", false, "", false, false, "", nil))
 	out := buf.String()
 
 	assert.NotContains(t, out, "Notes:",
@@ -1229,7 +1229,7 @@ func TestRunStatusDetail_HidesLogBlockWhenLogEmpty(t *testing.T) {
 	root := setupLogDetailFixture(t, "fail", "", "")
 
 	var buf bytes.Buffer
-	require.NoError(t, runStatusDetail(&buf, root, "tc-logui01", false, "", false))
+	require.NoError(t, runStatusDetail(&buf, root, "tc-logui01", false, "", false, false, "", nil))
 	out := buf.String()
 
 	assert.NotContains(t, out, "Notes:",
@@ -1242,7 +1242,7 @@ func TestRunStatusDetail_TruncatedLogHeaderShowsSpillPath(t *testing.T) {
 		".gtms/logs/task-huge01.log")
 
 	var buf bytes.Buffer
-	require.NoError(t, runStatusDetail(&buf, root, "tc-logui01", false, "", false))
+	require.NoError(t, runStatusDetail(&buf, root, "tc-logui01", false, "", false, false, "", nil))
 	out := buf.String()
 
 	assert.Contains(t, out, "Notes:  (truncated to 64 KB",
@@ -1255,7 +1255,7 @@ func TestRunStatusDetail_JSONIncludesLogFieldsOnFail(t *testing.T) {
 	root := setupLogDetailFixture(t, "fail", "not ok 1 - oops\n", ".gtms/logs/task-x.log")
 
 	var buf bytes.Buffer
-	require.NoError(t, runStatusDetail(&buf, root, "tc-logui01", true, "", false))
+	require.NoError(t, runStatusDetail(&buf, root, "tc-logui01", true, "", false, false, "", nil))
 
 	var detail reader.PipelineDetailEntry
 	require.NoError(t, json.Unmarshal(buf.Bytes(), &detail))
@@ -1267,7 +1267,7 @@ func TestRunStatusDetail_JSONOmitsEmptyLogFields(t *testing.T) {
 	root := setupLogDetailFixture(t, "fail", "", "")
 
 	var buf bytes.Buffer
-	require.NoError(t, runStatusDetail(&buf, root, "tc-logui01", true, "", false))
+	require.NoError(t, runStatusDetail(&buf, root, "tc-logui01", true, "", false, false, "", nil))
 
 	// Raw JSON should not contain "log":"" or "log_spill":"" because the
 	// fields have omitempty tags.
@@ -1304,7 +1304,7 @@ title: Skipped Test
 	seedLegacyRecord(t, root, legacyRecord{TC: "tc-skip01", Framework: "bats", Result: "skipped"})
 
 	var buf bytes.Buffer
-	err := runStatusOverview(&buf, root, nil, false, "", false)
+	err := runStatusOverview(&buf, root, nil, false, "", false, false, "", nil)
 	require.NoError(t, err)
 
 	out := buf.String()
@@ -1326,7 +1326,7 @@ title: Skipped Test
 	seedLegacyRecord(t, root, legacyRecord{TC: "tc-skip01", Framework: "bats", Result: "skipped"})
 
 	var buf bytes.Buffer
-	err := runStatusOverview(&buf, root, nil, true, "", false)
+	err := runStatusOverview(&buf, root, nil, true, "", false, false, "", nil)
 	require.NoError(t, err)
 
 	var entries []reader.PipelineEntry
@@ -1350,7 +1350,7 @@ func TestRunStatusOverview_KeyIncludesSkipped(t *testing.T) {
 	root := setupStatusFixture(t)
 	var buf bytes.Buffer
 
-	err := runStatusOverview(&buf, root, nil, false, "", false)
+	err := runStatusOverview(&buf, root, nil, false, "", false, false, "", nil)
 	require.NoError(t, err)
 
 	out := buf.String()
@@ -1618,7 +1618,7 @@ func TestBUG078_StatusLegendUsesENH130Vocabulary(t *testing.T) {
 	root := setupStatusFixture(t)
 	var buf bytes.Buffer
 
-	err := runStatusOverview(&buf, root, nil, false, "", false)
+	err := runStatusOverview(&buf, root, nil, false, "", false, false, "", nil)
 	require.NoError(t, err)
 
 	out := buf.String()

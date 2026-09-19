@@ -8,6 +8,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/aitestmanagement/gtms-cli/internal/testcase"
 )
 
 // Regression coverage for the REV-112 worktree-review findings on the BUG-173
@@ -178,7 +180,13 @@ func TestBUG173_NonCanonicalRootPreservedFilterHolds(t *testing.T) {
 
 // CODEX-005: a folder holding two specs with the same frontmatter ID must not
 // double-gather and fail mid-removal on the second copy.
-func TestBUG173_CODEX005_DuplicateFrontmatterIDNoPartialFailure(t *testing.T) {
+// ADR-024 / BUG-185 (tc-81893058): two specs in one folder claiming the SAME
+// exact frontmatter id are AMBIGUOUS ownership. Delete must refuse the whole plan
+// before any mutation and name both owners -- it must NOT silently remove both, as
+// the pre-ADR-024 dedup path did. (The original CODEX-005 concern was a
+// mid-operation double-remove crash; the ambiguity refusal makes that scenario
+// unreachable and is the stronger, correct contract.)
+func TestBUG185_DuplicateFrontmatterID_RefusesWholePlan(t *testing.T) {
 	root := t.TempDir()
 	specA := writeSpec(t, root, "tc-dup00001", "gtms/test/cases/dup/tc-dup00001-a.md")
 	specB := writeSpec(t, root, "tc-dup00001", "gtms/test/cases/dup/tc-dup00001-b.md")
@@ -187,12 +195,25 @@ func TestBUG173_CODEX005_DuplicateFrontmatterIDNoPartialFailure(t *testing.T) {
 		ScanDir: filepath.Join(root, "gtms", "test", "cases", "dup"),
 		RelPath: "gtms/test/cases/dup/",
 	}
-	result, err := DeleteArtifacts(root, scope, "", false, false, false)
-	require.NoError(t, err, "duplicate frontmatter IDs must not cause a partial-failure double remove")
+	beforeA, err := os.ReadFile(specA)
+	require.NoError(t, err)
+	beforeB, err := os.ReadFile(specB)
+	require.NoError(t, err)
 
-	_, statErrA := os.Stat(specA)
-	_, statErrB := os.Stat(specB)
-	assert.True(t, os.IsNotExist(statErrA), "spec A removed")
-	assert.True(t, os.IsNotExist(statErrB), "spec B removed")
-	assert.GreaterOrEqual(t, result.TestCaseSpecsRemoved, 1)
+	_, err = DeleteArtifacts(root, scope, "", false, false, false)
+	require.Error(t, err, "a duplicated exact frontmatter id must refuse, not silently remove both owners")
+
+	var oe *testcase.OwnershipError
+	require.ErrorAs(t, err, &oe, "refusal must be a typed OwnershipError")
+	assert.Equal(t, testcase.OutcomeAmbiguous, oe.Outcome)
+	assert.Len(t, oe.Owners, 2, "both conflicting spec owners must be named")
+
+	// No mutation: both specs remain byte-identical, not merely present. Presence
+	// alone would pass against a refusal that had already rewritten a file.
+	afterA, readErrA := os.ReadFile(specA)
+	afterB, readErrB := os.ReadFile(specB)
+	require.NoError(t, readErrA, "spec A must remain after the refusal")
+	require.NoError(t, readErrB, "spec B must remain after the refusal")
+	assert.Equal(t, beforeA, afterA, "spec A must be byte-identical after the refusal")
+	assert.Equal(t, beforeB, afterB, "spec B must be byte-identical after the refusal")
 }

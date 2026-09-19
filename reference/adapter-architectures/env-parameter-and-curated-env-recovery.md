@@ -83,8 +83,13 @@ This problem is **specific to Tier 2 script adapters**, and the asymmetry is
 easy to miss from inside a failing adapter:
 
 - **Tier 2 (`script:`)** runs with a curated environment: a small allowlist of
-  system variables plus every `GTMS_*` variable. Anything else the caller had is
-  absent by design.
+  system variables plus the documented `GTMS_*` variables that GTMS itself
+  generates for the task. That set is an explicit list maintained by GTMS, not
+  a prefix filter: GTMS does not scan the caller's environment, so a variable
+  you set in the invoking shell is not forwarded merely because its name begins
+  with `GTMS_`. Anything else the caller had is absent by design. The one
+  deliberate pass-through is `--env`, which GTMS surfaces as
+  `GTMS_ENVIRONMENT`.
 - **Tier 1 (`command:`)** inherits the caller's full environment.
 
 So the recovery work below is a Tier 2 concern only. If your suite depends

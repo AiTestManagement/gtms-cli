@@ -14,6 +14,7 @@ import (
 	"github.com/aitestmanagement/gtms-cli/internal/layout"
 	"github.com/aitestmanagement/gtms-cli/internal/pathsafe"
 	"github.com/aitestmanagement/gtms-cli/internal/pipeline"
+	"github.com/aitestmanagement/gtms-cli/internal/testcase"
 	"github.com/aitestmanagement/gtms-cli/internal/wiring"
 )
 
@@ -615,7 +616,7 @@ func TestRefreshRecord_HappyPath_RefreshesStaleTestcaseHash(t *testing.T) {
 	}
 
 	// Refresh
-	refreshed, err := RefreshRecord(root, origRec)
+	refreshed, err := RefreshRecord(root, mustOpSnapshot(t, root), origRec)
 	require.NoError(t, err)
 	assert.True(t, refreshed, "should report the record was refreshed")
 
@@ -635,7 +636,7 @@ func TestRefreshRecord_NoOp_WhenAlreadyCurrent(t *testing.T) {
 	rec, _, err := wiring.Find(root, "tc-refresh1", "playwright")
 	require.NoError(t, err)
 
-	refreshed, err := RefreshRecord(root, rec)
+	refreshed, err := RefreshRecord(root, mustOpSnapshot(t, root), rec)
 	require.NoError(t, err)
 	assert.False(t, refreshed, "should report no-op when hashes already match")
 }
@@ -653,7 +654,7 @@ func TestRefreshRecord_RefreshesArtefactHash(t *testing.T) {
 	_, _ = f.WriteString("\n// ENH-156 artefact drift\n")
 	_ = f.Close()
 
-	refreshed, err := RefreshRecord(root, rec)
+	refreshed, err := RefreshRecord(root, mustOpSnapshot(t, root), rec)
 	require.NoError(t, err)
 	assert.True(t, refreshed)
 
@@ -697,7 +698,7 @@ func TestRefreshRecord_PendingArtefactHash_Preserved(t *testing.T) {
 		}
 	}
 
-	refreshed, err := RefreshRecord(root, pendingRec)
+	refreshed, err := RefreshRecord(root, mustOpSnapshot(t, root), pendingRec)
 	require.NoError(t, err)
 	assert.True(t, refreshed)
 
@@ -715,7 +716,7 @@ func TestRefreshRecord_MissingArtefact_Fails(t *testing.T) {
 	// Delete artefact
 	require.NoError(t, os.Remove(filepath.Join(root, "tests", "tc-refresh1.spec.ts")))
 
-	refreshed, err := RefreshRecord(root, rec)
+	refreshed, err := RefreshRecord(root, mustOpSnapshot(t, root), rec)
 	require.Error(t, err)
 	assert.False(t, refreshed)
 	assert.Contains(t, err.Error(), "artefact file not found")
@@ -737,7 +738,7 @@ func TestRefreshRecord_UnsafeArtefactPath_Fails(t *testing.T) {
 	_, err := wiring.Write(root, tampered)
 	require.NoError(t, err)
 
-	refreshed, err := RefreshRecord(root, tampered)
+	refreshed, err := RefreshRecord(root, mustOpSnapshot(t, root), tampered)
 	require.Error(t, err)
 	assert.False(t, refreshed)
 	assert.Contains(t, err.Error(), "unsafe artefact path")
@@ -762,7 +763,7 @@ func TestRefreshRecord_MissingSpec_Fails(t *testing.T) {
 	}
 	_, _ = wiring.Write(root, rec)
 
-	refreshed, err := RefreshRecord(root, rec)
+	refreshed, err := RefreshRecord(root, mustOpSnapshot(t, root), rec)
 	require.Error(t, err)
 	assert.False(t, refreshed)
 	assert.Contains(t, err.Error(), "spec not found")
@@ -817,7 +818,7 @@ func TestPlanRefresh_BothHashDrift(t *testing.T) {
 
 	before := readWiringBytes(t, root, "tc-refresh1", "playwright")
 
-	plan, err := PlanRefresh(root, rec)
+	plan, err := PlanRefresh(root, mustOpSnapshot(t, root), rec)
 	require.NoError(t, err)
 	assert.True(t, plan.TestCaseHashChanged, "testcase-hash should be flagged as changing")
 	assert.True(t, plan.ArtefactHashChanged, "artefact-hash should be flagged as changing")
@@ -835,7 +836,7 @@ func TestPlanRefresh_TestcaseOnlyDrift(t *testing.T) {
 
 	driftSpec(t, root) // artefact untouched
 
-	plan, err := PlanRefresh(root, rec)
+	plan, err := PlanRefresh(root, mustOpSnapshot(t, root), rec)
 	require.NoError(t, err)
 	assert.True(t, plan.TestCaseHashChanged)
 	assert.False(t, plan.ArtefactHashChanged, "artefact-hash should NOT change when the artefact is unchanged")
@@ -847,7 +848,7 @@ func TestPlanRefresh_NoOp_WhenCurrent(t *testing.T) {
 	rec, _, err := wiring.Find(root, "tc-refresh1", "playwright")
 	require.NoError(t, err)
 
-	plan, err := PlanRefresh(root, rec)
+	plan, err := PlanRefresh(root, mustOpSnapshot(t, root), rec)
 	require.NoError(t, err)
 	assert.False(t, plan.Changed, "an up-to-date record should plan no change")
 	assert.False(t, plan.TestCaseHashChanged)
@@ -876,7 +877,7 @@ func TestPlanRefresh_PendingArtefact_TestcaseHashOnly(t *testing.T) {
 
 	driftSpec(t, root)
 
-	plan, err := PlanRefresh(root, pendingRec)
+	plan, err := PlanRefresh(root, mustOpSnapshot(t, root), pendingRec)
 	require.NoError(t, err)
 	assert.True(t, plan.TestCaseHashChanged, "testcase-hash should change")
 	assert.False(t, plan.ArtefactHashChanged, "a pending artefact-hash must never be flagged as changing")
@@ -895,7 +896,7 @@ func TestPlanRefresh_MissingArtefact_Fails(t *testing.T) {
 	rec, _, _ := wiring.Find(root, "tc-refresh1", "playwright")
 	require.NoError(t, os.Remove(filepath.Join(root, "tests", "tc-refresh1.spec.ts")))
 
-	_, err := PlanRefresh(root, rec)
+	_, err := PlanRefresh(root, mustOpSnapshot(t, root), rec)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "artefact file not found")
 }
@@ -916,7 +917,7 @@ func TestPlanRefresh_MissingSpec_Fails(t *testing.T) {
 	}
 	_, _ = wiring.Write(root, rec)
 
-	_, err := PlanRefresh(root, rec)
+	_, err := PlanRefresh(root, mustOpSnapshot(t, root), rec)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "spec not found")
 }
@@ -935,7 +936,7 @@ func TestPlanRefresh_UnsafeArtefactPath_Fails(t *testing.T) {
 	_, err := wiring.Write(root, tampered)
 	require.NoError(t, err)
 
-	_, err = PlanRefresh(root, tampered)
+	_, err = PlanRefresh(root, mustOpSnapshot(t, root), tampered)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unsafe artefact path")
 }
@@ -946,7 +947,7 @@ func TestApplyRefresh_NoOp_WritesNothing(t *testing.T) {
 	require.NoError(t, err)
 
 	before := readWiringBytes(t, root, "tc-refresh1", "playwright")
-	plan, err := PlanRefresh(root, rec) // no drift -> Changed false
+	plan, err := PlanRefresh(root, mustOpSnapshot(t, root), rec) // no drift -> Changed false
 	require.NoError(t, err)
 	refreshed, err := ApplyRefresh(root, plan)
 	require.NoError(t, err)
@@ -965,10 +966,10 @@ func TestPlanApply_ParityWithRefreshRecord(t *testing.T) {
 	driftSpec(t, root)
 	driftArtefact(t, root, "tests/tc-refresh1.spec.ts")
 
-	plan, err := PlanRefresh(root, rec)
+	plan, err := PlanRefresh(root, mustOpSnapshot(t, root), rec)
 	require.NoError(t, err)
 
-	refreshed, err := RefreshRecord(root, rec)
+	refreshed, err := RefreshRecord(root, mustOpSnapshot(t, root), rec)
 	require.NoError(t, err)
 	assert.True(t, refreshed)
 
@@ -1225,93 +1226,123 @@ func TestRepointBatch_IdempotentRerun(t *testing.T) {
 	assert.Equal(t, 0, summary.Errors)
 }
 
-// --- AmbiguityCheck tests (count-based, project-wide; supersedes the CODEX-007
-// path classification per REV-109 round 4, CODEX-011/CLAUDE-001) ---
+// --- Bulk repoint ownership preflight (REV-158 CODEX-005) ---
+//
+// These replace the AmbiguityCheck tests one-for-one. AmbiguityCheck counted
+// FILENAMES, which could neither see a renamed owner (its filename encodes no
+// id) nor avoid falsely refusing one (its filename-derived id can collide with
+// an unrelated spec elsewhere). AuthoriseScopeRepoint answers the same questions
+// from body identity, project-wide, and additionally refuses Unprovable
+// candidates -- and it now runs INSIDE the mutating entry points rather than only
+// in the Cobra wrappers.
 
-// scopeTCIDs runs discoverScopeSpecs and returns the targeted TC-ID set, matching
-// how RepointBulk drives AmbiguityCheck.
-func scopeTCIDs(t *testing.T, root, folder string, recursive bool) map[string]bool {
-	t.Helper()
-	tcIDs, err := discoverScopeSpecs(root, folder, recursive)
-	require.NoError(t, err)
-	return tcIDs
-}
-
-func TestAmbiguityCheck_UniqueIDPasses(t *testing.T) {
+// A project-wide-unique id in scope passes and is returned as the work set.
+func TestRequireScopeOwnership_UniqueIDPasses(t *testing.T) {
 	root := t.TempDir()
 	createTCSpecAt(t, root, "feature-a", "tc-aaa11111")
 	createTCSpecAt(t, root, "feature-b", "tc-bbb22222")
 
-	assert.NoError(t, AmbiguityCheck(root, scopeTCIDs(t, root, "feature-a", false)))
+	ids, err := scopeOwnerIDsForTest(t, root, "feature-a", false)
+	require.NoError(t, err)
+	assert.Equal(t, map[string]bool{"tc-aaa11111": true}, ids)
 }
 
-func TestAmbiguityCheck_DuplicateOutsideScopeErrors(t *testing.T) {
+// A duplicate owner OUTSIDE the scope still refuses: wiring is keyed by the bare
+// id, so duplicates are ambiguous wherever they live.
+func TestRequireScopeOwnership_DuplicateOutsideScopeErrors(t *testing.T) {
 	root := t.TempDir()
 	createTCSpecAt(t, root, "feature-a", "tc-aaa11111")
 	createTCSpecAt(t, root, "feature-b", "tc-aaa11111")
 
-	err := AmbiguityCheck(root, scopeTCIDs(t, root, "feature-a", false))
+	_, err := scopeOwnerIDsForTest(t, root, "feature-a", false)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "ambiguous")
 	assert.Contains(t, err.Error(), "tc-aaa11111")
 }
 
-func TestAmbiguityCheck_EmptyTargetsPasses(t *testing.T) {
+// An empty scope has nothing to prove and passes.
+func TestRequireScopeOwnership_EmptyScopePasses(t *testing.T) {
 	root := t.TempDir()
-	assert.NoError(t, AmbiguityCheck(root, map[string]bool{}))
+	require.NoError(t, os.MkdirAll(filepath.Join(layout.TestCasesDir(root), "empty"), 0755))
+
+	ids, err := scopeOwnerIDsForTest(t, root, "empty", false)
+	require.NoError(t, err)
+	assert.Empty(t, ids)
 }
 
-func TestAmbiguityCheck_ZeroHitTargetAborts(t *testing.T) {
-	// A targeted ID with no spec anywhere under cases/ (an unscannable/out-of-tree
-	// scope) aborts before any write.
+// REV-158 CODEX-005: an Unprovable candidate in scope refuses the whole repoint.
+// AmbiguityCheck could not detect this at all -- it counted filenames and never
+// read a body -- so a malformed spec in the scope let the repoint rewrite wiring
+// for identities it could not prove.
+func TestRequireScopeOwnership_UnprovableInScopeAborts(t *testing.T) {
 	root := t.TempDir()
-	require.NoError(t, os.MkdirAll(layout.TestCasesDir(root), 0755))
-	err := AmbiguityCheck(root, map[string]bool{"tc-ghost111": true})
+	createTCSpecAt(t, root, "feature-a", "tc-aaa11111")
+	dir := filepath.Join(layout.TestCasesDir(root), "feature-a")
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "tc-bbb22222-broken.md"),
+		[]byte("---\ntest_case_id: [unclosed\n---\n"), 0644))
+
+	_, err := scopeOwnerIDsForTest(t, root, "feature-a", false)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "no spec file")
+	assert.Contains(t, err.Error(), "cannot be proved")
 }
 
-func TestAmbiguityCheck_NonRecursiveRootPlusSubfolderDuplicateErrors(t *testing.T) {
-	// Same TC ID directly in the folder AND in a subfolder. Count-based: two specs
-	// anywhere -> ambiguous, even under a non-recursive scope.
+// REV-158 CODEX-005: a RENAMED owner is a real owner. AmbiguityCheck derived the
+// id from the filename, so it neither saw this spec as an owner of the id it
+// declares nor counted it as a duplicate of one.
+func TestRequireScopeOwnership_RenamedDuplicateOwnerRefuses(t *testing.T) {
+	root := t.TempDir()
+	createTCSpecAt(t, root, "feature-a", "tc-aaa11111")
+	dir := filepath.Join(layout.TestCasesDir(root), "feature-b")
+	require.NoError(t, os.MkdirAll(dir, 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "tc-deadbeef-renamed.md"),
+		[]byte("---\ntest_case_id: tc-aaa11111\n---\n"), 0644))
+
+	_, err := scopeOwnerIDsForTest(t, root, "feature-a", false)
+	require.Error(t, err, "a renamed second owner makes the id ambiguous project-wide")
+	assert.Contains(t, err.Error(), "ambiguous")
+	assert.Contains(t, err.Error(), "tc-deadbeef-renamed.md")
+}
+
+// Same id directly in the folder AND in a subfolder: two owners anywhere is
+// ambiguous, even under a non-recursive scope.
+func TestRequireScopeOwnership_NonRecursiveRootPlusSubfolderDuplicateErrors(t *testing.T) {
 	root := t.TempDir()
 	createTCSpecAt(t, root, "bulk", "tc-dup11111")
 	createTCSpecAt(t, root, "bulk/nested", "tc-dup11111")
 
-	err := AmbiguityCheck(root, scopeTCIDs(t, root, "bulk", false))
+	_, err := scopeOwnerIDsForTest(t, root, "bulk", false)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "ambiguous")
 	assert.Contains(t, err.Error(), "tc-dup11111")
 }
 
-func TestAmbiguityCheck_RecursiveWhollyInsideDuplicateErrors(t *testing.T) {
-	// NEW behaviour (REV-109 round 4, CODEX-011): a duplicate wholly inside a
-	// recursive scope is now ambiguous too -- both specs share one wiring record
-	// keyed by the bare ID. Asserted deliberately.
+// A duplicate wholly inside a recursive scope is ambiguous too -- both specs
+// share one wiring record keyed by the bare id. Asserted deliberately.
+func TestRequireScopeOwnership_RecursiveWhollyInsideDuplicateErrors(t *testing.T) {
 	root := t.TempDir()
 	createTCSpecAt(t, root, "bulk", "tc-dup22222")
 	createTCSpecAt(t, root, "bulk/nested", "tc-dup22222")
 
-	err := AmbiguityCheck(root, scopeTCIDs(t, root, "bulk", true))
+	_, err := scopeOwnerIDsForTest(t, root, "bulk", true)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "ambiguous")
 	assert.Contains(t, err.Error(), "tc-dup22222")
 }
 
-func TestAmbiguityCheck_TrailingSlashScopeStillDetects(t *testing.T) {
-	// A trailing-slash folder target no longer affects classification (count-based).
+// A trailing-slash folder target does not affect the decision.
+func TestRequireScopeOwnership_TrailingSlashScopeStillDetects(t *testing.T) {
 	root := t.TempDir()
 	createTCSpecAt(t, root, "scope", "tc-slash1111")
 	createTCSpecAt(t, root, "outside", "tc-slash1111")
 
-	err := AmbiguityCheck(root, scopeTCIDs(t, root, "scope/", false))
+	_, err := scopeOwnerIDsForTest(t, root, "scope/", false)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "ambiguous")
 }
 
-func TestAmbiguityCheck_ScopeSymlinkedInsideCasesNoError(t *testing.T) {
-	// A scope folder that is a symlink to another dir INSIDE cases/ resolves to one
-	// physical spec per ID -> no ambiguity (count-based is symlink-immune).
+// A scope folder that is a symlink to another dir INSIDE cases/ resolves to one
+// physical owner per id, so there is no ambiguity.
+func TestRequireScopeOwnership_ScopeSymlinkedInsideCasesNoError(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("symlink creation requires elevated privileges on Windows")
 	}
@@ -1320,12 +1351,16 @@ func TestAmbiguityCheck_ScopeSymlinkedInsideCasesNoError(t *testing.T) {
 	casesDir := layout.TestCasesDir(root)
 	require.NoError(t, os.Symlink(filepath.Join(casesDir, "real"), filepath.Join(casesDir, "alias")))
 
-	tcIDs, err := discoverScopeSpecs(root, "alias", false)
+	ids, err := scopeOwnerIDsForTest(t, root, "alias", false)
 	require.NoError(t, err)
-	assert.NoError(t, AmbiguityCheck(root, tcIDs))
+	assert.Equal(t, map[string]bool{"tc-sym111111": true}, ids)
 }
 
-func TestDiscoverScopeSpecs_EscapingSymlinkRejected(t *testing.T) {
+// REV-159 CODEX-004: the filename walk (discoverScopeSpecs) was removed as the
+// source of scope truth, so the containment guarantees it carried are re-asserted
+// here against validateScopeFolder + AuthoriseScopeRepoint, the path that replaced
+// it. Deleting the walk must not delete its safety properties.
+func TestValidateScopeFolder_EscapingSymlinkRejected(t *testing.T) {
 	// CODEX-015: a scope folder symlinked OUTSIDE cases/ is rejected at discovery,
 	// so an out-of-tree alias never reaches the ambiguity/selection stages.
 	if runtime.GOOS == "windows" {
@@ -1339,12 +1374,12 @@ func TestDiscoverScopeSpecs_EscapingSymlinkRejected(t *testing.T) {
 	require.NoError(t, os.MkdirAll(casesDir, 0755))
 	require.NoError(t, os.Symlink(outside, filepath.Join(casesDir, "alias")))
 
-	_, err := discoverScopeSpecs(root, "alias", false)
+	err := validateScopeFolder(root, "alias")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "outside")
 }
 
-func TestDiscoverScopeSpecs_RecursiveInTreeSymlinkTraversed(t *testing.T) {
+func TestRequireScopeOwnership_RecursiveInTreeSymlinkTraversed(t *testing.T) {
 	// BUG-167 (absorbed BUG-168 defect 2): a symlink scope that resolves INSIDE
 	// cases/ must be traversed by the RECURSIVE walk, exactly like the
 	// non-recursive path. Before the fix, filepath.Walk on the unresolved symlink
@@ -1358,13 +1393,14 @@ func TestDiscoverScopeSpecs_RecursiveInTreeSymlinkTraversed(t *testing.T) {
 	casesDir := layout.TestCasesDir(root)
 	require.NoError(t, os.Symlink(filepath.Join(casesDir, "real"), filepath.Join(casesDir, "alias")))
 
-	tcIDs, err := discoverScopeSpecs(root, "alias", true)
+	require.NoError(t, validateScopeFolder(root, "alias"))
+	tcIDs, err := scopeOwnerIDsForTest(t, root, "alias", true)
 	require.NoError(t, err)
-	assert.Contains(t, tcIDs, "tc-sym222222", "recursive walk must follow the resolved symlink root")
-	assert.Contains(t, tcIDs, "tc-sym333333", "recursive walk must recurse into subdirectories under the resolved root")
+	assert.Contains(t, tcIDs, "tc-sym222222", "recursive selection must follow the resolved symlink root")
+	assert.Contains(t, tcIDs, "tc-sym333333", "recursive selection must recurse into subdirectories under the resolved root")
 }
 
-func TestDiscoverScopeSpecs_RecursiveEscapingSymlinkRejected(t *testing.T) {
+func TestValidateScopeFolder_RecursiveEscapingSymlinkRejected(t *testing.T) {
 	// BUG-167 (absorbed BUG-168 defect 2 guard): resolving the symlink for the
 	// recursive walk must NOT let an out-of-tree scope through. The recursive form
 	// must stay rejected exactly like the non-recursive one.
@@ -1379,15 +1415,14 @@ func TestDiscoverScopeSpecs_RecursiveEscapingSymlinkRejected(t *testing.T) {
 	require.NoError(t, os.MkdirAll(casesDir, 0755))
 	require.NoError(t, os.Symlink(outside, filepath.Join(casesDir, "alias")))
 
-	_, err := discoverScopeSpecs(root, "alias", true)
+	err := validateScopeFolder(root, "alias")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "outside")
 }
 
-func TestAmbiguityCheck_WalkErrorAborts(t *testing.T) {
-	// CODEX-004: a traversal error must abort the preflight, not silently shrink the
-	// scan. Exercised via an unreadable subdirectory (POSIX; skipped when perms
-	// cannot block reads, e.g. running as root).
+// A traversal error must abort the preflight, not silently shrink the scan.
+// NewSnapshot fails closed (POSIX; skipped when perms cannot block reads).
+func TestRequireScopeOwnership_WalkErrorAborts(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("unreadable-directory permission semantics differ on Windows")
 	}
@@ -1402,7 +1437,10 @@ func TestAmbiguityCheck_WalkErrorAborts(t *testing.T) {
 		t.Skip("process can read a 0000 directory (likely root); cannot exercise a walk error")
 	}
 
-	err := AmbiguityCheck(root, map[string]bool{"tc-any11111": true})
+	// A snapshot build failure must abort the preflight rather than silently
+	// shrinking the scan: NewSnapshot fails closed, so no authority is ever minted
+	// and no repoint entry point can be reached.
+	_, err := testcase.NewSnapshot(root)
 	require.Error(t, err)
 }
 
@@ -1469,7 +1507,7 @@ func TestRepointBulk_MixedBatchCountsSkipped(t *testing.T) {
 	seedBulkFixture(t, root, "bulk", "tc-33333331", "old-runner")
 	seedBulkFixture(t, root, "bulk", "tc-33333332", "other-runner")
 
-	summary, err := RepointBulk(root, "bulk", false, mockfwOpts("old-runner", "new-runner"))
+	summary, err := RepointBulk(root, "bulk", false, withScopeAuth(t, root, "bulk", false, mockfwOpts("old-runner", "new-runner")))
 	require.NoError(t, err)
 	assert.Equal(t, 1, summary.Repointed)
 	assert.Equal(t, 1, summary.Skipped)
@@ -1481,7 +1519,10 @@ func TestRepointBulk_TrailingSlashScopeDetectsAmbiguity(t *testing.T) {
 	seedBulkFixture(t, root, "scope", "tc-44444441", "old-runner")
 	createTCSpecAt(t, root, "outside", "tc-44444441") // out-of-scope duplicate
 
-	_, err := RepointBulk(root, "scope/", false, mockfwOpts("old-runner", "new-runner"))
+	// The scope spelling still reaches the ownership decision: a trailing slash
+	// resolves to the same folder, and the out-of-scope duplicate still makes the
+	// id ambiguous. The decision is now made once, at authorisation.
+	_, err := AuthoriseScopeRepoint(root, snapshotForTest(t, root), "scope/", false)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "ambiguous")
 }
@@ -1492,10 +1533,10 @@ func TestRepointBulk_RejectsMode3Adapter(t *testing.T) {
 	root := t.TempDir()
 	seedBulkFixture(t, root, "bulk", "tc-33333331", "old-runner")
 
-	_, err := RepointBulk(root, "bulk", false, RepointOptions{
+	_, err := RepointBulk(root, "bulk", false, withScopeAuth(t, root, "bulk", false, RepointOptions{
 		Config:      execConfig("mockfw", "old-runner", "new-runner"),
 		FromAdapter: "old-runner", NewAdapter: "manual-execute",
-	})
+	}))
 	require.Error(t, err)
 }
 
@@ -1504,10 +1545,10 @@ func TestRepointBulk_RejectsUnconfiguredAdapter(t *testing.T) {
 	root := t.TempDir()
 	seedBulkFixture(t, root, "bulk", "tc-33333331", "old-runner")
 
-	_, err := RepointBulk(root, "bulk", false, RepointOptions{
+	_, err := RepointBulk(root, "bulk", false, withScopeAuth(t, root, "bulk", false, RepointOptions{
 		Config:      execConfig("mockfw", "old-runner", "new-runner"),
 		FromAdapter: "old-runner", NewAdapter: "ghost-runner",
-	})
+	}))
 	require.Error(t, err)
 }
 
@@ -1525,7 +1566,9 @@ func TestRepointBulk_EscapingScopeSymlinkRejected(t *testing.T) {
 	casesDir := layout.TestCasesDir(root)
 	require.NoError(t, os.Symlink(outside, filepath.Join(casesDir, "alias")))
 
-	_, err := RepointBulk(root, "alias", false, mockfwOpts("old-runner", "new-runner"))
+	// Containment is decided where the ownership decision is made, before any
+	// authority exists to hand to RepointBulk.
+	_, err := AuthoriseScopeRepoint(root, snapshotForTest(t, root), "alias", false)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "outside")
 
@@ -1537,21 +1580,21 @@ func TestRepointBulk_EscapingScopeSymlinkRejected(t *testing.T) {
 
 func TestRepointSingle_AlreadyCurrent(t *testing.T) {
 	root, rec := repointFixture(t) // adapter old-runner (playwright)
-	res, err := RepointSingle(root, rec.TestCase, singleOpts("", "old-runner"))
+	res, err := RepointSingle(root, rec.TestCase, withSingleAuth(t, root, rec.TestCase, singleOpts("", "old-runner")))
 	require.NoError(t, err)
 	assert.Equal(t, "already-current", res.Status)
 }
 
 func TestRepointSingle_FromAdapterMismatchErrors(t *testing.T) {
 	root, rec := repointFixture(t) // adapter old-runner
-	_, err := RepointSingle(root, rec.TestCase, singleOpts("wrong-runner", "new-runner"))
+	_, err := RepointSingle(root, rec.TestCase, withSingleAuth(t, root, rec.TestCase, singleOpts("wrong-runner", "new-runner")))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "is currently adapter")
 }
 
 func TestRepointSingle_Repoints(t *testing.T) {
 	root, rec := repointFixture(t) // adapter old-runner
-	res, err := RepointSingle(root, rec.TestCase, singleOpts("old-runner", "new-runner"))
+	res, err := RepointSingle(root, rec.TestCase, withSingleAuth(t, root, rec.TestCase, singleOpts("old-runner", "new-runner")))
 	require.NoError(t, err)
 	assert.Equal(t, "repointed", res.Status)
 	updated, _, _ := wiring.Find(root, rec.TestCase, rec.Framework)
@@ -1562,7 +1605,7 @@ func TestRepointSingle_Repoints(t *testing.T) {
 func TestRepointSingle_RejectsMode3Adapter(t *testing.T) {
 	// CODEX-016: single-TC repoint self-enforces Option A too.
 	root, rec := repointFixture(t)
-	_, err := RepointSingle(root, rec.TestCase, singleOpts("old-runner", "agent-execute-script"))
+	_, err := RepointSingle(root, rec.TestCase, withSingleAuth(t, root, rec.TestCase, singleOpts("old-runner", "agent-execute-script")))
 	require.Error(t, err)
 }
 
@@ -1592,11 +1635,11 @@ func TestPlanRefresh_UnwritableFramework_FailsInBothModes(t *testing.T) {
 		ArtefactHash: "deadbeefdeadbeef",
 	}
 
-	_, planErr := PlanRefresh(root, rec)
+	_, planErr := PlanRefresh(root, mustOpSnapshot(t, root), rec)
 	require.Error(t, planErr, "the preview must not approve a record the writer will refuse")
 	assert.Contains(t, planErr.Error(), "wiring cannot be written")
 
-	refreshed, refreshErr := RefreshRecord(root, rec)
+	refreshed, refreshErr := RefreshRecord(root, mustOpSnapshot(t, root), rec)
 	require.Error(t, refreshErr, "the real refresh must fail too")
 	assert.False(t, refreshed)
 	assert.Equal(t, planErr.Error(), refreshErr.Error(), "dry and real must report the same cause")
@@ -1630,11 +1673,21 @@ func TestPlanRefresh_UnwritableFramework_CurrentRecordStillReportsNoOp(t *testin
 		ArtefactHash: artHash,
 	}
 
-	plan, err := PlanRefresh(root, rec)
+	plan, err := PlanRefresh(root, mustOpSnapshot(t, root), rec)
 	require.NoError(t, err, "a current record is never written, so it must not be rejected")
 	assert.False(t, plan.Changed)
 
-	refreshed, err := RefreshRecord(root, rec)
+	refreshed, err := RefreshRecord(root, mustOpSnapshot(t, root), rec)
 	require.NoError(t, err)
 	assert.False(t, refreshed, "no write, no error -- identical to the preview")
+}
+
+// mustOpSnapshot builds the one snapshot an operation is entitled to, for tests
+// that call PlanRefresh / RefreshRecord directly. Production callers thread the
+// snapshot their own operation already built (REV-159 CODEX-006).
+func mustOpSnapshot(t *testing.T, root string) *testcase.Snapshot {
+	t.Helper()
+	snap, err := testcase.NewSnapshot(root)
+	require.NoError(t, err)
+	return snap
 }

@@ -18,6 +18,7 @@ import (
 	"github.com/aitestmanagement/gtms-cli/internal/prompt"
 	"github.com/aitestmanagement/gtms-cli/internal/result"
 	"github.com/aitestmanagement/gtms-cli/internal/task"
+	"github.com/aitestmanagement/gtms-cli/internal/testcase"
 )
 
 // defaultSyncTimeout is the timeout applied to sync adapter invocations when no
@@ -90,8 +91,155 @@ func Invoke(ctx context.Context, cfg *config.Config, resolved *ResolvedAdapter, 
 	return InvokeWithRoot(ctx, projectRoot, cfg, resolved, target, flags)
 }
 
+// CarriedOwnerError is the invocation-boundary refusal required by ADR-024 s5:
+// the owner an action command carries must be present, must be the owner OF THE
+// TARGET, and must still be the identity the spec on disk declares.
+//
+// REV-160 CODEX-002. Each of automate, execute and prime resolves ownership in
+// its own Cobra wrapper, and each writes the same three-step guard. That leaves
+// the LAST boundary before external code runs -- InvokeWithRoot, which generates
+// the task id, writes the task file and result contract, and then invokes the
+// adapter -- consuming flags.Owner without checking any of it. A caller that
+// resolved the owner of tc-b and invoked target tc-a got task, result and wiring
+// records attributed to tc-a while the adapter read tc-b's spec; a nil owner got
+// an empty source path and a silently disabled drift gate. The bulk loops reach
+// this boundary without the single-target validation step at all.
+//
+// Detected with errors.As. It is deliberately a hard refusal rather than a
+// warning: past this point the command has already created state.
+type CarriedOwnerError struct {
+	// Command is the action being invoked (automate, execute, prime).
+	Command string
+	// Target is the id the invocation is attributed to.
+	Target string
+	// OwnerID is the id the carried owner actually proves; empty when no owner
+	// was carried at all.
+	OwnerID string
+	// Reason explains which of the three conditions failed.
+	Reason string
+}
+
+// Error renders with every id passed through the central identity sanitiser
+// (ADR-024 s7) -- Target comes from the command line and OwnerID from a spec on
+// disk, so neither is trusted terminal input.
+func (e *CarriedOwnerError) Error() string {
+	return fmt.Sprintf("refusing to invoke %s for '%s': %s",
+		e.Command, testcase.SanitizeIdentityString(e.Target), e.Reason)
+}
+
+// requireCarriedOwner is the boundary check itself.
+//
+// create is exempt BY DESIGN, not by omission: it is folder-scoped because no
+// test case exists yet (ADR-024 s1), so there is no owner for it to carry. Every
+// other command reaching this boundary is one of the three action commands whose
+// consumer-matrix row requires a uniquely proven owner before invocation.
+//
+// The third condition -- that the spec still declares the identity -- reuses
+// ValidateTestCaseOwner rather than reading the file again here. One identity
+// implementation is the point (ADR-024 s5); a second copy is how two checks come
+// to disagree. Note that it does NOT re-resolve the bare id: it reads the spec
+// the carried owner already points at.
+func requireCarriedOwner(projectRoot string, resolved *ResolvedAdapter, target string, flags CommandFlags) error {
+	switch resolved.Command {
+	case "automate", "execute", "prime":
+	default:
+		return nil
+	}
+
+	owner := flags.Owner
+	if owner == nil {
+		return &CarriedOwnerError{
+			Command: resolved.Command,
+			Target:  target,
+			Reason:  "no resolved owner reached the invocation boundary, so nothing proves the test case exists or which spec it is",
+		}
+	}
+	if owner.ID() != target {
+		return &CarriedOwnerError{
+			Command: resolved.Command,
+			Target:  target,
+			OwnerID: owner.ID(),
+			Reason: fmt.Sprintf("the carried owner proves '%s', a different test case -- the invocation would be attributed to '%s' while using another test case's spec",
+				testcase.SanitizeIdentityString(owner.ID()), testcase.SanitizeIdentityString(target)),
+		}
+	}
+	if violations := ValidateTestCaseOwner(projectRoot, owner); len(violations) > 0 {
+		return &CarriedOwnerError{
+			Command: resolved.Command,
+			Target:  target,
+			OwnerID: owner.ID(),
+			Reason:  "the owning spec no longer declares that identity -- " + FormatValidationErrors(violations),
+		}
+	}
+	return nil
+}
+
 // InvokeWithRoot is like Invoke but accepts an explicit project root (useful for testing).
-func InvokeWithRoot(ctx context.Context, projectRoot string, cfg *config.Config, resolved *ResolvedAdapter, target string, flags CommandFlags) (*InvokeResult, error) {
+func InvokeWithRoot(ctx context.Context, projectRoot string, cfg *config.Config, resolved *ResolvedAdapter, target string, flags CommandFlags) (invokeRes *InvokeResult, invokeErr error) {
+	// ADR-024 s5 / REV-160 CODEX-002: the LAST boundary before any state is
+	// created or any external code runs. It refuses a nil, mismatched, or stale
+	// owner BEFORE the task id is generated, so a refusal leaves no task file, no
+	// result contract, no wiring and no adapter process behind.
+	if err := requireCarriedOwner(projectRoot, resolved, target, flags); err != nil {
+		return nil, err
+	}
+
+	// The second half of the same boundary: for every automate invocation the
+	// wiring index is proved COMPLETE, and for the Tier 0 path the artefact this
+	// run will write is planned HERE, from the owner just proved, refused if any
+	// other identity holds it, and then RESERVED for the rest of the operation.
+	// Planning before the boundary is the point -- both mutating paths below (the
+	// --force sweep and the adapter's own write) happen after it, so no file is
+	// removed and no artefact is overwritten on behalf of a run that was never
+	// allowed to proceed.
+	//
+	// flags.Claims carries the operation's claim set when a bulk caller built one
+	// (scanned once, before the batch mutated anything). When it is nil this
+	// builds a set for this single invocation -- the same abstraction at a
+	// smaller scope, not a second code path.
+	claims, reservation, err := enforceArtefactOwnership(projectRoot, resolved, flags)
+	if err != nil {
+		return nil, err
+	}
+	flags.Claims = claims
+
+	// The AUTHORISED value itself, read off the reservation the boundary just
+	// took, and carried from here into the adapter context. It is deliberately
+	// not re-planned downstream: the guarantee the carrier exists to give is that
+	// the path the adapter writes IS the path that was collision-checked and
+	// reserved, not a second computation that agrees with it. Empty when nothing
+	// was reserved (not automate, not Tier 0, no planned artefact), which is the
+	// carrier BuiltinAutomate refuses on.
+	plannedArtefact := reservation.PlannedPath()
+
+	// The reservation is resolved from ONE defer so that no return path can skip
+	// it. Success and failure are read off exactly the two conditions the bulk
+	// CLI already uses to count an item as failed -- a non-nil error, or a result
+	// whose Status is "error" -- so this introduces no partial-failure policy of
+	// its own; it mirrors the command's.
+	//
+	// Settle then overrides that verdict when DURABLE STATE disagrees with it:
+	// steps run after the adapter has already written its wiring record, so an
+	// invocation can fail with the project's ownership already changed on disk.
+	// See ArtefactReservation.Settle.
+	if reservation != nil {
+		defer func() {
+			succeeded := invokeErr == nil && invokeRes != nil && invokeRes.Status != "error"
+			reservation.Settle(succeeded)
+		}()
+	}
+
+	// Files the --force sweep DECLINED to remove are reported to the operator.
+	// A silent non-deletion is indistinguishable from a sweep that ran and found
+	// nothing, so a stale file that survives on purpose looks identical to a bug.
+	// Collected here and attached from a defer so every return path carries them.
+	var sweepWarnings []string
+	defer func() {
+		if invokeRes != nil && len(sweepWarnings) > 0 {
+			invokeRes.Warnings = append(invokeRes.Warnings, sweepWarnings...)
+		}
+	}()
+
 	// Apply timeout: per-adapter config overrides the default; sync adapters
 	// always get a deadline (BUG-131). Async adapters return immediately so
 	// no default is needed.
@@ -140,7 +288,7 @@ func InvokeWithRoot(ctx context.Context, projectRoot string, cfg *config.Config,
 	// Set automate-specific task file fields
 	if resolved.Command == "automate" {
 		// Find the source test case file
-		source := findTestCaseSource(projectRoot, target)
+		source := ownerSource(flags.Owner)
 		if source != "" {
 			tf.Reference = source
 			// Read test case content for prompt injection (BUG-013)
@@ -153,9 +301,8 @@ func InvokeWithRoot(ctx context.Context, projectRoot string, cfg *config.Config,
 		}
 	}
 
-	_, err := task.Create(projectRoot, tf, "")
-	if err != nil {
-		return nil, fmt.Errorf("creating task file: %w", err)
+	if _, createErr := task.Create(projectRoot, tf, ""); createErr != nil {
+		return nil, fmt.Errorf("creating task file: %w", createErr)
 	}
 
 	// 4. Ensure .gtms/ directories exist
@@ -204,14 +351,14 @@ func InvokeWithRoot(ctx context.Context, projectRoot string, cfg *config.Config,
 	}
 
 	// 8. Build AdapterContext with command-specific fields
-	ac := buildAdapterContext(projectRoot, taskID, resolved, target, flags, branch, cfg, workDir, resultPath)
+	ac := buildAdapterContext(projectRoot, taskID, resolved, target, flags, branch, cfg, workDir, resultPath, plannedArtefact)
 	ac.Guides = guides
 	ac.TestCaseContent = testCaseContent
 	ac.Force = flags.Force
 
 	// CON-023 / ENH-146 (manual-execute exception): if the manual-execute
 	// adapter pipeline parsed a framework out of the result template, that
-	// value is the authoritative source — wiring does not exist for
+	// value is the authoritative source -- wiring does not exist for
 	// manual-only TCs. Update rc.Framework on disk so the reader overlay
 	// sees the right framework for this terminal handoff.
 	if ac.ResultFramework != "" && ac.ResultFramework != rc.Framework {
@@ -272,7 +419,7 @@ func InvokeWithRoot(ctx context.Context, projectRoot string, cfg *config.Config,
 	// same warning vocabulary regardless of which branch wrote them.
 	// task.Move failures escalate to a Go-error return because the task file
 	// not making it into `error/` is a hard on-disk inconsistency the caller
-	// must see — the rest of the system relies on task placement.
+	// must see -- the rest of the system relies on task placement.
 	if ac.ManualExecuteError != nil {
 		now := time.Now().UTC().Format(time.RFC3339)
 		summary := ac.ManualExecuteError.Error()
@@ -297,7 +444,7 @@ func InvokeWithRoot(ctx context.Context, projectRoot string, cfg *config.Config,
 		if rcErr != nil {
 			warnings = append(warnings, fmt.Sprintf("Pipeline record could not be written: %v", rcErr))
 		} else {
-			_, pWarn, pErr := buildPipelineRecords(projectRoot, cfg, tf, rc)
+			_, pWarn, pErr := buildPipelineRecords(projectRoot, cfg, tf, rc, flags.Owner)
 			warnings = append(warnings, pWarn...)
 			if pErr != nil {
 				warnings = append(warnings, fmt.Sprintf("Pipeline record could not be written: %v", pErr))
@@ -317,12 +464,40 @@ func InvokeWithRoot(ctx context.Context, projectRoot string, cfg *config.Config,
 		}, nil
 	}
 
-	// 10a. Pre-adapter cleanup: remove existing output files by TC ID prefix (BUG-031)
-	// When --force is set, the adapter will regenerate output. Old files must be removed
-	// first to avoid duplicates when the adapter produces a different filename slug.
-	if flags.Force && (resolved.Command == "automate" || resolved.Command == "create") {
-		effectiveDir := filepath.Join(ac.OutputDir, ac.OutputSubdir)
-		_ = cleanupExistingOutputByTCID(effectiveDir, target)
+	// 10a. Pre-adapter cleanup: remove the target's own stale output (BUG-031).
+	// When --force is set, the adapter will regenerate output, so the target's own
+	// previous artefacts must go first. Which files are the TARGET'S is decided by
+	// wiring, never by basename -- see cleanupExistingOutputForOwner.
+	//
+	// The sweep is scoped to the directory of the PLANNED ARTEFACT, i.e. the exact
+	// location the Tier 0 write will land in. Deriving it any other way is how the
+	// sweep came to run in the wrong directory entirely: with output-dir unset,
+	// ac.OutputDir is the SpecsDir default (gtms/automation/specs/<adapter>/)
+	// while the framework-native write goes to test/acceptance/, so the sweep
+	// walked a directory that never contained the artefact. For a non-Tier-0
+	// adapter there is no planned path (the adapter owns its own output naming --
+	// see the adapter-boundary limitation noted on cleanupExistingOutputForOwner)
+	// and the configured output dir remains the only scope available.
+	//
+	// A refusal here is a hard error: an unprovable wiring index means the sweep
+	// cannot know whose files these are, and guessing is what destroyed data.
+	if flags.Force && resolved.Command == "automate" {
+		sweepDir := filepath.Join(ac.OutputDir, ac.OutputSubdir)
+		if ac.PlannedArtefact != "" {
+			sweepDir = filepath.Dir(ac.PlannedArtefact)
+		}
+		kept, cleanupErr := cleanupExistingOutputForOwner(flags.Claims, sweepDir, target)
+		sweepWarnings = append(sweepWarnings, kept...)
+		if cleanupErr != nil {
+			tf.Error = cleanupErr.Error()
+			_ = task.Move(projectRoot, tf, "error")
+			_ = result.Update(resultPath, map[string]interface{}{
+				"status":    "error",
+				"summary":   cleanupErr.Error(),
+				"completed": time.Now().UTC().Format(time.RFC3339),
+			})
+			return nil, cleanupErr
+		}
 	}
 
 	// 10b. Snapshot output dir before invocation (for artefact detection)
@@ -434,13 +609,28 @@ func InvokeWithRoot(ctx context.Context, projectRoot string, cfg *config.Config,
 			now := time.Now().UTC().Format(time.RFC3339)
 			summary := FormatValidationErrors(valResult.Violations)
 
-			_ = result.Update(resultPath, map[string]interface{}{
+			// REV-164 CODEX-001: this branch runs BEFORE handleSyncResult, so
+			// it never reached the BUG-191 recovery. Update decodes the file on
+			// disk before merging, so when the adapter also left the handoff
+			// unusable (malformed YAML, missing, unreadable) it writes nothing
+			// and fails. The error used to be discarded, which routed the task
+			// to error/ but left an unreadable durable handoff -- falsifying
+			// BUG-191's promise that all four synchronous commands leave a
+			// READABLE error handoff for an unusable contract.
+			//
+			// So: stop discarding the error, and on failure hand the same
+			// reconstruction path the BUG-191 recovery uses BOTH diagnostics.
+			// The violations stay primary (they are why this branch exists);
+			// the contract-read failure is appended, never substituted.
+			if updateErr := result.Update(resultPath, map[string]interface{}{
 				"status":           "error",
 				"completed":        now,
 				"attempts":         1,
 				"summary":          summary,
 				"validation-error": summary,
-			})
+			}); updateErr != nil {
+				return recoverUnusableContract(ctx, projectRoot, tf, resultPath, resolved, invResult, flags.ArtefactHash, ac.ArtefactFile, updateErr, summary)
+			}
 
 			tf.Error = summary
 			_ = task.Move(projectRoot, tf, "error")
@@ -462,7 +652,7 @@ func InvokeWithRoot(ctx context.Context, projectRoot string, cfg *config.Config,
 
 	// 12b. Handle result based on mode
 	if resolved.Mode == "sync" {
-		invokeRes, invokeErr := handleSyncResult(ctx, projectRoot, cfg, tf, resultPath, resolved, invResult, ac.OutputDir, preInvokeFiles, flags.ArtefactHash)
+		invokeRes, invokeErr := handleSyncResult(ctx, projectRoot, cfg, tf, resultPath, resolved, invResult, ac.OutputDir, preInvokeFiles, flags.ArtefactHash, ac.ArtefactFile, flags.Owner)
 		if invokeRes != nil && testCaseReadErr != nil {
 			invokeRes.Warnings = append(invokeRes.Warnings, fmt.Sprintf("Test case file found but could not be read: %v", testCaseReadErr))
 		}
@@ -482,8 +672,15 @@ func InvokeWithRoot(ctx context.Context, projectRoot string, cfg *config.Config,
 }
 
 // buildAdapterContext creates the AdapterContext with command-specific field values.
-func buildAdapterContext(projectRoot, taskID string, resolved *ResolvedAdapter, target string, flags CommandFlags, branch string, cfg *config.Config, workDir, resultPath string) *AdapterContext {
+//
+// plannedArtefact is the absolute artefact path the invocation boundary already
+// AUTHORISED and reserved (ArtefactReservation.PlannedPath). It is a parameter
+// rather than something recomputed here on purpose: that is what makes the value
+// the adapter writes to provably the value the ownership check inspected. Pass
+// "" from any caller that took no reservation.
+func buildAdapterContext(projectRoot, taskID string, resolved *ResolvedAdapter, target string, flags CommandFlags, branch string, cfg *config.Config, workDir, resultPath, plannedArtefact string) *AdapterContext {
 	ctx := &AdapterContext{
+		Owner:          flags.Owner,
 		TaskID:         taskID,
 		Command:        resolved.Command,
 		Branch:         branch,
@@ -536,9 +733,17 @@ func buildAdapterContext(projectRoot, taskID string, resolved *ResolvedAdapter, 
 		} else {
 			ctx.OutputDir = filepath.Join(layout.SpecsDir(projectRoot), resolved.Name)
 		}
-		tcSource := findTestCaseSource(projectRoot, target)
+		tcSource := ownerSource(flags.Owner)
 		ctx.OutputSubdir = deriveOutputSubdir(tcSource)
 		ctx.TestCaseFile = tcSource
+		// The planned artefact path, decided by the carried owner BEFORE the
+		// adapter is invoked, collision-checked and reserved there, and handed in
+		// as plannedArtefact so this is the same value rather than a second
+		// computation of it (see enforceArtefactOwnership,
+		// ArtefactReservation.PlannedPath and BuiltinAutomate). Empty for every
+		// path that has no planned Tier 0 artefact.
+		ctx.PlannedArtefact = plannedArtefact
+		ctx.Claims = flags.Claims
 
 		// ENH-132: Populate manual-prime context fields when framework is manual.
 		// This is framework-specific context population, not tier-specific branching.
@@ -585,7 +790,7 @@ func buildAdapterContext(projectRoot, taskID string, resolved *ResolvedAdapter, 
 		} else {
 			ctx.OutputDir = filepath.Join(layout.SpecsDir(projectRoot), resolved.Name)
 		}
-		tcSource := findTestCaseSource(projectRoot, target)
+		tcSource := ownerSource(flags.Owner)
 		ctx.OutputSubdir = deriveOutputSubdir(tcSource)
 		ctx.TestCaseFile = tcSource
 
@@ -628,7 +833,7 @@ func buildAdapterContext(projectRoot, taskID string, resolved *ResolvedAdapter, 
 		} else {
 			ctx.OutputDir = filepath.Join(projectRoot, "results")
 		}
-		tcSource := findTestCaseSource(projectRoot, target)
+		tcSource := ownerSource(flags.Owner)
 		ctx.OutputSubdir = deriveOutputSubdir(tcSource)
 		ctx.TestCaseFile = tcSource
 
@@ -637,7 +842,7 @@ func buildAdapterContext(projectRoot, taskID string, resolved *ResolvedAdapter, 
 		// branching.
 		//
 		// Adapter first, framework second: keys solely on the resolved adapter
-		// via IsManualFramework — same predicate cli/execute.go uses to defer
+		// via IsManualFramework -- same predicate cli/execute.go uses to defer
 		// the generic artefact pre-check. Using ResolveFramework() == "manual"
 		// here would diverge for ResolvedAdapter{Name: "manual-execute",
 		// Config: &AdapterConfig{Framework: ""}}: the CLI defers to the
@@ -671,7 +876,12 @@ func buildAdapterContext(projectRoot, taskID string, resolved *ResolvedAdapter, 
 // execute adapter when writing the new wiring record (CON-023 / ENH-145).
 // ctx is threaded through so Tier 2 post-overwrite Git-context re-stamping
 // (CON-023 / ENH-146) can honour cancellation.
-func handleSyncResult(ctx context.Context, projectRoot string, cfg *config.Config, tf *task.TaskFile, resultPath string, resolved *ResolvedAdapter, invResult *InvocationResult, outputDir string, preInvokeFiles map[string]struct{}, artefactHash string) (res *InvokeResult, retErr error) {
+// artefactPath is the trusted, GTMS-held artefact path for this invocation
+// (ac.ArtefactFile at the sole call site). It is threaded in -- rather than
+// rediscovered -- so the BUG-191 unusable-contract recovery can stamp the
+// overlay-join `artefact` field from state GTMS holds, never from the adapter's
+// unparseable document. Empty on paths that have no artefact (e.g. automate).
+func handleSyncResult(ctx context.Context, projectRoot string, cfg *config.Config, tf *task.TaskFile, resultPath string, resolved *ResolvedAdapter, invResult *InvocationResult, outputDir string, preInvokeFiles map[string]struct{}, artefactHash string, artefactPath string, owner *testcase.Owner) (res *InvokeResult, retErr error) {
 	now := time.Now().UTC().Format(time.RFC3339)
 
 	// ENH-191: capture the wiring execute adapter written during a sync
@@ -706,7 +916,7 @@ func handleSyncResult(ctx context.Context, projectRoot string, cfg *config.Confi
 			// ENH-130: Validate script-written contracts at the Tier 2 read boundary.
 			// Tier 2 adapters write contracts via heredoc, bypassing result.Update validation.
 			if validateErr := result.Validate(rc); validateErr != nil {
-				// Script produced a malformed contract — treat as adapter error.
+				// Script produced a malformed contract -- treat as adapter error.
 				now := time.Now().UTC().Format(time.RFC3339)
 				originalContent := fmt.Sprintf("status: %s, result: %s, summary: %s", rc.Status, rc.Result, rc.Summary)
 				recoveryUpdate := map[string]interface{}{
@@ -735,7 +945,7 @@ func handleSyncResult(ctx context.Context, projectRoot string, cfg *config.Confi
 				}, nil
 			}
 			// ENH-080: hard stop for multi-file automate. Override any status
-			// the Tier 2 script set — two <gtms-file> tags for a single
+			// the Tier 2 script set -- two <gtms-file> tags for a single
 			// automate TC is always wrong, even if the script reported
 			// success.
 			if resolved.Command == "automate" && len(invResult.SavedFiles) > 1 {
@@ -773,7 +983,7 @@ func handleSyncResult(ctx context.Context, projectRoot string, cfg *config.Confi
 				rc.Target = tf.Target
 				restoreUpdates["target"] = tf.Target
 			}
-			// Re-stamp Git context unconditionally — the adapter does not
+			// Re-stamp Git context unconditionally -- the adapter does not
 			// own this metadata. Tier 2 scripts that DO set git fields
 			// are overridden so the reader gets a consistent view.
 			if commit, gErr := gitpkg.HeadCommit(ctx, projectRoot); gErr == nil {
@@ -870,7 +1080,7 @@ func handleSyncResult(ctx context.Context, projectRoot string, cfg *config.Confi
 
 			// Build pipeline records for sync tasks (BUG-023: call on both success and failure
 			// so that automation record's last-formal-result is updated to reflect the outcome)
-			wa, pWarn, pErr := buildPipelineRecords(projectRoot, cfg, tf, rc)
+			wa, pWarn, pErr := buildPipelineRecords(projectRoot, cfg, tf, rc, owner)
 			wiringAdapter = wa
 			warnings = append(warnings, pWarn...)
 			if pErr != nil {
@@ -923,6 +1133,23 @@ func handleSyncResult(ctx context.Context, projectRoot string, cfg *config.Confi
 				Target:        tf.Target,
 			}, nil
 		}
+		// BUG-191: an unusable post-invocation handoff -- unparseable YAML, a
+		// deleted file, or a file the adapter made unreadable -- is an
+		// adapter-contract error, not a pass. result.Read surfaces all three as
+		// a non-nil error (os.ReadFile failure for missing/unreadable, a decode
+		// failure for malformed), so a single err != nil check catches the whole
+		// class rather than special-casing fs.ErrNotExist plus YAML errors.
+		//
+		// This runs before exit-code handling, so it covers BOTH the exit-zero
+		// and non-zero adapter-exit paths (they share this Tier 2 block); the
+		// diagnostic folds in the process exit code when it is non-zero. A
+		// readable but non-terminal (pending/in-progress/empty-status) handoff
+		// does NOT reach here -- err is nil for it -- so it keeps falling through
+		// to exit-code handling (tc-7d284f41 and the BUG-111 empty-status
+		// diagnostic are preserved).
+		if err != nil {
+			return recoverUnusableContract(ctx, projectRoot, tf, resultPath, resolved, invResult, artefactHash, artefactPath, err, "")
+		}
 		// Fall through to exit code handling if status is still pending
 	}
 
@@ -930,7 +1157,7 @@ func handleSyncResult(ctx context.Context, projectRoot string, cfg *config.Confi
 	if invResult.ExitCode == 0 {
 		// ENH-080: hard stop for multi-file automate. If the streaming writer
 		// captured more than one <gtms-file> tag for a single automate TC,
-		// fail the task and skip building the automation record — no
+		// fail the task and skip building the automation record -- no
 		// comma-separated artefact: ever ships in a record GTMS writes.
 		if resolved.Command == "automate" && len(invResult.SavedFiles) > 1 {
 			return rejectMultiFileAutomate(projectRoot, tf, resultPath, resolved, invResult)
@@ -1052,7 +1279,7 @@ func handleSyncResult(ctx context.Context, projectRoot string, cfg *config.Confi
 		// S3: Build pipeline records for completed sync tasks
 		rc, rcErr := result.Read(resultPath)
 		if rcErr == nil {
-			wa, pWarn, pErr := buildPipelineRecords(projectRoot, cfg, tf, rc)
+			wa, pWarn, pErr := buildPipelineRecords(projectRoot, cfg, tf, rc, owner)
 			wiringAdapter = wa
 			warnings = append(warnings, pWarn...)
 			if pErr != nil {
@@ -1162,7 +1389,7 @@ func handleSyncResult(ctx context.Context, projectRoot string, cfg *config.Confi
 	// last-formal-result is updated to reflect the outcome (not left empty).
 	rc, rcErr := result.Read(resultPath)
 	if rcErr == nil {
-		_, pWarn, pErr := buildPipelineRecords(projectRoot, cfg, tf, rc)
+		_, pWarn, pErr := buildPipelineRecords(projectRoot, cfg, tf, rc, owner)
 		warnings = append(warnings, pWarn...)
 		if pErr != nil {
 			warnings = append(warnings, fmt.Sprintf("Pipeline record could not be written: %v", pErr))
@@ -1179,6 +1406,185 @@ func handleSyncResult(ctx context.Context, projectRoot string, cfg *config.Confi
 		Summary:  summary,
 		Filename: tf.Filename(),
 		Warnings: warnings,
+		Target:   tf.Target,
+	}, nil
+}
+
+// recoverUnusableContract handles the BUG-191 fail-closed path: a synchronous
+// Tier 2 adapter finished but left its result handoff unusable (unparseable,
+// missing, or unreadable). It reconstructs a valid error handoff from GTMS-held
+// trusted state -- never from the adapter's document -- routes the task to
+// error/, and returns an error-status result.
+//
+// It does NOT use result.Update: that function decodes the existing file before
+// merging, so it would re-hit the same read/parse error and write nothing. It
+// uses result.Reconstruct, which replaces the file outright.
+//
+// It deliberately does NOT build pipeline records: a run whose contract could
+// not be read must not write a wiring record or a favourable execution result.
+//
+// The return is (result, nil), not a Go error: the CLI layers decide their
+// process exit from InvokeResult.Status (execute/create/prime exit non-zero on
+// status error; single-target automate renders the error but exits 0). Returning
+// a Go error here would change automate's shipped exit contract (tc-376157c6 /
+// tc-b65b61cf).
+//
+// The one exception is a persistence failure of its own -- the handoff rewrite
+// or the task move failing. That is returned as a Go error, and the task is
+// routed to error/ first either way, so the durable state BUG-191 requires does
+// not depend on the rewrite succeeding.
+// validationSummary is empty for every caller except gtms create's post-write
+// validation branch (REV-164 CODEX-001). When it is set, the create validation
+// violations are the primary diagnostic and readErr is the secondary one: both
+// are reported to the operator and both are persisted, and the violations are
+// also kept under the contract's own validation-error key so the durable record
+// keeps the shape BUG-038 specifies.
+func recoverUnusableContract(ctx context.Context, projectRoot string, tf *task.TaskFile, resultPath string, resolved *ResolvedAdapter, invResult *InvocationResult, artefactHash, artefactPath string, readErr error, validationSummary string) (*InvokeResult, error) {
+	// readErr already carries "parsing result contract: ..." for malformed YAML
+	// and "reading result contract: ..." for a missing or unreadable file, so
+	// the operator- and handoff-facing diagnostic names the failure precisely.
+	diag := fmt.Sprintf("adapter result contract unusable: %v", readErr)
+	// Fold in the process exit code when the adapter also exited non-zero, so a
+	// crash-plus-malformed run names both facts (BUG-191 tc-3940522b).
+	if invResult != nil && invResult.ExitCode != 0 {
+		diag = fmt.Sprintf("Process exited with code %d; %s", invResult.ExitCode, diag)
+	}
+
+	// REV-164 CODEX-001: gtms create's post-write validation branch arrives here
+	// with violations already in hand. They lead the operator-facing text, since
+	// rejecting the specs is why that branch exists; the unreadable handoff is
+	// appended after it. Neither fact replaces the other.
+	operatorDiag := diag
+	if validationSummary != "" {
+		operatorDiag = fmt.Sprintf("%s\n%s", validationSummary, diag)
+	}
+
+	// Preserve the adapter's stdout+stderr alongside the read error in the log
+	// so a diagnostic (e.g. a missing-tooling message on stderr) is not lost.
+	logText := operatorDiag
+	if invResult != nil {
+		if adapterLog := buildFailureLog(invResult.Stdout, invResult.Stderr); adapterLog != "" {
+			logText = fmt.Sprintf("%s\n%s", adapterLog, operatorDiag)
+		}
+	}
+
+	// BUG-084 caps: keep the reconstructed contract bounded. The diagnostic is
+	// normally tiny, so this only bites on a very chatty adapter stderr.
+	cappedSummary := result.CapSummary(operatorDiag)
+	// The 1 KiB summary cap must not be what drops one of the two diagnostics.
+	// A long violation list would push the contract-read failure off the end,
+	// so trim the violation list instead and keep it whole in log: and
+	// validation-error:. When the read error alone already fills the cap there
+	// is no room for both; the newer fact wins and the violations survive in
+	// the other two fields.
+	if validationSummary != "" && !strings.HasSuffix(cappedSummary, diag) {
+		if room := result.SummarySizeCapBytes - len(diag) - len("...\n"); room > 0 {
+			head, _ := result.TruncateUTF8(validationSummary, room)
+			cappedSummary = head + "...\n" + diag
+		} else {
+			cappedSummary = result.CapSummary(diag)
+		}
+	}
+	cappedLog := logText
+	var notesSpill string
+	if len(cappedLog) > result.NotesSizeCapBytes {
+		if truncated, spill, capErr := result.ApplyLogCap(projectRoot, tf.ID, cappedLog); capErr == nil {
+			cappedLog = truncated
+			notesSpill = spill
+		} else {
+			// If the spill write fails, still bound the inline log defensively.
+			cappedLog = cappedLog[:result.NotesSizeCapBytes]
+		}
+	}
+
+	rc := &result.ResultContract{
+		Task:    tf.ID,
+		Command: resolved.Command,
+		Target:  tf.Target,
+		Adapter: resolved.Name,
+		Mode:    resolved.Mode,
+		Created: tf.Created,
+		Status:  "error",
+		// Result is intentionally empty: an unusable document has no
+		// authoritative outcome, and nothing may be salvaged from it.
+		Framework: tf.Framework,
+		Summary:   cappedSummary,
+		Log:       cappedLog,
+		// REV-164 CODEX-001: keep the BUG-038 validation-error key on the
+		// durable record. The healthy-handoff path writes it through Update's
+		// map merge; reconstruction marshals the struct, so without this field
+		// the key would vanish exactly on the combined-failure path.
+		ValidationError: result.CapSummary(validationSummary),
+		// REV-164 CLAUDE-002 / CODEX-002: attempts is 1 at every other
+		// terminal write site (invoker.go 615, 1165, 1323, 1723); a
+		// recovered run is one attempt like any other.
+		Attempts:  1,
+		Completed: time.Now().UTC().Format(time.RFC3339),
+	}
+	// REV-164 CLAUDE-002 / CODEX-002: executed_by and environment are
+	// GTMS-held trusted state, set from --executed-by / --env onto the task
+	// file long before the adapter ran (invoker.go 278-279). Replacing the
+	// handoff document wholesale would otherwise drop them, so the dashboard
+	// row for this run would lose the operator and environment exactly when
+	// an infrastructure failure makes them most useful. Nothing here comes
+	// from the adapter's unusable document.
+	if tf.ExecutedBy != "" {
+		rc.ExecutedBy = tf.ExecutedBy
+	}
+	if tf.Environment != "" {
+		rc.Environment = tf.Environment
+	}
+	// Re-stamp Git context from the repository, matching the normal terminal
+	// Tier 2 path. GTMS stamped these at contract creation (invoker.go 336)
+	// and owns them outright; the environment, not the adapter, is the source.
+	stampGitContext(ctx, projectRoot, rc)
+	if notesSpill != "" {
+		rc.NotesSpill = notesSpill
+	}
+	if artefactHash != "" {
+		rc.ArtefactHash = artefactHash
+	}
+	// artefactPath is GTMS-held trusted state (ac.ArtefactFile). Normalise an
+	// absolute path to a project-relative forward-slash form so the dashboard
+	// overlay join (resolveOverlayFramework) matches the wiring artefact path.
+	if artefactPath != "" {
+		rc.Artefact = artefactPath
+		if filepath.IsAbs(artefactPath) {
+			if rel, relErr := filepath.Rel(projectRoot, artefactPath); relErr == nil && !strings.HasPrefix(rel, "..") {
+				rc.Artefact = filepath.ToSlash(rel)
+			}
+		}
+	}
+
+	reconstructErr := result.Reconstruct(resultPath, rc)
+
+	// REV-164 CLAUDE-003 / CODEX-001: route the task to error/ even when the
+	// handoff rewrite failed. BUG-191's Expected Behavior requires the task to
+	// land in error/, and that must not be conditional on the rewrite
+	// succeeding -- otherwise a read-only .gtms/results or a directory squatting
+	// on the handoff path strands the task in in-progress/, where it also blocks
+	// the next run as a duplicate active task.
+	tf.Error = operatorDiag
+	moveErr := task.Move(projectRoot, tf, "error")
+
+	if reconstructErr != nil {
+		if moveErr != nil {
+			return nil, fmt.Errorf("reconstructing result contract: %w (and moving task file: %v)", reconstructErr, moveErr)
+		}
+		return nil, fmt.Errorf("reconstructing result contract: %w", reconstructErr)
+	}
+	if moveErr != nil {
+		return nil, fmt.Errorf("moving task file: %w", moveErr)
+	}
+
+	return &InvokeResult{
+		TaskID:   tf.ID,
+		Adapter:  resolved.Name,
+		Mode:     resolved.Mode,
+		Branch:   tf.Branch,
+		Status:   "error",
+		Summary:  cappedSummary,
+		Filename: tf.Filename(),
 		Target:   tf.Target,
 	}, nil
 }
@@ -1237,7 +1643,7 @@ func stampGitContext(ctx context.Context, projectRoot string, rc *result.ResultC
 //     at gtms/execution/<task>--<tc>.results.yaml (ADR-020 / CON-016).
 //     Wiring is immutable on the execute path; the result contract under
 //     .gtms/results/ is the canonical store of the test outcome.
-func buildPipelineRecords(projectRoot string, cfg *config.Config, tf *task.TaskFile, rc *result.ResultContract) (string, []string, error) {
+func buildPipelineRecords(projectRoot string, cfg *config.Config, tf *task.TaskFile, rc *result.ResultContract, owner *testcase.Owner) (string, []string, error) {
 	switch tf.Type {
 	case "automate":
 		// ENH-191: return the wiring's execute adapter so the sync CLI path
@@ -1245,7 +1651,7 @@ func buildPipelineRecords(projectRoot string, cfg *config.Config, tf *task.TaskF
 		// "Execute adapter for wiring: <name>" report. The async completion
 		// path (status_common.go) and gtms link call WriteAutomateWiring
 		// directly and emit their own report.
-		return WriteAutomateWiring(projectRoot, cfg, tf, rc)
+		return WriteAutomateWiring(projectRoot, cfg, tf, rc, owner)
 	case "execute":
 		return "", nil, WriteExecuteResultsFile(projectRoot, tf, rc)
 	}
@@ -1266,38 +1672,27 @@ func deriveOutputSubdir(testCaseSourcePath string) string {
 	dir := filepath.Dir(trimmed)
 	// Convert to forward slashes (Windows compatibility)
 	dir = filepath.ToSlash(dir)
-	// "." means root level — no subdirectory
+	// "." means root level -- no subdirectory
 	if dir == "." {
 		return ""
 	}
 	return dir + "/"
 }
 
-// findTestCaseSource searches for a test case file in the cases directory tree.
-func findTestCaseSource(projectRoot, target string) string {
-	testCasesDir := layout.TestCasesDir(projectRoot)
-
-	// Walk the cases directory looking for a file matching the target
-	var found string
-	_ = filepath.Walk(testCasesDir, func(path string, info os.FileInfo, err error) error {
-		if err != nil || info.IsDir() {
-			return nil
-		}
-		// Check if the filename starts with the target ID followed by a delimiter
-		base := filepath.Base(path)
-		if strings.HasPrefix(base, target+"-") || strings.HasPrefix(base, target+".") {
-			rel, relErr := filepath.Rel(projectRoot, path)
-			if relErr == nil {
-				found = filepath.ToSlash(rel)
-			} else {
-				found = path
-			}
-			return filepath.SkipAll
-		}
-		return nil
-	})
-
-	return found
+// ownerSource returns the project-relative path of the spec the command's
+// orchestration already PROVED owns the target, or "" when there is no owner.
+//
+// ADR-024 s5: the adapter layer receives the resolved owner and reads it. It does
+// not resolve the bare id. That is not an optimisation -- handing a bare id to
+// the adapter layer is what let a filename merely prefixing the id
+// (tc-77777777--legacy-sibling.md for tc-77777777) be selected as an adapter's
+// source, the defect REV-156 recorded as keeping BUG-188 alive for five rounds.
+// With the owner threaded there is no id here to mis-resolve.
+func ownerSource(owner *testcase.Owner) string {
+	if owner == nil {
+		return ""
+	}
+	return owner.SpecRel()
 }
 
 // readGuides reads all .md files from the given guide directory, wrapping each
@@ -1399,8 +1794,8 @@ func scanOutputDir(projectRoot, outputDir string, exclude map[string]struct{}) [
 // rejectMultiFileAutomate handles the ENH-080 guard: on a sync `automate`
 // invocation, if the streaming writer captured more than one <gtms-file>
 // tag, fail the task without writing an automation record. The streamed
-// files remain on disk (mirrors existing failure semantics — preserves
-// evidence for the user). No pipeline record is written — that's the whole
+// files remain on disk (mirrors existing failure semantics -- preserves
+// evidence for the user). No pipeline record is written -- that's the whole
 // point; we refuse to emit a comma-separated artefact: field.
 //
 // Returns an InvokeResult shaped like any other adapter failure so the CLI
@@ -1421,7 +1816,7 @@ func rejectMultiFileAutomate(projectRoot string, tf *task.TaskFile, resultPath s
 		return nil, fmt.Errorf("moving task file: %w", err)
 	}
 
-	// Deliberately do NOT call buildPipelineRecords here — the whole point of
+	// Deliberately do NOT call buildPipelineRecords here -- the whole point of
 	// ENH-080 is to prevent an automation record from being written when the
 	// adapter emitted multiple files for a single automate TC.
 
@@ -1517,7 +1912,7 @@ func buildStreamingSummary(savedFiles []string) string {
 // surfacing. Returns the empty string when both inputs are blank so the
 // caller can skip writing a `log:` key in that case.
 //
-// When both streams carry content, stderr leads — most test frameworks
+// When both streams carry content, stderr leads -- most test frameworks
 // emit the error line to stderr and the verbose trace to stdout, so
 // leading with stderr puts the assertion message at the top of the block.
 func buildFailureLog(stdout, stderr string) string {
@@ -1568,7 +1963,7 @@ func stderrToWarnings(stderr string) []string {
 // For sync adapters (mode: "sync"), the adapter runs in the working tree and
 // does not create or check out a branch. The real current branch is recorded
 // as useful audit context. If git cannot determine the branch (e.g. detached
-// HEAD, non-git directory), an empty string is returned — never a fake
+// HEAD, non-git directory), an empty string is returned -- never a fake
 // "feature/" name.
 //
 // For async adapters (mode: "async"), the adapter may work on a separate
@@ -1599,28 +1994,146 @@ func sanitizeBranchTarget(target string) string {
 	return target
 }
 
-// cleanupExistingOutputByTCID removes files in dir whose basename starts with
-// the target TC ID prefix (e.g. "tc-a1b2c3d4-"). This handles the "different slug"
-// scenario where --force re-runs an adapter that generates a different filename
-// for the same test case (BUG-031). Only files are removed; directories are left intact.
-func cleanupExistingOutputByTCID(dir, target string) error {
-	if dir == "" || target == "" {
-		return nil
+// removeArtefactFile is the single seam through which the automate lifecycle
+// deletes a file. It exists so a test can observe WHICH PATHS an implementation
+// chose to destroy, rather than only which files happened to survive: "the
+// foreign artefact still exists" is satisfied by an implementation that removed
+// and faithfully recreated it, and by one that never touched it, and those are
+// not the same program. Production code assigns nothing to it.
+var removeArtefactFile = os.Remove
+
+// cleanupExistingOutputForOwner removes the target identity's own stale output
+// from dir before a --force re-run regenerates it (BUG-031). Only files are
+// removed; directories are left intact.
+//
+// AUTHORITY IS WIRING, AND ONLY WIRING. A file is removed if and only if a
+// wiring record whose parsed body `testcase` is the target claims it (ADR-024
+// s1) AND no other identity claims it too. The foreign veto is consulted FIRST,
+// so a file two records both name is never removed on the strength of one of
+// them; the sweep plans every file before removing any, so that refusal takes
+// the whole sweep with it rather than leaving a half-swept directory. There is no basename rule of any kind, because there cannot be one: the
+// TC-ID grammar admits single dashes, so "tc-aaaa-bbbb-checkout.bats" is
+// indistinguishable by inspection from tc-aaaa's own output and from
+// tc-aaaa-bbbb's, and the prefix rule that used to decide it deleted the wrong
+// identity's file. Claims are matched by PHYSICAL FILE IDENTITY (os.SameFile),
+// so an alias or a differently-cased spelling of a claimed path is still that
+// claim's file.
+//
+// The target's CURRENT artefact needs no separate rule: it is the planned path,
+// the adapter overwrites it in place, and if a previous run produced it then the
+// target's own wiring already claims it.
+//
+// Fails CLOSED: the claim set it is handed was validated when the operation
+// built it -- an unreadable or unparseable wiring record refuses the run there,
+// before this is ever reached -- and any file here that cannot be examined
+// refuses the sweep rather than being assumed unclaimed. The set is the
+// operation's live state, so a file an EARLIER item in this same batch claimed is
+// already visible to it.
+//
+// ADAPTER-BOUNDARY LIMITATION -- known, documented, and deliberately NOT worked
+// around here. A Tier 1/2 adapter chooses its own output paths and GTMS learns
+// them only after the write, so the planned-path collision refusal that guards
+// the Tier 0 path has nothing to check in advance: GTMS cannot prevent an
+// external adapter overwriting a file another identity claims.
+//
+// What it CAN do, and does: the sweep above never deletes such a file, and the
+// resulting state -- two identities' wiring disagreeing about one artefact --
+// surfaces afterwards as a refusal rather than as silent data loss. A refusal
+// that makes an operator choose is strictly safer than a rule that picks a
+// claimant and destroys the other's data, which is the failure this whole change
+// exists to remove.
+//
+// Closing it properly needs an output RESERVATION contract with external
+// adapters -- GTMS hands out an authorised destination and the adapter agrees to
+// write only there -- not another special case in cleanup. Any special case here
+// would have to guess which files an unknown adapter considers its own, i.e. go
+// back to inferring ownership from names.
+func cleanupExistingOutputForOwner(claims *ArtefactClaimSet, dir, target string) (retained []string, err error) {
+	if dir == "" || target == "" || claims == nil {
+		return nil, nil
 	}
 
-	prefix := target + "-"
-	return filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
+	// PLAN, then execute. Nothing is removed until every file has been
+	// classified, because the refusal below has to be ATOMIC: a contested file
+	// discovered halfway through a walk that has already deleted three others is
+	// not a refusal, it is a partial sweep with an error message.
+	var refusal error
+	var toRemove []string
+	walkErr := filepath.Walk(dir, func(path string, info os.FileInfo, walkFileErr error) error {
+		if walkFileErr != nil {
 			return nil // skip unreadable entries
 		}
 		if info.IsDir() {
 			return nil
 		}
-		if strings.HasPrefix(filepath.Base(path), prefix) {
-			_ = os.Remove(path)
+
+		// The FOREIGN VETO IS ASKED FIRST, before the target's own claim. Order
+		// is the whole finding: asking "is this mine?" first and deleting on yes
+		// means a file claimed by BOTH identities is destroyed without the other
+		// claim ever being consulted -- the one case where two records actively
+		// disagree, resolved silently in favour of whoever happened to run.
+		holder, _, foreign, holderErr := claims.foreignHolder(target, path)
+		if holderErr != nil {
+			refusal = holderErr
+			return filepath.SkipAll
+		}
+		owned, ownErr := claims.claimedByOwner(target, path)
+		if ownErr != nil {
+			refusal = ownErr
+			return filepath.SkipAll
+		}
+
+		switch {
+		case foreign && owned:
+			// Contested: two records name one file. Not adjudicable here.
+			refusal = &ContestedArtefactError{
+				Owner:    target,
+				Claimant: holder,
+				Artefact: claims.display(path),
+			}
+			return filepath.SkipAll
+		case foreign:
+			// Another identity's artefact. Never removed; reported when it is a
+			// name this target could have produced, since that is the file the
+			// operator expected the sweep to take.
+			if IsOwnerDerivedArtefactName(filepath.Base(path), target) {
+				retained = append(retained, PreservedArtefactWarning(claims.display(path), target, holder))
+			}
+			return nil
+		case owned:
+			toRemove = append(toRemove, path)
+			return nil
+		}
+
+		// REPORTING ONLY, and the distinction is the whole point. Basename
+		// resemblance decided what to DELETE before this change, and that is
+		// exactly what was retired: it cannot authorise destruction. It can
+		// still decide what is worth MENTIONING, because mentioning a file
+		// destroys nothing and the operator's question is precisely "why is the
+		// file I named still here?". Nothing below removes anything.
+		//
+		// The scope is the target's OWN naming rule, not a generic prefix: only a
+		// file this identity could itself have produced was ever a cleanup
+		// candidate, so only such a file can leave the operator wondering why it
+		// survived. Listing every unrelated file in the output directory would be
+		// noise, and noise is how a real warning gets ignored.
+		if IsOwnerDerivedArtefactName(filepath.Base(path), target) {
+			retained = append(retained, PreservedArtefactWarning(claims.display(path), target, ""))
 		}
 		return nil
 	})
+	if refusal != nil {
+		return nil, refusal
+	}
+	if walkErr != nil {
+		return nil, walkErr
+	}
+
+	// Execute. Reached only when the whole directory classified cleanly.
+	for _, path := range toRemove {
+		_ = removeArtefactFile(path)
+	}
+	return retained, nil
 }
 
 // findProjectRoot locates the project root by walking up from CWD.

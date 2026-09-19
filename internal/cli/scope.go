@@ -6,6 +6,7 @@ import (
 
 	"github.com/aitestmanagement/gtms-cli/internal/layout"
 	"github.com/aitestmanagement/gtms-cli/internal/reader"
+	"github.com/aitestmanagement/gtms-cli/internal/target"
 	"github.com/aitestmanagement/gtms-cli/internal/testcase"
 )
 
@@ -48,4 +49,25 @@ func buildScopeFromArg(root string, folder string, recursive bool) (*reader.Scop
 		RelPath:   paths.TestCases + "/" + folder + "/",
 		Recursive: recursive,
 	}, nil
+}
+
+// qualifiedTargetScope builds the ScopeInfo a folder-QUALIFIED single-TC target
+// implies, or nil for a bare target.
+//
+// REV-158 CLAUDE-001: delete and reset used to drop the folder qualifier after
+// requireScopedSpec and call the core with a nil scope, so the destructive plan
+// had no idea which folder the user had named and could only check project-wide
+// ownership. Carrying the qualifier down lets the mutating package enforce
+// authority itself (ADR-024 s3), with the CLI check remaining as the earlier,
+// friendlier diagnostic.
+//
+// The scope is recursive: a qualified target has always matched a spec nested
+// below the named folder, and this changes only WHOSE entry may grant authority,
+// never how deep the folder reaches.
+func qualifiedTargetScope(root string, res target.Result) (*reader.ScopeInfo, error) {
+	folder, _ := testcase.SplitQualifiedTarget(res.Target)
+	if folder == "" {
+		return nil, nil
+	}
+	return buildScopeFromArg(root, folder, true)
 }

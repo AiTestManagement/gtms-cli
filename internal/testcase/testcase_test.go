@@ -12,7 +12,7 @@ func TestExists_UnqualifiedID_FileExists(t *testing.T) {
 	root := t.TempDir()
 	casesDir := filepath.Join(root, "gtms", "test", "cases", "login")
 	require(t, os.MkdirAll(casesDir, 0755))
-	require(t, os.WriteFile(filepath.Join(casesDir, "tc-abc12345-login-test.md"), []byte("spec"), 0644))
+	writeSpec(t, casesDir, "tc-abc12345-login-test.md")
 
 	assert.True(t, Exists(root, "tc-abc12345"))
 }
@@ -29,7 +29,7 @@ func TestExists_FolderQualified_CorrectFolder(t *testing.T) {
 	root := t.TempDir()
 	casesDir := filepath.Join(root, "gtms", "test", "cases", "login")
 	require(t, os.MkdirAll(casesDir, 0755))
-	require(t, os.WriteFile(filepath.Join(casesDir, "tc-abc12345-login-test.md"), []byte("spec"), 0644))
+	writeSpec(t, casesDir, "tc-abc12345-login-test.md")
 
 	assert.True(t, Exists(root, "login/tc-abc12345"))
 }
@@ -38,7 +38,7 @@ func TestExists_FolderQualified_WrongFolder(t *testing.T) {
 	root := t.TempDir()
 	casesDir := filepath.Join(root, "gtms", "test", "cases", "login")
 	require(t, os.MkdirAll(casesDir, 0755))
-	require(t, os.WriteFile(filepath.Join(casesDir, "tc-abc12345-login-test.md"), []byte("spec"), 0644))
+	writeSpec(t, casesDir, "tc-abc12345-login-test.md")
 
 	// File exists under login/, but we ask for checkout/
 	assert.False(t, Exists(root, "checkout/tc-abc12345"))
@@ -48,7 +48,7 @@ func TestExists_UnqualifiedFindsInSubfolder(t *testing.T) {
 	root := t.TempDir()
 	casesDir := filepath.Join(root, "gtms", "test", "cases", "deep", "nested")
 	require(t, os.MkdirAll(casesDir, 0755))
-	require(t, os.WriteFile(filepath.Join(casesDir, "tc-abc12345-nested-test.md"), []byte("spec"), 0644))
+	writeSpec(t, casesDir, "tc-abc12345-nested-test.md")
 
 	// Unqualified should find it anywhere under gtms/test/cases/
 	assert.True(t, Exists(root, "tc-abc12345"))
@@ -64,8 +64,8 @@ func TestExists_MultipleFiles_OneMatches(t *testing.T) {
 	root := t.TempDir()
 	casesDir := filepath.Join(root, "gtms", "test", "cases")
 	require(t, os.MkdirAll(casesDir, 0755))
-	require(t, os.WriteFile(filepath.Join(casesDir, "tc-11111111-first.md"), []byte("spec"), 0644))
-	require(t, os.WriteFile(filepath.Join(casesDir, "tc-22222222-second.md"), []byte("spec"), 0644))
+	writeSpec(t, casesDir, "tc-11111111-first.md")
+	writeSpec(t, casesDir, "tc-22222222-second.md")
 
 	assert.True(t, Exists(root, "tc-22222222"))
 	assert.False(t, Exists(root, "tc-33333333"))
@@ -75,7 +75,7 @@ func TestExists_FileMatchesDotExtension(t *testing.T) {
 	root := t.TempDir()
 	casesDir := filepath.Join(root, "gtms", "test", "cases")
 	require(t, os.MkdirAll(casesDir, 0755))
-	require(t, os.WriteFile(filepath.Join(casesDir, "tc-abc12345.md"), []byte("spec"), 0644))
+	writeSpec(t, casesDir, "tc-abc12345.md")
 
 	assert.True(t, Exists(root, "tc-abc12345"))
 }
@@ -84,7 +84,7 @@ func TestExists_PartialIDDoesNotMatch(t *testing.T) {
 	root := t.TempDir()
 	casesDir := filepath.Join(root, "gtms", "test", "cases")
 	require(t, os.MkdirAll(casesDir, 0755))
-	require(t, os.WriteFile(filepath.Join(casesDir, "tc-abc12345-test.md"), []byte("spec"), 0644))
+	writeSpec(t, casesDir, "tc-abc12345-test.md")
 
 	// "tc-abc1234" is a prefix of "tc-abc12345" but should NOT match
 	// because the file base is "tc-abc12345-test.md" and HasPrefix("tc-abc12345-test.md", "tc-abc1234-")

@@ -128,8 +128,15 @@ func AbsArtefactPath(projectRoot, artefactPath string) string {
 // test case spec for the given TC ID. It honours subfolder-scoped cases
 // (e.g. gtms/test/cases/{subfolder}/{tc}.md) by delegating to testcase.FindSource.
 //
-// ENH-117: single pipeline-level resolver used by all automation-record write
-// paths. Callers must NOT compute the spec path locally.
+// ENH-117 introduced it as the single pipeline-level resolver for the
+// automation-record write paths, so no caller computed the spec path locally.
+//
+// ADR-024 5a: this is a straight delegation to the DEFERRED filename resolver and
+// is part of the same deferred surface. Its remaining callers are the bulk read
+// and list consumers ENH-205 will migrate -- reader.ClassifyWiring and
+// reader.isStaleTestCaseHash. A row-1 consumer that hashes a spec and writes a
+// record resolves through the snapshot API (testcase.ResolveOwner) instead, so it
+// hashes the file a proven Owner points at rather than the first filename match.
 func ResolveTestCaseSpec(projectRoot, tcID string) (string, error) {
 	p := testcase.FindSource(projectRoot, tcID)
 	if p == "" {

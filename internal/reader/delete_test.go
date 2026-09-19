@@ -437,31 +437,48 @@ func TestDelete_ResultContracts_MultipleCommands(t *testing.T) {
 	resultsDir := filepath.Join(root, ".gtms", "results")
 	require.NoError(t, os.MkdirAll(resultsDir, 0755))
 
-	// execute: target is a file path containing the TC ID
+	// GTMS's producer contract, verified against the real .gtms/results/ corpus:
+	// execute -> bare TC id; automate -> bare TC id; prime -> bare TC id;
+	// create -> FOLDER, because no TC exists yet when create runs. A handoff
+	// target is never a file path. Delete attributes by the exact TC-ID
+	// component, so only the TC-scoped commands are owned by this TC.
 	require.NoError(t, os.WriteFile(filepath.Join(resultsDir, "task-11111111.handoff.yaml"),
-		[]byte("task: task-11111111\ncommand: execute\ntarget: test/acceptance/folder/"+tcID+"-multi.bats\nstatus: complete\n"), 0644))
+		[]byte("task: task-11111111\ncommand: execute\ntarget: "+tcID+"\nstatus: complete\n"), 0644))
 
-	// automate: target is the source test case path
 	require.NoError(t, os.WriteFile(filepath.Join(resultsDir, "task-22222222.handoff.yaml"),
-		[]byte("task: task-22222222\ncommand: automate\ntarget: gtms/test/cases/folder/"+tcID+"-multi.md\nstatus: complete\n"), 0644))
+		[]byte("task: task-22222222\ncommand: automate\ntarget: "+tcID+"\nstatus: complete\n"), 0644))
 
-	// create: target is a requirement (contains TC ID in this scenario)
+	// create is FOLDER-scoped. It is not owned by this TC and must survive.
 	require.NoError(t, os.WriteFile(filepath.Join(resultsDir, "task-33333333.handoff.yaml"),
-		[]byte("task: task-33333333\ncommand: create\ntarget: "+tcID+"\nstatus: complete\n"), 0644))
+		[]byte("task: task-33333333\ncommand: create\ntarget: some-folder\nstatus: complete\n"), 0644))
 
 	// Unrelated contract for a DIFFERENT TC (should survive)
 	require.NoError(t, os.WriteFile(filepath.Join(resultsDir, "task-99999999.handoff.yaml"),
-		[]byte("task: task-99999999\ncommand: execute\ntarget: test/acceptance/other/tc-zzz99990-other.bats\nstatus: complete\n"), 0644))
+		[]byte("task: task-99999999\ncommand: execute\ntarget: tc-zzz99990\nstatus: complete\n"), 0644))
+
+	// BUG-188 negative control: a legacy PATH-SHAPED target that CONTAINS this TC
+	// id. GTMS never writes this shape. It must survive, because attribution is by
+	// exact TC-ID component, not strings.Contains. Without this fixture the test
+	// cannot tell exact matching from the substring matching BUG-188 removed.
+	// It also pins the brownfield consequence: a legacy path-shaped target becomes
+	// a visible orphan rather than being silently deleted.
+	require.NoError(t, os.WriteFile(filepath.Join(resultsDir, "task-44444444.handoff.yaml"),
+		[]byte("task: task-44444444\ncommand: execute\ntarget: test/acceptance/folder/"+tcID+"-multi.bats\nstatus: complete\n"), 0644))
 
 	result, err := DeleteArtifacts(root, nil, tcID, false, false, false)
 	require.NoError(t, err)
 
-	assert.Equal(t, 3, result.ResultContracts, "should delete all 3 contracts referencing this TC")
+	assert.Equal(t, 2, result.ResultContracts,
+		"only the TC-scoped execute and automate contracts are owned by this TC")
 
-	// Verify the unrelated contract survived
+	// The folder-scoped create contract, the unrelated TC, and the path-shaped
+	// legacy target all survive.
 	remaining, _ := filepath.Glob(filepath.Join(resultsDir, "*.handoff.yaml"))
-	assert.Len(t, remaining, 1, "unrelated contract should survive")
-	assert.Contains(t, remaining[0], "task-99999999")
+	assert.Len(t, remaining, 3, "folder-scoped create, unrelated TC, and path-shaped target survive")
+	names := strings.Join(remaining, " ")
+	assert.Contains(t, names, "task-33333333", "folder-scoped create contract is not TC-owned")
+	assert.Contains(t, names, "task-99999999", "a different TC is untouched")
+	assert.Contains(t, names, "task-44444444", "a path-shaped target is not matched by substring")
 }
 
 func TestDelete_ResultContracts_MissingDir(t *testing.T) {
@@ -492,9 +509,9 @@ func TestDelete_ResultContracts_MalformedYAML(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(resultsDir, "task-badyaml1.handoff.yaml"),
 		[]byte("this is not valid yaml: [unclosed"), 0644))
 
-	// Valid contract referencing our TC
+	// Valid contract referencing our TC (target is the bare id, ADR-024).
 	require.NoError(t, os.WriteFile(filepath.Join(resultsDir, "task-goodone1.handoff.yaml"),
-		[]byte("task: task-goodone1\ncommand: execute\ntarget: test/acceptance/"+tcID+"-bad.bats\nstatus: complete\n"), 0644))
+		[]byte("task: task-goodone1\ncommand: execute\ntarget: "+tcID+"\nstatus: complete\n"), 0644))
 
 	result, err := DeleteArtifacts(root, nil, tcID, false, false, false)
 	require.NoError(t, err)

@@ -6,14 +6,26 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 	"github.com/aitestmanagement/gtms-cli/internal/config"
 	"github.com/aitestmanagement/gtms-cli/internal/pathsafe"
 	"github.com/aitestmanagement/gtms-cli/internal/result"
 	"github.com/aitestmanagement/gtms-cli/internal/task"
+	"github.com/aitestmanagement/gtms-cli/internal/testcase"
 	"github.com/aitestmanagement/gtms-cli/internal/wiring"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
+
+// ownerForTest resolves the owner of tcID the way a command's orchestration does,
+// so a test exercising a downstream consumer passes the same kind of value the
+// production caller passes (ADR-024 s5). Fails the test if ownership is not
+// uniquely proven -- a consumer test should never be fed an unproven identity.
+func ownerForTest(t *testing.T, root, tcID string) *testcase.Owner {
+	t.Helper()
+	owner, err := testcase.ResolveOwner(root, tcID)
+	require.NoError(t, err, "resolving owner for %s", tcID)
+	return owner
+}
 
 // setupAutomateTestProject creates a project structure for automate tests.
 //
@@ -39,7 +51,7 @@ func setupAutomateTestProject(t *testing.T) (string, *config.Config) {
 
 	// Create a test case file
 	testCaseContent := `---
-id: tc-auto
+test_case_id: tc-auto
 title: Automate Test Case
 ---
 
@@ -121,7 +133,7 @@ func TestAutomate_Tier1Sync(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 1, resolved.Tier)
 
-	flags := CommandFlags{Framework: "playwright"}
+	flags := CommandFlags{Framework: "playwright", Owner: ownerForTest(t, root, "tc-auto")}
 
 	res, err := InvokeWithRoot(context.Background(), root, cfg, resolved, "tc-auto", flags)
 	require.NoError(t, err)
@@ -164,7 +176,7 @@ func TestAutomate_Tier2Sync(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 2, resolved.Tier)
 
-	flags := CommandFlags{Framework: "playwright"}
+	flags := CommandFlags{Framework: "playwright", Owner: ownerForTest(t, root, "tc-auto")}
 
 	res, err := InvokeWithRoot(context.Background(), root, cfg, resolved, "tc-auto", flags)
 	require.NoError(t, err)
@@ -199,14 +211,15 @@ func TestAutomate_ContextFile_Tier1(t *testing.T) {
 	// Use a Tier 1 adapter that echoes {context} in output
 	resolved := &ResolvedAdapter{
 		Command: "automate", Name: "ctx-file-test",
-		Config:  &config.AdapterConfig{Mode: "sync", Command: `echo "context={context}"`},
-		Tier:    1, Mode: "sync",
+		Config: &config.AdapterConfig{Mode: "sync", Command: `echo "context={context}"`},
+		Tier:   1, Mode: "sync",
 	}
 
 	flags := CommandFlags{
 		Framework:   "playwright",
 		ContextFile: contextFile,
 		Context:     contextContent,
+		Owner:       ownerForTest(t, root, "tc-auto"),
 	}
 
 	res, err := InvokeWithRoot(context.Background(), root, cfg, resolved, "tc-auto", flags)
@@ -233,7 +246,7 @@ func TestAutomate_ContextFile_Tier2Env(t *testing.T) {
 	// Create test case file
 	require.NoError(t, os.WriteFile(
 		filepath.Join(root, "gtms/test/cases", "tc-auto-test.md"),
-		[]byte("---\nid: tc-auto\ntitle: Test\n---\n"), 0644,
+		[]byte("---\ntest_case_id: tc-auto\ntitle: Test\n---\n"), 0644,
 	))
 
 	// Create context file
@@ -288,6 +301,7 @@ defaults:
 		Framework:   "playwright",
 		ContextFile: contextFile,
 		Context:     contextContent,
+		Owner:       ownerForTest(t, root, "tc-auto"),
 	}
 
 	res, err := InvokeWithRoot(context.Background(), root, cfg, resolved, "tc-auto", flags)
@@ -304,12 +318,12 @@ func TestAutomate_NoContextFile_EmptyContext(t *testing.T) {
 	// Use Tier 1 adapter that echoes {context}
 	resolved := &ResolvedAdapter{
 		Command: "automate", Name: "no-ctx-test",
-		Config:  &config.AdapterConfig{Mode: "sync", Command: `echo "context={context} end"`},
-		Tier:    1, Mode: "sync",
+		Config: &config.AdapterConfig{Mode: "sync", Command: `echo "context={context} end"`},
+		Tier:   1, Mode: "sync",
 	}
 
 	// No ContextFile or Context set
-	flags := CommandFlags{Framework: "playwright"}
+	flags := CommandFlags{Framework: "playwright", Owner: ownerForTest(t, root, "tc-auto")}
 
 	res, err := InvokeWithRoot(context.Background(), root, cfg, resolved, "tc-auto", flags)
 	require.NoError(t, err)
@@ -326,10 +340,10 @@ func TestAutomate_ContextFields(t *testing.T) {
 	resolved := &ResolvedAdapter{
 		Command: "automate", Name: "ctx-test",
 		Config: &config.AdapterConfig{Mode: "sync", Command: `echo "tc={testcase} out={output_dir}"`},
-		Tier: 1, Mode: "sync",
+		Tier:   1, Mode: "sync",
 	}
 
-	flags := CommandFlags{Framework: "cypress"}
+	flags := CommandFlags{Framework: "cypress", Owner: ownerForTest(t, root, "tc-auto")}
 	res, err := InvokeWithRoot(context.Background(), root, cfg, resolved, "tc-auto", flags)
 	require.NoError(t, err)
 
@@ -350,10 +364,10 @@ func TestAutomate_BuiltinHonorsConfiguredOutputDir(t *testing.T) {
 
 	resolved := &ResolvedAdapter{
 		Command: "automate", Name: "agent-automate",
-		Config:  &config.AdapterConfig{Mode: "sync", OutputDir: "BROWNFIELD/tests"},
-		Tier:    0, Mode: "sync",
+		Config: &config.AdapterConfig{Mode: "sync", OutputDir: "BROWNFIELD/tests"},
+		Tier:   0, Mode: "sync",
 	}
-	flags := CommandFlags{Framework: "playwright"}
+	flags := CommandFlags{Framework: "playwright", Owner: ownerForTest(t, root, "tc-auto")}
 
 	_, err := InvokeWithRoot(context.Background(), root, cfg, resolved, "tc-auto", flags)
 	require.NoError(t, err)
@@ -389,7 +403,7 @@ func TestWriteAutomateWiring_FallbackDiagnostic_NamesCompetingAdapters(t *testin
 	require.NoError(t, os.MkdirAll(filepath.Join(root, "gtms/test/cases"), 0755))
 	require.NoError(t, os.WriteFile(
 		filepath.Join(root, "gtms/test/cases", "tc-fb01-spec.md"),
-		[]byte("---\nid: tc-fb01\n---\nbody\n"), 0644))
+		[]byte("---\ntest_case_id: tc-fb01\n---\nbody\n"), 0644))
 
 	// Seed a produced artefact so artefact-hash can be computed.
 	require.NoError(t, os.MkdirAll(filepath.Join(root, "test/acceptance"), 0755))
@@ -420,7 +434,7 @@ func TestWriteAutomateWiring_FallbackDiagnostic_NamesCompetingAdapters(t *testin
 		Result: "pass", Artefact: "test/acceptance/tc-fb01.bats",
 	}
 
-	_, warnings, err := WriteAutomateWiring(root, cfg, tf, rc)
+	_, warnings, err := WriteAutomateWiring(root, cfg, tf, rc, ownerForTest(t, root, tf.Target))
 	require.NoError(t, err)
 	require.Len(t, warnings, 1, "exactly one fallback-diagnostic warning")
 
@@ -447,7 +461,7 @@ func TestWriteAutomateWiring_DefaultSelectsAdapter_NoWarning(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Join(root, "gtms/test/cases"), 0755))
 	require.NoError(t, os.WriteFile(
 		filepath.Join(root, "gtms/test/cases", "tc-fb02-spec.md"),
-		[]byte("---\nid: tc-fb02\n---\nbody\n"), 0644))
+		[]byte("---\ntest_case_id: tc-fb02\n---\nbody\n"), 0644))
 	require.NoError(t, os.MkdirAll(filepath.Join(root, "test/acceptance"), 0755))
 	require.NoError(t, os.WriteFile(
 		filepath.Join(root, "test/acceptance/tc-fb02.bats"),
@@ -473,7 +487,7 @@ func TestWriteAutomateWiring_DefaultSelectsAdapter_NoWarning(t *testing.T) {
 		Result: "pass", Artefact: "test/acceptance/tc-fb02.bats",
 	}
 
-	_, warnings, err := WriteAutomateWiring(root, cfg, tf, rc)
+	_, warnings, err := WriteAutomateWiring(root, cfg, tf, rc, ownerForTest(t, root, tf.Target))
 	require.NoError(t, err)
 	assert.Empty(t, warnings,
 		"single-default fast path must not emit a fallback warning")
@@ -507,7 +521,7 @@ func TestWriteAutomateWiring_RejectsRelativeTraversalOutsideRoot(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Join(root, "gtms/test/cases"), 0755))
 	require.NoError(t, os.WriteFile(
 		filepath.Join(root, "gtms/test/cases", "tc-ps01-spec.md"),
-		[]byte("---\nid: tc-ps01\n---\nbody\n"), 0644))
+		[]byte("---\ntest_case_id: tc-ps01\n---\nbody\n"), 0644))
 
 	// File outside root that `..` would land on.
 	parent := filepath.Dir(root)
@@ -525,7 +539,7 @@ func TestWriteAutomateWiring_RejectsRelativeTraversalOutsideRoot(t *testing.T) {
 		Result: "pass", Artefact: "../automate-traversal-target.txt",
 	}
 
-	_, warnings, err := WriteAutomateWiring(root, minimalBatsConfig(), tf, rc)
+	_, warnings, err := WriteAutomateWiring(root, minimalBatsConfig(), tf, rc, ownerForTest(t, root, tf.Target))
 	require.Error(t, err)
 	assert.True(t, pathsafe.IsPathSafetyError(err),
 		"adapter-produced traversal artefact must yield *pathsafe.PathSafetyError")
@@ -542,7 +556,7 @@ func TestWriteAutomateWiring_RejectsAbsoluteOutsideRoot(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Join(root, "gtms/test/cases"), 0755))
 	require.NoError(t, os.WriteFile(
 		filepath.Join(root, "gtms/test/cases", "tc-ps02-spec.md"),
-		[]byte("---\nid: tc-ps02\n---\nbody\n"), 0644))
+		[]byte("---\ntest_case_id: tc-ps02\n---\nbody\n"), 0644))
 
 	outside := t.TempDir()
 	outsidePath := filepath.Join(outside, "outside-target.txt")
@@ -558,7 +572,7 @@ func TestWriteAutomateWiring_RejectsAbsoluteOutsideRoot(t *testing.T) {
 		Result: "pass", Artefact: outsidePath,
 	}
 
-	_, _, err := WriteAutomateWiring(root, minimalBatsConfig(), tf, rc)
+	_, _, err := WriteAutomateWiring(root, minimalBatsConfig(), tf, rc, ownerForTest(t, root, tf.Target))
 	require.Error(t, err)
 	assert.True(t, pathsafe.IsPathSafetyError(err),
 		"absolute outside-root artefact must yield *pathsafe.PathSafetyError")
@@ -576,7 +590,7 @@ func TestWriteAutomateWiring_AbsoluteInsideRootNormalisesToRelative(t *testing.T
 	require.NoError(t, os.MkdirAll(filepath.Join(root, "gtms/test/cases"), 0755))
 	require.NoError(t, os.WriteFile(
 		filepath.Join(root, "gtms/test/cases", "tc-ps03-spec.md"),
-		[]byte("---\nid: tc-ps03\n---\nbody\n"), 0644))
+		[]byte("---\ntest_case_id: tc-ps03\n---\nbody\n"), 0644))
 
 	require.NoError(t, os.MkdirAll(filepath.Join(root, "test/acceptance"), 0755))
 	absArtefact := filepath.Join(root, "test", "acceptance", "tc-ps03.bats")
@@ -592,7 +606,7 @@ func TestWriteAutomateWiring_AbsoluteInsideRootNormalisesToRelative(t *testing.T
 		Result: "pass", Artefact: absArtefact,
 	}
 
-	_, _, err := WriteAutomateWiring(root, minimalBatsConfig(), tf, rc)
+	_, _, err := WriteAutomateWiring(root, minimalBatsConfig(), tf, rc, ownerForTest(t, root, tf.Target))
 	require.NoError(t, err)
 
 	rec, _, _ := wiring.Find(root, "tc-ps03", "bats")

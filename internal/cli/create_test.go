@@ -8,9 +8,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/aitestmanagement/gtms-cli/internal/adapter"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/aitestmanagement/gtms-cli/internal/adapter"
 )
 
 // writeTCFixture writes a minimal test case file with frontmatter to the given directory.
@@ -18,7 +18,7 @@ func writeTCFixture(t *testing.T, dir, tcID, title string) string {
 	t.Helper()
 	filename := fmt.Sprintf("%s-slug.md", tcID)
 	path := filepath.Join(dir, filename)
-	content := fmt.Sprintf("---\ntest_case_id: %s\ntitle: %s\n---\n\n# %s\n", tcID, title, title)
+	content := fmt.Sprintf("---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: %s\ntitle: %s\n---\n\n# %s\n", tcID, title, title)
 	require.NoError(t, os.WriteFile(path, []byte(content), 0644))
 	return filename
 }
@@ -253,32 +253,49 @@ func TestReadTCFrontmatter_ValidFile(t *testing.T) {
 	assert.Equal(t, "My Test Title", title)
 }
 
-// ENH-121 finding #4: skeleton writes `name:` (not `title:`); the reader
-// must fall back to `name:` so named skeletons don't surface as "(untitled)".
-func TestReadTCFrontmatter_FallsBackToNameWhenTitleEmpty(t *testing.T) {
+func TestReadTCFrontmatter_LegacyFallsBackButKeepsV2Strict(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "gtms", "test", "cases", "feature")
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+
+	legacyPath := filepath.Join(dir, "tc-12345678-legacy.md")
+	require.NoError(t, os.WriteFile(legacyPath, []byte("---\ntest_case_id: tc-12345678\ntitle: Legacy title\n---\n"), 0o644))
+	id, title := readTCFrontmatter(root, filepath.Join("gtms", "test", "cases", "feature", filepath.Base(legacyPath)))
+	assert.Equal(t, "tc-12345678", id)
+	assert.Equal(t, "(no frontmatter)", title)
+
+	v2Path := filepath.Join(dir, "tc-87654321-v2.md")
+	v2MissingTestType := "---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_case_id: tc-87654321\ntitle: Invalid v2 title\n---\n"
+	require.NoError(t, os.WriteFile(v2Path, []byte(v2MissingTestType), 0o644))
+	id, title = readTCFrontmatter(root, filepath.Join("gtms", "test", "cases", "feature", filepath.Base(v2Path)))
+	assert.Equal(t, "tc-87654321", id)
+	assert.Equal(t, "(no frontmatter)", title)
+}
+
+func TestReadTCFrontmatter_DoesNotTreatLegacyNameAsTitle(t *testing.T) {
 	root := t.TempDir()
 	dir := filepath.Join(root, "gtms/test/cases", "feature")
 	require.NoError(t, os.MkdirAll(dir, 0755))
 
 	// Mirrors the skeleton adapter shape: name: present, no title:.
 	path := filepath.Join(dir, "tc-12345678-user-can-login.md")
-	content := "---\ntest_case_id: tc-12345678\nname: \"user-can-login\"\nstatus: draft\n---\n\n## Steps\n"
+	content := "---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: tc-12345678\nname: \"user-can-login\"\n---\n\n## Steps\n"
 	require.NoError(t, os.WriteFile(path, []byte(content), 0644))
 
 	relPath := filepath.Join("gtms/test/cases", "feature", "tc-12345678-user-can-login.md")
 	id, title := readTCFrontmatter(root, relPath)
 	assert.Equal(t, "tc-12345678", id)
-	assert.Equal(t, "user-can-login", title)
+	assert.Equal(t, "(untitled)", title)
 }
 
-// Both fields empty → "(untitled)" sentinel preserved.
+// Both fields empty -> "(untitled)" sentinel preserved.
 func TestReadTCFrontmatter_UntitledWhenBothEmpty(t *testing.T) {
 	root := t.TempDir()
 	dir := filepath.Join(root, "gtms/test/cases", "feature")
 	require.NoError(t, os.MkdirAll(dir, 0755))
 
 	path := filepath.Join(dir, "tc-deadbeef.md")
-	content := "---\ntest_case_id: tc-deadbeef\nname: \"\"\n---\n"
+	content := "---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: tc-deadbeef\nname: \"\"\n---\n"
 	require.NoError(t, os.WriteFile(path, []byte(content), 0644))
 
 	relPath := filepath.Join("gtms/test/cases", "feature", "tc-deadbeef.md")
@@ -294,7 +311,7 @@ func TestReadTCFrontmatter_TitlePreferredOverName(t *testing.T) {
 	require.NoError(t, os.MkdirAll(dir, 0755))
 
 	path := filepath.Join(dir, "tc-cafef00d.md")
-	content := "---\ntest_case_id: tc-cafef00d\ntitle: \"Login happy path\"\nname: \"login-happy\"\n---\n"
+	content := "---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: tc-cafef00d\ntitle: \"Login happy path\"\nname: \"login-happy\"\n---\n"
 	require.NoError(t, os.WriteFile(path, []byte(content), 0644))
 
 	relPath := filepath.Join("gtms/test/cases", "feature", "tc-cafef00d.md")
@@ -310,6 +327,51 @@ func TestReadTCFrontmatter_MissingFile(t *testing.T) {
 	id, title := readTCFrontmatter(root, relPath)
 	assert.Equal(t, "tc-deadbeef", id)
 	assert.Equal(t, "(no frontmatter)", title)
+}
+
+func TestReadTCFrontmatter_ReservedCompanionsSkippedBeforeParse(t *testing.T) {
+	root := t.TempDir()
+	casesDir := filepath.Join(root, "gtms", "test", "cases", "feature")
+	customDir := filepath.Join(root, "custom", "output")
+	require.NoError(t, os.MkdirAll(casesDir, 0o755))
+	require.NoError(t, os.MkdirAll(customDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(casesDir, "index.md"), []byte(
+		"---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: tc-11111111\ntitle: Hidden\n---\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(casesDir, "log.md"), []byte(
+		"---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: [broken\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(customDir, "index.md"), []byte(
+		"---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: tc-22222222\ntitle: Custom\n---\n"), 0o644))
+
+	for _, rel := range []string{
+		filepath.Join("gtms/test/cases", "feature", "index.md"),
+		filepath.Join("gtms/test/cases", "feature", "log.md"),
+	} {
+		id, title := readTCFrontmatter(root, rel)
+		assert.Empty(t, id)
+		assert.Empty(t, title)
+	}
+	id, title := readTCFrontmatter(root, filepath.Join("custom", "output", "index.md"))
+	assert.Equal(t, "tc-22222222", id)
+	assert.Equal(t, "Custom", title)
+}
+
+func TestPrintCreatedHeadline_ReservedCompanionsNotCounted(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "gtms", "test", "cases", "feature")
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "index.md"), []byte(
+		"---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: tc-11111111\ntitle: Hidden\n---\n"), 0o644))
+	name := writeTCFixture(t, dir, "tc-22222222", "Visible")
+
+	got := captureStdout(t, func() {
+		printCreatedHeadline([]string{
+			filepath.Join("gtms/test/cases", "feature", "index.md"),
+			filepath.Join("gtms/test/cases", "feature", name),
+		}, "feature", root)
+	})
+	assert.Contains(t, got, "Created 1 test case")
+	assert.Contains(t, got, "tc-22222222")
+	assert.NotContains(t, got, "tc-11111111")
 }
 
 func TestExtractTCIDFromFilename(t *testing.T) {

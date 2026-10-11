@@ -1,7 +1,6 @@
 package adapter
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
 	"os"
@@ -10,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/adrg/frontmatter"
 	"github.com/aitestmanagement/gtms-cli/internal/config"
 	"github.com/aitestmanagement/gtms-cli/internal/layout"
 	"github.com/aitestmanagement/gtms-cli/internal/pipeline"
@@ -23,11 +21,13 @@ import (
 // TestcaseTemplateMD constant in internal/scaffold/templates.go byte-for-byte.
 // A source-shape test enforces this invariant.
 const testcaseTemplateFallback = `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: ${TESTCASE_ID}
 title: "${TITLE}"
 requirement: ${REQUIREMENT}
 priority: Medium
-type: Functional
 created: ${CREATED}
 ---
 
@@ -490,7 +490,7 @@ func BuiltinAutomate(ctx *AdapterContext, cfg *config.Config) (*InvocationResult
 // manualResultTemplateFallback is the fallback result template shape used when
 // the role-specific template file is missing. ENH-161: must match the
 // manualResultTemplate constant in internal/scaffold/templates.go byte-for-byte.
-const manualResultTemplateFallback = "# yaml-language-server: $schema=../../schemas/manual-result.schema.json\n# -- GTMS contract (do not edit) ------------------------------------------\ntest_case_id: ${TESTCASE}\ntest_case_hash: ${TESTCASE_HASH}\nframework: manual\n\n# -- OVERALL RESULT -------------------------------------------------------\nresult:\n\n# -- Optional metadata ----------------------------------------------------\ntitle: \"${TC_TITLE}\"\nrequirement: \"${TC_REQUIREMENT}\"\npriority: \"${TC_PRIORITY}\"\ntype: \"${TC_TYPE}\"\nbranch: ${BRANCH}\n\n# -- Steps (optional) -----------------------------------------------------\nsteps:\n"
+const manualResultTemplateFallback = "# yaml-language-server: $schema=../../schemas/manual-result.schema.json\n# -- GTMS contract (do not edit) ------------------------------------------\ntest_case_id: ${TESTCASE}\ntest_case_hash: ${TESTCASE_HASH}\nframework: manual\n\n# -- OVERALL RESULT -------------------------------------------------------\nresult:\n\n# -- Optional metadata ----------------------------------------------------\ntitle: \"${TC_TITLE}\"\nrequirement: \"${TC_REQUIREMENT}\"\npriority: \"${TC_PRIORITY}\"\ntest_type: \"${TEST_TYPE}\"\nbranch: ${BRANCH}\n\n# -- Steps (optional) -----------------------------------------------------\nsteps:\n"
 
 // BuiltinPrime implements the Tier 0 built-in prime adapter (ENH-150).
 // It stamps a blank manual result template for the given test case,
@@ -503,7 +503,7 @@ const manualResultTemplateFallback = "# yaml-language-server: $schema=../../sche
 //   - ctx.TestCaseHash: hash of the TC file
 //   - ctx.Branch: current git branch
 //   - ctx.Force: whether to overwrite existing files
-//   - ctx.TCTitle, ctx.TCRequirement, ctx.TCPriority, ctx.TCType: snapshot fields
+//   - ctx.TCTitle, ctx.TCRequirement, ctx.TCPriority, ctx.TestType: snapshot fields
 func BuiltinPrime(ctx *AdapterContext) (*InvocationResult, error) {
 	if ctx.TemplateFile == "" {
 		return nil, fmt.Errorf("template file not set")
@@ -545,7 +545,7 @@ func BuiltinPrime(ctx *AdapterContext) (*InvocationResult, error) {
 	content = strings.ReplaceAll(content, "${TC_TITLE}", yamlEscape(ctx.TCTitle))
 	content = strings.ReplaceAll(content, "${TC_REQUIREMENT}", yamlEscape(ctx.TCRequirement))
 	content = strings.ReplaceAll(content, "${TC_PRIORITY}", yamlEscape(ctx.TCPriority))
-	content = strings.ReplaceAll(content, "${TC_TYPE}", yamlEscape(ctx.TCType))
+	content = strings.ReplaceAll(content, "${TEST_TYPE}", yamlEscape(ctx.TestType))
 
 	// Ensure output directory exists
 	if err := os.MkdirAll(filepath.Dir(ctx.OutputFile), 0755); err != nil {
@@ -660,13 +660,21 @@ func yamlQuotedScalarOrEmpty(s string) string {
 	return `"` + yamlEscape(s) + `"`
 }
 
+// ValidatedTestCaseOwner is the fresh exact-owner evidence carried from the
+// last pre-invocation validation boundary into adapter context construction.
+type ValidatedTestCaseOwner struct {
+	Metadata testcase.Metadata
+	Hash     string
+}
+
 // ValidateTestCaseOwner is the ENH-150 post-fill gate, applied to the spec that
 // orchestration already PROVED owns the target (ADR-024 s5). It reads the owner it
 // was handed. It does not walk the cases tree, and it is not given an id it could
 // walk for.
 //
-// It validates that the owning spec is readable and STILL declares exactly the id
-// the resolution proved it owns.
+// It validates that the owning spec is readable and STILL declares exactly the
+// identity, schema state, and test_type the resolution proved. The same single
+// read returns fresh normalized metadata and a pipeline.HashFile-equivalent hash.
 //
 // REV-158 CODEX-003: the check used to accept any non-empty test_case_id. Between
 // the resolution and this gate the file can change -- an adapter, an editor, or a
@@ -705,42 +713,79 @@ func yamlQuotedScalarOrEmpty(s string) string {
 // A nil owner means the command established there is no owner; there is nothing to
 // validate and not-found is handled by the command's own wording.
 func ValidateTestCaseOwner(projectRoot string, owner *testcase.Owner) []SpecValidationError {
+	_, violations := ValidateTestCaseOwnerFresh(projectRoot, owner)
+	return violations
+}
+
+// ValidateTestCaseOwnerFresh applies the exact-owner gate and returns the
+// normalized metadata and raw-byte hash from that same read.
+func ValidateTestCaseOwnerFresh(projectRoot string, owner *testcase.Owner) (ValidatedTestCaseOwner, []SpecValidationError) {
+	var validated ValidatedTestCaseOwner
 	abs := testcase.OwnerAbsFor(projectRoot, owner)
 	if abs == "" {
-		return nil
+		return validated, nil
 	}
 
-	f, openErr := os.Open(abs)
-	if openErr != nil {
-		return []SpecValidationError{{
+	raw, readErr := os.ReadFile(abs)
+	if readErr != nil {
+		return validated, []SpecValidationError{{
 			File:   filepath.Base(abs),
-			Reason: fmt.Sprintf("could not read the test case spec: %v", openErr),
+			Reason: fmt.Sprintf("could not read the test case spec: %v", readErr),
 		}}
 	}
-	defer f.Close()
+	validated.Hash = pipeline.HashBytes(raw)
 
-	var fm specFrontmatter
-	if _, parseErr := frontmatter.Parse(f, &fm); parseErr != nil {
-		return []SpecValidationError{{
+	decoded := testcase.DecodeCandidate(raw)
+	validated.Metadata = decoded.Metadata
+	if decoded.ParsedIdentity == "" {
+		reason := "frontmatter is missing required field 'test_case_id'"
+		if decoded.Failure != nil {
+			reason = createSchemaFailureReason(decoded.Failure)
+		}
+		return validated, []SpecValidationError{{
 			File:   filepath.Base(abs),
-			Reason: fmt.Sprintf("could not parse frontmatter: %v", parseErr),
+			Reason: reason,
 		}}
 	}
-	if fm.TestCaseID == "" {
-		return []SpecValidationError{{
-			File:   filepath.Base(abs),
-			Reason: "frontmatter is missing required field 'test_case_id'",
-		}}
-	}
-	if fm.TestCaseID != owner.ID() {
-		return []SpecValidationError{{
+	if decoded.ParsedIdentity != owner.ID() {
+		return validated, []SpecValidationError{{
 			File: filepath.Base(abs),
 			Reason: fmt.Sprintf(
 				"frontmatter now declares test_case_id '%s' but this spec was resolved as the owner of '%s' -- the file changed after ownership was proved; re-run the command",
-				sanitizeIdentityForError(fm.TestCaseID), sanitizeIdentityForError(owner.ID())),
+				sanitizeIdentityForError(decoded.ParsedIdentity), sanitizeIdentityForError(owner.ID())),
 		}}
 	}
-	return nil
+
+	if !sameSchemaFailure(decoded.Failure, owner.DecodeFailure()) {
+		return validated, []SpecValidationError{{
+			File:   filepath.Base(abs),
+			Reason: "testcase schema changed after ownership was proved; re-run the command",
+		}}
+	}
+	if decoded.Metadata.TestType != owner.Metadata().TestType {
+		return validated, []SpecValidationError{{
+			File:   filepath.Base(abs),
+			Reason: "frontmatter test_type changed after ownership was proved; re-run the command",
+		}}
+	}
+	return validated, nil
+}
+
+func sameSchemaFailure(a, b *testcase.SchemaFailure) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	if a.Kind != b.Kind || a.Key != b.Key || a.Value != b.Value ||
+		a.DeclaredKind != b.DeclaredKind || a.FoundKind != b.FoundKind || a.Detail != b.Detail ||
+		len(a.RetainedFields) != len(b.RetainedFields) {
+		return false
+	}
+	for i := range a.RetainedFields {
+		if a.RetainedFields[i] != b.RetainedFields[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // sanitizeIdentityForError replaces control characters (C0 + DEL) with '?' so an
@@ -758,47 +803,28 @@ func sanitizeIdentityForError(s string) string {
 	return b.String()
 }
 
-// BuiltinPrimeFromTC reimplements the manual-prime context population in Go
-// for Tier 0 built-in adapters that lack the Tier 2 env var contract.
-// This is called from buildAdapterContext for the "prime" command when
-// the resolved adapter is a built-in.
-func populateBuiltinPrimeFields(ctx *AdapterContext, projectRoot, target string) {
+// populateBuiltinPrimeFields is the single manual-prime context population
+// path for built-in and external adapters.
+func populateBuiltinPrimeFields(ctx *AdapterContext, projectRoot, target, adapterName string, validatedOwner ValidatedTestCaseOwner) {
 	tcSource := ownerSource(ctx.Owner)
 	if tcSource == "" {
 		return
 	}
 
-	absTC := testcase.OwnerAbsFor(projectRoot, ctx.Owner)
+	ctx.TestCaseHash = validatedOwner.Hash
 
-	// Hash
-	if hash, hashErr := pipeline.HashFile(absTC); hashErr == nil {
-		ctx.TestCaseHash = hash
-	}
-
-	// Template and output paths
-	// ENH-161: Template path is set by buildAdapterContext via ResolveTemplatePath.
-	// Only set here as fallback if not already populated (backward compatibility).
-	if ctx.TemplateFile == "" {
-		ctx.TemplateFile = filepath.Join(layout.ManualTemplatesDir(projectRoot), "manual-result.template.yaml")
-	}
+	// Template and output paths. The resolved adapter name selects the role
+	// template for built-in and scripted prime adapters through this one path.
+	ctx.TemplateFile = ResolveTemplatePath(projectRoot, "prime", adapterName)
 	ctx.OutputFile = filepath.Join(layout.ManualRecordsDir(projectRoot), target+"--manual.result.yaml")
 	ctx.OutputDir = layout.ManualRecordsDir(projectRoot)
 	ctx.OutputSubdir = ""
 	ctx.TestCaseFile = tcSource
 
-	// TC frontmatter snapshot (ENH-142)
-	if tcData, readErr := os.ReadFile(absTC); readErr == nil {
-		var tcFM struct {
-			Title       string `yaml:"title"`
-			Requirement string `yaml:"requirement"`
-			Priority    string `yaml:"priority"`
-			Type        string `yaml:"type"`
-		}
-		if _, parseErr := frontmatter.Parse(bytes.NewReader(tcData), &tcFM); parseErr == nil {
-			ctx.TCTitle = tcFM.Title
-			ctx.TCRequirement = tcFM.Requirement
-			ctx.TCPriority = tcFM.Priority
-			ctx.TCType = tcFM.Type
-		}
-	}
+	// TC frontmatter snapshot (ENH-142). The exact-owner validation read
+	// already normalized these values and hashed the same raw bytes.
+	ctx.TCTitle = validatedOwner.Metadata.Title
+	ctx.TCRequirement = validatedOwner.Metadata.Requirement
+	ctx.TCPriority = validatedOwner.Metadata.Priority
+	ctx.TestType = validatedOwner.Metadata.TestType
 }

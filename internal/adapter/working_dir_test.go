@@ -81,12 +81,12 @@ func TestBuildAdapterContext_RunDir(t *testing.T) {
 
 	withWD := &ResolvedAdapter{Command: "execute", Name: "runner", Tier: 1, Mode: "sync",
 		Config: &config.AdapterConfig{WorkingDir: "harness"}}
-	ac := buildAdapterContext(root, "task-1", withWD, "tc-1", CommandFlags{}, "br", cfg, root, resPath, "")
+	ac := buildAdapterContext(root, "task-1", withWD, "tc-1", CommandFlags{}, "br", cfg, root, resPath, "", ValidatedTestCaseOwner{})
 	assert.Equal(t, filepath.Join(root, "harness"), ac.RunDir, "working-dir set -> base joined with it")
 
 	noWD := &ResolvedAdapter{Command: "execute", Name: "runner", Tier: 1, Mode: "sync",
 		Config: &config.AdapterConfig{}}
-	ac2 := buildAdapterContext(root, "task-2", noWD, "tc-1", CommandFlags{}, "br", cfg, root, resPath, "")
+	ac2 := buildAdapterContext(root, "task-2", noWD, "tc-1", CommandFlags{}, "br", cfg, root, resPath, "", ValidatedTestCaseOwner{})
 	assert.Equal(t, root, ac2.RunDir, "working-dir unset -> RunDir == project root (no regression)")
 }
 

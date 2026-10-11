@@ -22,7 +22,7 @@ func seedAmbiguousProject(t *testing.T) (root, wiringPath string, before []byte)
 	dir := filepath.Join(layout.TestCasesDir(root), "feature-b")
 	require.NoError(t, os.MkdirAll(dir, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "tc-deadbeef-renamed.md"),
-		[]byte("---\ntest_case_id: tc-aaa11111\n---\n"), 0o644))
+		[]byte("---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: tc-aaa11111\n---\n"), 0o644))
 
 	artefact := filepath.Join(root, "test", "x.bats")
 	require.NoError(t, os.MkdirAll(filepath.Dir(artefact), 0o755))
@@ -112,7 +112,7 @@ func TestRepointEntryPoints_RefuseUnprovableCandidate(t *testing.T) {
 		createTCSpecAt(t, root, "feature-a", "tc-aaa11111")
 		dir := filepath.Join(layout.TestCasesDir(root), "feature-a")
 		require.NoError(t, os.WriteFile(filepath.Join(dir, "tc-bbb22222-broken.md"),
-			[]byte("---\ntest_case_id: [unclosed\n---\n"), 0o644))
+			[]byte("---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: [unclosed\n---\n"), 0o644))
 		return root
 	}
 

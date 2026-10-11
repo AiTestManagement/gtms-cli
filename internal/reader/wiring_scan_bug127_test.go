@@ -30,6 +30,9 @@ func TestBUG127_ManualResultSurfacesWhenAlsoWired(t *testing.T) {
 		t.Run(r, func(t *testing.T) {
 			root := t.TempDir()
 			writeFile(t, root, filepath.Join("gtms/test/cases", "tc-bug127-wired.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-bug127
 title: Wired TC with a manual result
 ---
@@ -86,6 +89,9 @@ func TestBUG127_NoDuplicateManualEntry_WhenManualWiringAndResultBothExist(t *tes
 	root := t.TempDir()
 	specRel := "gtms/test/cases/tc-bug127dup-mixed.md"
 	writeFile(t, root, filepath.FromSlash(specRel), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-bug127dup
 title: Manual wiring AND manual result file
 ---
@@ -133,6 +139,9 @@ title: Manual wiring AND manual result file
 func TestBUG127_ManualDriftSurfacesUnderFrameworkManual(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-bug127drift.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-bug127drift
 title: Wired TC with a drifted manual result
 ---
@@ -156,6 +165,9 @@ title: Wired TC with a drifted manual result
 func TestBUG127_MapManualResultRespectsOptionA(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-bug127map.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-bug127map
 title: Wired bats-pass TC with a recorded manual FAIL
 requirement: REQ-BUG127

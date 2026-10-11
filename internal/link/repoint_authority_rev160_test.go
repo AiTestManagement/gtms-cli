@@ -176,7 +176,7 @@ func TestAuthoriseSingleRepoint_AmbiguousAndUnprovableStillRefuse(t *testing.T) 
 	dir := filepath.Join(root2, "gtms", "test", "cases", "feature-a")
 	require.NoError(t, os.MkdirAll(dir, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "tc-bbb22222-broken.md"),
-		[]byte("---\ntest_case_id: [unclosed\n---\n"), 0o644))
+		[]byte("---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: [unclosed\n---\n"), 0o644))
 	_, err2 := AuthoriseSingleRepoint(snapshotForTest(t, root2), "tc-bbb22222")
 	require.Error(t, err2, "an unreadable candidate is Unprovable, not absent")
 }

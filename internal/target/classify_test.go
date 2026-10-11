@@ -25,13 +25,13 @@ func TestValidateFolderSafety_ReservedPrefix_UnicodeParent(t *testing.T) {
 	t.Cleanup(func() { layout.InitFromParent("gtms") })
 
 	rejected := []string{
-		"gtmsİ/test/cases",            // exact full prefix
-		"gtmsİ/test/cases/FeatureA",   // child beneath the full prefix
-		"GTMSİ/test/cases/FeatureA",   // mixed-case full prefix (EqualFold)
-		`gtmsİ\test\cases\FeatureA`,   // backslash-normalised form
-		"cases",                       // exact short prefix
-		"cases/FeatureA",              // short prefix child
-		"CASES/FeatureA",              // mixed-case short prefix
+		"gtmsİ/test/cases",          // exact full prefix
+		"gtmsİ/test/cases/FeatureA", // child beneath the full prefix
+		"GTMSİ/test/cases/FeatureA", // mixed-case full prefix (EqualFold)
+		`gtmsİ\test\cases\FeatureA`, // backslash-normalised form
+		"cases",                     // exact short prefix
+		"cases/FeatureA",            // short prefix child
+		"CASES/FeatureA",            // mixed-case short prefix
 	}
 	for _, in := range rejected {
 		t.Run("reject "+in, func(t *testing.T) {
@@ -126,7 +126,7 @@ func TestClassify_CollisionFolderWins(t *testing.T) {
 		[]string{"tc-aaaa1111"},
 		map[string]string{
 			// A genuine spec carrying the colliding ID, under a different folder.
-			"other/tc-aaaa1111-elsewhere.md": "---\ntest_case_id: tc-aaaa1111\n---\n",
+			"other/tc-aaaa1111-elsewhere.md": "---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: tc-aaaa1111\n---\n",
 		},
 	)
 
@@ -246,7 +246,7 @@ func TestClassify_TrailingSeparatorForcesFolder(t *testing.T) {
 	// spec under other/ (a real TC elsewhere) so the broadening risk is realistic.
 	root := seedCases(t,
 		[]string{"tc-exists11"},
-		map[string]string{"other/tc-abc12345-x.md": "---\ntest_case_id: tc-abc12345\n---\n"},
+		map[string]string{"other/tc-abc12345-x.md": "---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: tc-abc12345\n---\n"},
 	)
 
 	cases := []struct {

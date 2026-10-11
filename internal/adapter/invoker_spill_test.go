@@ -15,10 +15,10 @@ import (
 )
 
 // BUG-084: integration tests for the result-contract log-cap + spill producer
-// at the four write sites — Tier 1 success, Tier 1 failure, Tier 2 contract-
+// at the four write sites -- Tier 1 success, Tier 1 failure, Tier 2 contract-
 // updated, and the async finalizer. Tier 1 success and Tier 2 contract-updated
 // run against the live invoker through InvokeWithRoot; the failure case
-// exercises buildFailureLog → ApplyLogCap.
+// exercises buildFailureLog -> ApplyLogCap.
 
 // TestInvoker_LargeFailureLog_SpillsAndCaps exercises the Tier 1 failure path
 // with an adapter emitting > 64 KB of stderr.
@@ -58,7 +58,7 @@ func TestInvoker_LargeFailureLog_SpillsAndCaps(t *testing.T) {
 	assert.True(t, strings.HasSuffix(rc.NotesSpill, ".log"),
 		"notes-spill must end with .log")
 
-	// Spill file must exist with the full payload (≥ 131 KB ≫ cap).
+	// Spill file must exist with the full payload (at least 131 KB, well above cap).
 	spillAbs := filepath.Join(root, filepath.FromSlash(rc.NotesSpill))
 	stat, err := os.Stat(spillAbs)
 	require.NoError(t, err, "spill file must exist on disk")
@@ -166,8 +166,14 @@ OUTFILE="${GTMS_OUTPUT_DIR}/${ID}-bigtest.md"
 mkdir -p "${GTMS_OUTPUT_DIR}"
 cat > "${OUTFILE}" <<TCEOF
 ---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: ${ID}
-name: "bigtest"
+title: "bigtest"
+requirement: BUG-110
+priority: Medium
+created: 2026-09-26
 ---
 TCEOF
 {

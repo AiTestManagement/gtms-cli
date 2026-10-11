@@ -18,6 +18,9 @@ import (
 func writeSpecInFolder(t *testing.T, root, folder, tc string) {
 	t.Helper()
 	body := "---\n" +
+		"gtms_schema: \"test-case/v2\"\n" +
+		"type: Test Case Spec\n" +
+		"test_type: Functional\n" +
 		"test_case_id: " + tc + "\n" +
 		"title: \"" + tc + " subject\"\n" +
 		"requirement: ENH-202\n" +
@@ -39,7 +42,7 @@ func TestActiveTriageByTC_ExcludesResolvedAndKeysByFramework(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, root, "gtms.config", "project:\n  name: x\n  repo: x\n")
 
-	putTriageRecord(t, root, "tc-11111111", "bats", "environment", "fail", "")             // active
+	putTriageRecord(t, root, "tc-11111111", "bats", "environment", "fail", "")                   // active
 	putTriageRecord(t, root, "tc-22222222", "bats", "app-wrong", "fail", "2026-08-28T00:00:00Z") // resolved
 
 	byTC, err := activeTriageByTC(root, []string{"tc-11111111", "tc-22222222", "tc-33333333"})

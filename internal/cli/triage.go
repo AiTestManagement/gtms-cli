@@ -2,6 +2,7 @@ package cli
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"github.com/aitestmanagement/gtms-cli/internal/pathsafe"
 	"github.com/aitestmanagement/gtms-cli/internal/reader"
 	targetpkg "github.com/aitestmanagement/gtms-cli/internal/target"
+	"github.com/aitestmanagement/gtms-cli/internal/testcase"
 	"github.com/aitestmanagement/gtms-cli/internal/triage"
 )
 
@@ -80,7 +82,7 @@ machine-readable JSON: a single object for --show, a bare array for --list.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			displayErr := func(msg, hint string) error {
 				output.Errorf(msg, hint)
-				return output.AsDisplayed(fmt.Errorf(msg))
+				return output.AsDisplayed(errors.New(msg))
 			}
 
 			// listMode changes the positional-count rule (0 or 1) and the meaning
@@ -419,40 +421,56 @@ func runTriageShow(root, target, framework string, jsonOut bool) error {
 // human line shape are identical across scopes.
 func runTriageList(root string, hasArg bool, res targetpkg.Result, valueFilter string, recursive, includeResolved, jsonOut bool) error {
 	var views []reader.TriageView
+	var diags reader.IdentityDiagnostics
 	var err error
 	switch {
 	case !hasArg:
 		// Root list enumerates every triage record regardless of spec membership.
-		views, err = reader.ListTriage(root, nil, valueFilter, includeResolved)
+		views, diags, err = reader.ListTriageWithDiagnostics(root, nil, valueFilter, includeResolved)
 	case res.Kind == targetpkg.KindTCID:
+		// ENH-205: one snapshot for the ownership check and the listing, so a
+		// qualified or bare `triage --list <tc-id>` enumerates once (ADR-024 5b).
+		snap, serr := testcase.NewSnapshot(root)
+		if serr != nil {
+			return serr
+		}
 		if strings.Contains(res.Target, "/") {
 			// A folder-qualified target must prove a unique in-folder spec owner
 			// before its records are listed (BUG-059 / REV-113 scoped-owner rule).
-			if serr := requireScopedSpec(root, res); serr != nil {
-				output.Errorf(serr.Error(), "")
-				return output.AsDisplayed(serr)
+			if scerr := requireScopedSpecIn(snap, root, res); scerr != nil {
+				output.Errorf(scerr.Error(), "")
+				return output.AsDisplayed(scerr)
 			}
 		}
-		views, err = reader.ListTriageForTC(root, res.TCID, valueFilter, includeResolved)
+		// A BARE tc-id whose spec is Ambiguous or Unprovable is refused inside the
+		// reader (ADR-024 5b; REV-184 CODEX-004) -- empty stdout (not []), the
+		// diagnostic, exit 1 -- via the error path below.
+		views, err = reader.ListTriageForTCWithSnapshot(snap, root, res.TCID, valueFilter, includeResolved)
 	default: // targetpkg.KindFolder
 		scope, serr := buildScopeFromArg(root, res.Target, recursive)
 		if serr != nil {
 			output.Errorf(serr.Error(), "")
 			return output.AsDisplayed(serr)
 		}
-		views, err = reader.ListTriage(root, scope, valueFilter, includeResolved)
+		views, diags, err = reader.ListTriageWithDiagnostics(root, scope, valueFilter, includeResolved)
 	}
 	if err != nil {
 		output.Errorf(err.Error(), "")
 		return output.AsDisplayed(err)
 	}
-	return renderTriageList(os.Stdout, views, jsonOut)
+	// ADR-024 5b (e) point 7: an all-affected list is not rendered as an empty
+	// state; the JSON keeps its bare-array shape and the diagnostics + exit 1 carry
+	// the verdict.
+	if rerr := renderTriageList(os.Stdout, views, jsonOut, diags.Affected()); rerr != nil {
+		return failWithIdentityDiagnostics(diags, rerr) // REV-184 round 8
+	}
+	return finishWithIdentityDiagnostics(diags)
 }
 
 // renderTriageList renders a resolved list of triage views. JSON is a bare array
 // (an empty result set is [], never null and never absent); human output is one
 // row per record via printTriageListLine, or the empty-result line.
-func renderTriageList(w io.Writer, views []reader.TriageView, jsonOut bool) error {
+func renderTriageList(w io.Writer, views []reader.TriageView, jsonOut bool, suppressEmptyLine bool) error {
 	if jsonOut {
 		arr := make([]triageShowJSON, 0, len(views))
 		for i := range views {
@@ -467,7 +485,11 @@ func renderTriageList(w io.Writer, views []reader.TriageView, jsonOut bool) erro
 	}
 
 	if len(views) == 0 {
-		fmt.Fprintln(w, "  No triage records.")
+		// ADR-024 5b (e) point 7: when every record was left out by an identity
+		// failure, the empty-state line would render the failures as absence.
+		if !suppressEmptyLine {
+			fmt.Fprintln(w, "  No triage records.")
+		}
 		return nil
 	}
 	for i := range views {

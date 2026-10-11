@@ -1,6 +1,7 @@
 package scaffold
 
 import (
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -98,7 +99,9 @@ func TestInitMinimalPreset(t *testing.T) {
 	assert.Contains(t, string(createContent), "GTMS_REFERENCE")
 	assert.Contains(t, string(createContent), "GTMS_RESULT_FILE")
 	assert.Contains(t, string(createContent), "priority: Medium")
-	assert.Contains(t, string(createContent), "type: Functional")
+	createLines := strings.Split(strings.ReplaceAll(string(createContent), "\r\n", "\n"), "\n")
+	assert.Contains(t, createLines, "type: Test Case Spec")
+	assert.Contains(t, createLines, "test_type: Functional")
 	assert.NotContains(t, string(createContent), "status: draft")
 
 	// ENH-160: All 6 scripts should exist
@@ -2150,6 +2153,32 @@ func TestBUG077_SchemaResultAcceptsNull(t *testing.T) {
 		"result type must include null for freshly-stamped templates")
 	assert.Contains(t, manualResultSchema, `["string", "null"]`,
 		"result type should be a union of string and null")
+}
+
+func TestPrimeScripts_UseNormalizedTestType(t *testing.T) {
+	for name, script := range map[string]string{
+		"manual": manualPrimeScript,
+		"agent":  agentPrimeScript,
+	} {
+		t.Run(name, func(t *testing.T) {
+			assert.Contains(t, script, "GTMS_TEST_TYPE")
+			assert.Contains(t, script, "${TEST_TYPE}")
+			assert.Contains(t, script, "test_type:")
+			assert.NotContains(t, script, "GTMS_TC_TYPE")
+			assert.NotContains(t, script, "${TC_TYPE}")
+		})
+	}
+}
+
+func TestManualResultSchema_UsesTestTypeSnapshot(t *testing.T) {
+	var schema struct {
+		Properties map[string]json.RawMessage `json:"properties"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(manualResultSchema), &schema))
+	assert.Contains(t, schema.Properties, "test_type")
+	assert.NotContains(t, schema.Properties, "type")
+	assert.Contains(t, manualResultTemplate, `test_type: "${TEST_TYPE}"`)
+	assert.NotContains(t, manualResultTemplate, "${TC_TYPE}")
 }
 
 // --- ENH-135: Companion-file and new scaffold tests ---

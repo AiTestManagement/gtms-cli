@@ -43,6 +43,9 @@ func TestPipelineStatus_NoPhantomRowsOnFreshScaffold(t *testing.T) {
 	// These carry the literal frontmatter placeholder `test_case_id: ${TESTCASE_ID}`
 	// which, pre-ENH-164, leaked into the reader as the ${testcase_id} phantom row.
 	writeFile(t, root, filepath.Join("gtms", "test", "templates", "manual-testcase.template.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: ${TESTCASE_ID}
 title: "${TITLE}"
 requirement: ${REQUIREMENT}
@@ -54,6 +57,9 @@ created: ${CREATED}
 ## Test Steps
 `)
 	writeFile(t, root, filepath.Join("gtms", "test", "templates", "agent-testcase.template.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: ${TESTCASE_ID}
 title: "${TITLE}"
 requirement: ${REQUIREMENT}

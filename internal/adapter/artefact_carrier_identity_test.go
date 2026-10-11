@@ -186,7 +186,7 @@ func TestPlannedArtefactCarrier_EmptyOnNonAutomatePaths(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			ac := buildAdapterContext(root, "task-carrier", tc.resolved, "tc-bbbbbbbb", tc.flags,
-				"feature/test", cfg, root, filepath.Join(root, ".gtms", "results", "task-carrier.handoff.yaml"), "")
+				"feature/test", cfg, root, filepath.Join(root, ".gtms", "results", "task-carrier.handoff.yaml"), "", ValidatedTestCaseOwner{})
 			require.NotNil(t, ac)
 			assert.Empty(t, ac.PlannedArtefact,
 				"a path with no reserved artefact must carry an empty PlannedArtefact")

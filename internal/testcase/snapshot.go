@@ -23,14 +23,12 @@ package testcase
 import (
 	"bytes"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
-
-	"github.com/adrg/frontmatter"
+	"sync/atomic"
 
 	"github.com/aitestmanagement/gtms-cli/internal/layout"
 	"github.com/aitestmanagement/gtms-cli/internal/pathsafe"
@@ -97,16 +95,60 @@ func repairSentence(reason UnprovableReason, path string) string {
 	}
 }
 
+func schemaRepairSentence(failure *SchemaFailure, path string) string {
+	if failure == nil {
+		return ""
+	}
+	path = sanitizeIdentityString(path)
+	key := sanitizeIdentityString(failure.Key)
+	declaredKind := sanitizeIdentityString(failure.DeclaredKind)
+	switch failure.Kind {
+	case SchemaFailureNoFrontmatterBlock:
+		return fmt.Sprintf("add a leading YAML frontmatter block in %s, or remove the file", path)
+	case SchemaFailureMissingSchemaDiscriminator:
+		return fmt.Sprintf("add gtms_schema: \"test-case/v2\" in %s, or remove the file", path)
+	case SchemaFailureMalformedSchemaDiscriminator, SchemaFailureUnsupportedSchemaVersion:
+		return fmt.Sprintf("set gtms_schema to \"test-case/v2\" in %s, or remove the file", path)
+	case SchemaFailureWrongConceptType:
+		return fmt.Sprintf("set type to Test Case Spec in %s, or remove the file", path)
+	case SchemaFailureMissingTestCategory:
+		return fmt.Sprintf("set test_type to a non-empty category in %s, or remove the file", path)
+	case SchemaFailureDuplicateYAMLKey:
+		return fmt.Sprintf("remove duplicate YAML key '%s' in %s, or remove the file", key, path)
+	case SchemaFailureWrongTypeRetainedField:
+		return fmt.Sprintf("set '%s' to its declared %s in %s, or remove the file", key, declaredKind, path)
+	default:
+		return repairSentence(ReasonMalformed, path)
+	}
+}
+
 // Candidate is one directory entry the snapshot walk visited under
 // gtms/test/cases/. LogicalRel is where the entry appears (a symlink's own
 // path); CanonicalRel/CanonicalAbs is its resolved physical target.
 type Candidate struct {
-	LogicalRel   string // project-relative, forward-slash (entry path)
-	CanonicalRel string // project-relative, forward-slash (resolved target)
-	CanonicalAbs string // canonical absolute path of the resolved target
-	BodyID       string // grammar-valid parsed test_case_id; "" when Unprovable
-	Unprovable   bool
-	Reason       UnprovableReason // meaningful only when Unprovable
+	LogicalRel    string // project-relative, forward-slash (entry path)
+	CanonicalRel  string // project-relative, forward-slash (resolved target)
+	CanonicalAbs  string // canonical absolute path of the resolved target
+	BodyID        string // grammar-valid parsed test_case_id; retained through schema failure
+	Unprovable    bool
+	Reason        UnprovableReason // meaningful only when Unprovable
+	SchemaFailure *SchemaFailure   // strict schema failure, when schema caused Unprovable
+	DecodeFailure *SchemaFailure   // normalized decode failure retained for reader diagnostics
+	Metadata      Metadata         // normalized fields from the snapshot's single decode
+	// Frontmatter is the leading frontmatter region of a parsed candidate file (the
+	// bytes up to and including the closing delimiter line), exactly as the
+	// enumeration read it. It is set only when BodyID is set. It lets a bulk reader
+	// decode a proven owner's display fields from THIS enumeration's read instead of
+	// opening every owner file a second time -- which, for an unscoped operation, was
+	// a second project-wide pass (ADR-024 5a/5b: at most one per operation). It is
+	// retained bytes of one immutable enumeration, not a cache: it is never shared
+	// across snapshots and never re-validated.
+	//
+	// It is a string, not a []byte, so a caller holding a Resolution cannot mutate
+	// the snapshot's storage (REV-186 CODEX-001). Aliases of one canonical file
+	// share ONE retained value: buildSnapshot keeps the first copy per
+	// CanonicalRel and hands the same string to every alias (REV-186 CODEX-002).
+	Frontmatter string
 }
 
 // IsAlias reports whether the entry is a symlink whose resolved target lies at a
@@ -141,8 +183,25 @@ func NewSnapshot(projectRoot string) (*Snapshot, error) {
 	return buildSnapshot(projectRoot, pathsafe.CanonicalRoot(projectRoot))
 }
 
+// snapshotBuilds counts calls to buildSnapshot. It exists ONLY so tests can prove
+// ADR-024's "exactly one project-wide enumeration per operation" property -- in
+// particular that a qualified <folder>/<tc-id> target builds ONE snapshot, not one
+// for the scoped-owner check and another for the reader (ENH-205). It is never read
+// by production code; a single atomic increment per build is not a cache and does not
+// change behaviour. Read it through SnapshotBuildsForTest.
+var snapshotBuilds int64
+
+// candidateReads counts physical testcase candidate reads. It is test-only
+// observability for the one-read admission property, not a cache or policy seam.
+var candidateReads int64
+
+// SnapshotBuildsForTest returns the number of buildSnapshot calls so far. Test-only
+// observability for the bounded-enumeration property; production must not depend on it.
+func SnapshotBuildsForTest() int64 { return atomic.LoadInt64(&snapshotBuilds) }
+
 // buildSnapshot performs the project-wide enumeration.
 func buildSnapshot(projectRoot, canonRoot string) (*Snapshot, error) {
+	atomic.AddInt64(&snapshotBuilds, 1)
 	casesRel := layout.Current().TestCases
 
 	casesRoot, _, err := pathsafe.ResolveUnderRoot(projectRoot, casesRel)
@@ -168,6 +227,12 @@ func buildSnapshot(projectRoot, canonRoot string) (*Snapshot, error) {
 		return nil, fmt.Errorf("test cases path %s exists but is not a directory", casesRel)
 	}
 
+	// One retained frontmatter value per canonical physical file: an alias of a file
+	// already seen reuses that file's string instead of retaining its own copy
+	// (REV-186 CODEX-002).
+	frontmatterByCanonical := map[string]string{}
+	evidenceByCanonical := map[string]candidateEvidence{}
+
 	walkErr := filepath.Walk(casesRoot, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			// A walk error means the enumeration may be incomplete. Fail closed so
@@ -180,11 +245,21 @@ func buildSnapshot(projectRoot, canonRoot string) (*Snapshot, error) {
 			snap.dirs = append(snap.dirs, filepath.ToSlash(mustRel(canonRoot, path)))
 			return nil
 		}
+		if IsReservedCompanion(info.Name()) {
+			return nil
+		}
 		if !strings.HasSuffix(info.Name(), ".md") {
 			return nil
 		}
-		cand, ok := classifyCandidate(canonRoot, casesRoot, path)
+		cand, ok := classifyCandidate(canonRoot, casesRoot, path, evidenceByCanonical)
 		if ok {
+			if cand.BodyID != "" {
+				if shared, seen := frontmatterByCanonical[cand.CanonicalRel]; seen && shared == cand.Frontmatter {
+					cand.Frontmatter = shared
+				} else if !seen {
+					frontmatterByCanonical[cand.CanonicalRel] = cand.Frontmatter
+				}
+			}
 			snap.candidates = append(snap.candidates, cand)
 		}
 		return nil
@@ -199,7 +274,7 @@ func buildSnapshot(projectRoot, canonRoot string) (*Snapshot, error) {
 // ok=false when the entry is out-of-tree or its resolved target is not a
 // regular file (an out-of-tree symlink, FIFO, device, or broken link is not
 // opened as a spec, per ADR-024 s3).
-func classifyCandidate(canonRoot, casesRoot, path string) (Candidate, bool) {
+func classifyCandidate(canonRoot, casesRoot, path string, evidenceByCanonical map[string]candidateEvidence) (Candidate, bool) {
 	relToCases, relErr := filepath.Rel(casesRoot, path)
 	if relErr != nil {
 		return Candidate{}, false
@@ -224,8 +299,27 @@ func classifyCandidate(canonRoot, casesRoot, path string) (Candidate, bool) {
 		CanonicalAbs: canonAbs,
 	}
 
-	id, reason, _, ok := parseBodyIdentity(canonAbs)
-	if !ok {
+	evidence, seen := evidenceByCanonical[canonicalRel]
+	if !seen {
+		evidence = readCandidateEvidence(canonAbs)
+		evidenceByCanonical[canonicalRel] = evidence
+	}
+	if !evidence.readable {
+		if !isSpecShaped(filepath.Base(path), false) {
+			return Candidate{}, false
+		}
+		cand.Unprovable = true
+		cand.Reason = ReasonUnreadable
+		return cand, true
+	}
+
+	result := evidence.decoded
+	cand.Metadata = result.Metadata
+	cand.DecodeFailure = result.Failure
+	cand.Frontmatter = evidence.frontmatter
+	identityValid := result.ParsedIdentity != "" && ValidExecutionID(result.ParsedIdentity)
+	failure := result.Failure
+	if !identityValid || failure != nil {
 		// REV-158 CLAUDE-002: an ID-less, malformed, or unreadable file becomes an
 		// Unprovable candidate -- which fails every folder-scoped mutation closed --
 		// only when it is structurally a spec. Ordinary documentation in a cases
@@ -235,15 +329,82 @@ func classifyCandidate(canonRoot, casesRoot, path string) (Candidate, bool) {
 		// result. Keying the second arm on a successful frontmatter parse made a
 		// renamed spec vanish the moment its frontmatter broke -- the one case where
 		// admission matters most. See isSpecShaped / hasIdentityCarrier.
-		if !isSpecShaped(filepath.Base(path), canonAbs) {
+		if !identityValid && !isSpecShaped(filepath.Base(path), evidence.hasIdentityCarrier) {
 			return Candidate{}, false
 		}
 		cand.Unprovable = true
-		cand.Reason = reason
+		switch {
+		case identityValid && failure != nil:
+			cand.Reason = ReasonMalformed
+			cand.SchemaFailure = failure
+		case result.ParsedIdentity != "":
+			cand.Reason = ReasonGrammarInvalid
+		case failure != nil && failure.Kind == SchemaFailureMissingSchemaDiscriminator:
+			cand.Reason = ReasonMissingID
+		case failure != nil:
+			cand.Reason = ReasonMalformed
+			cand.SchemaFailure = failure
+		default:
+			cand.Reason = ReasonMissingID
+		}
+		if identityValid {
+			cand.BodyID = result.ParsedIdentity
+		}
 		return cand, true
 	}
-	cand.BodyID = id
+	cand.BodyID = result.ParsedIdentity
 	return cand, true
+}
+
+type candidateEvidence struct {
+	decoded            DecodeResult
+	frontmatter        string
+	hasIdentityCarrier bool
+	readable           bool
+}
+
+func readCandidateEvidence(path string) candidateEvidence {
+	atomic.AddInt64(&candidateReads, 1)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return candidateEvidence{}
+	}
+	decoded := DecodeCandidate(data)
+	hasCarrier := hasIdentityCarrier(data)
+	if !hasCarrier && decoded.Failure != nil && decoded.Failure.Kind == SchemaFailureMalformedYAML {
+		hasCarrier = hasIdentityCarrierAfterLeadingPreamble(data)
+	}
+	return candidateEvidence{
+		decoded:            decoded,
+		frontmatter:        leadingFrontmatterRegion(data),
+		hasIdentityCarrier: hasCarrier,
+		readable:           true,
+	}
+}
+
+func leadingFrontmatterRegion(data []byte) string {
+	lineEnd := bytes.IndexByte(data, '\n')
+	if lineEnd < 0 {
+		return ""
+	}
+	for offset := lineEnd + 1; offset <= len(data); {
+		next := bytes.IndexByte(data[offset:], '\n')
+		end := len(data)
+		if next >= 0 {
+			end = offset + next
+		}
+		if isDelimiterLine(data[offset:end]) {
+			if end < len(data) {
+				end++
+			}
+			return string(data[:end])
+		}
+		if next < 0 {
+			break
+		}
+		offset = end + 1
+	}
+	return ""
 }
 
 // mustRel returns filepath.Rel(base, target), falling back to target on error.
@@ -253,13 +414,6 @@ func mustRel(base, target string) string {
 		return target
 	}
 	return rel
-}
-
-// specFrontmatter carries only the identity field the snapshot needs. ID is a
-// POINTER so the snapshot can tell "the file declares no test_case_id at all"
-// (nil) from "it declares an empty one" (non-nil, "").
-type specFrontmatter struct {
-	ID *string `yaml:"test_case_id"`
 }
 
 // specFilenameEnvelope matches the filename shape GTMS gives a test-case spec:
@@ -326,19 +480,11 @@ func isDelimiterLine(line []byte) bool {
 //
 // A read or open failure is treated as carrier-absent (ADR-024 4a). The caller
 // only reaches here for a contained regular file (section 3).
-func hasIdentityCarrier(absPath string) bool {
-	f, err := os.Open(absPath)
-	if err != nil {
-		return false
+func hasIdentityCarrier(data []byte) bool {
+	region := data
+	if len(region) > carrierScanLimit {
+		region = region[:carrierScanLimit]
 	}
-	defer f.Close()
-
-	buf := make([]byte, carrierScanLimit)
-	n, rerr := io.ReadFull(f, buf)
-	if n == 0 && rerr != nil {
-		return false
-	}
-	region := buf[:n]
 
 	lines := bytes.Split(region, []byte("\n"))
 	if len(lines) == 0 || !isDelimiterLine(lines[0]) {
@@ -355,6 +501,24 @@ func hasIdentityCarrier(absPath string) bool {
 	// Region ran to 8 KiB or EOF without closing: an unterminated region is
 	// explicitly allowed, and the carrier simply was not in it.
 	return false
+}
+
+func hasIdentityCarrierAfterLeadingPreamble(data []byte) bool {
+	for len(data) > 0 {
+		if bytes.HasPrefix(data, []byte("\xef\xbb\xbf")) {
+			data = data[3:]
+			continue
+		}
+		line, rest, found := bytes.Cut(data, []byte("\n"))
+		if len(bytes.TrimSpace(bytes.TrimSuffix(line, []byte("\r")))) != 0 {
+			break
+		}
+		if !found {
+			return false
+		}
+		data = rest
+	}
+	return hasIdentityCarrier(data)
 }
 
 // isSpecShaped reports whether a walked .md file is structurally a test-case
@@ -392,58 +556,33 @@ func hasIdentityCarrier(absPath string) bool {
 // all: every VALID spec has parseable frontmatter, therefore begins with a
 // delimiter and carries the key, therefore is admitted by the carrier arm
 // whatever its filename.
-func isSpecShaped(base, canonAbs string) bool {
-	return specFilenameEnvelope.MatchString(base) || hasIdentityCarrier(canonAbs)
-}
-
-// parseBodyIdentity reads a spec's body identity. It distinguishes the four
-// Unprovable reasons from a clean parse. A returned ok=true means the id is
-// present AND grammar-valid (a proven identity). A cleanly-parsed spec whose id
-// is valid but simply DIFFERENT from a requested id is a proven non-owner --
-// that judgement is made by the resolver, not here.
-//
-// declaresIDKey reports whether the frontmatter carried a test_case_id key at all.
-//
-// REV-158 CODEX-004: the authored scalar is validated EXACTLY as it appears in
-// the file -- no lowercasing, no trimming. Persisted body identity is the
-// authoritative record of what a spec claims to be (ADR-024 s1); normalising it
-// here silently converted "TC-ABCD" or " tc-abcd " into the valid owner tc-abcd,
-// so a mutating command could act under an identity the spec does not actually
-// declare, bypassing the positive-grammar refusal of ADR-024 s6. Trimming and
-// case folding belong at user-INPUT classification boundaries (internal/target),
-// never to persisted identity.
-func parseBodyIdentity(absPath string) (id string, reason UnprovableReason, declaresIDKey, ok bool) {
-	data, err := os.ReadFile(absPath)
-	if err != nil {
-		return "", ReasonUnreadable, false, false
-	}
-	var fm specFrontmatter
-	if _, perr := frontmatter.Parse(bytes.NewReader(data), &fm); perr != nil {
-		return "", ReasonMalformed, false, false
-	}
-	if fm.ID == nil {
-		return "", ReasonMissingID, false, false
-	}
-	authored := *fm.ID
-	if authored == "" {
-		return "", ReasonMissingID, true, false
-	}
-	if !ValidExecutionID(authored) {
-		return "", ReasonGrammarInvalid, true, false
-	}
-	return authored, 0, true, true
+func isSpecShaped(base string, hasCarrier bool) bool {
+	return specFilenameEnvelope.MatchString(base) || hasCarrier
 }
 
 // Resolution is the outcome of an ownership lookup, carrying everything a
 // consumer needs to act, refuse, or diagnose.
 type Resolution struct {
-	Outcome           Outcome
-	ID                string
-	OwnerLogicalRel   string   // UniqueOwner: the real owner's project-relative path
-	OwnerCanonicalAbs string   // UniqueOwner: canonical absolute path for reading/hashing
-	Owners            []string // Ambiguous: sorted logical paths of every physical owner
-	UnprovablePath    string   // Unprovable: candidate logical path
-	Reason            UnprovableReason
+	Outcome            Outcome
+	ID                 string
+	OwnerLogicalRel    string   // UniqueOwner: the real owner's project-relative path
+	OwnerCanonicalAbs  string   // UniqueOwner: canonical absolute path for reading/hashing
+	OwnerFrontmatter   string   // UniqueOwner: the owner's frontmatter region as this snapshot read it
+	OwnerMetadata      Metadata // UniqueOwner: normalized metadata from the same snapshot decode
+	OwnerDecodeFailure *SchemaFailure
+	AmbiguousEvidence  []OwnerEvidence
+	Owners             []string // Ambiguous: sorted logical paths of every physical owner
+	UnprovablePath     string   // Unprovable: candidate logical path
+	Reason             UnprovableReason
+	SchemaFailure      *SchemaFailure
+}
+
+// OwnerEvidence carries the one-read decoder result for one physical owner in
+// an Ambiguous resolution. Readers use it without reopening or reparsing specs.
+type OwnerEvidence struct {
+	LogicalRel    string
+	Metadata      Metadata
+	DecodeFailure *SchemaFailure
 }
 
 // Resolve answers project-wide ownership for a requested bare TC id. Relevance
@@ -452,8 +591,23 @@ type Resolution struct {
 // count decides NotFound / UniqueOwner / Ambiguous.
 func (s *Snapshot) Resolve(id string) Resolution {
 	return s.resolve(id, func(c Candidate) bool {
-		return MatchesSpecFile(filepath.Base(c.LogicalRel), id)
+		return c.BodyID == id || MatchesSpecFile(filepath.Base(c.LogicalRel), id)
 	})
+}
+
+// ResolveScopedOwner answers ownership for an id a BULK operation selected by
+// scope (ADR-024 5b "Relevance and outcomes in a bulk operation"). A bulk
+// operation has no requested id, so section 4a's filename-shortlist arm is
+// vacuous and only the scope arm applies: an Unprovable candidate is relevant
+// only when it lies inside the selected scope, and those are diagnosed by
+// SelectFolder, never here. This therefore decides on owner count alone --
+// NotFound / UniqueOwner / Ambiguous (project-wide) -- and never returns
+// Unprovable. It exists so an Unprovable file OUTSIDE the scope whose filename
+// happens to match an in-scope owner's id cannot turn that owner into a silent
+// absence (REV-184 CLAUDE-001). Per-id readers (single-TC forms, triage record
+// attribution) keep using Resolve.
+func (s *Snapshot) ResolveScopedOwner(id string) Resolution {
+	return s.resolve(id, func(Candidate) bool { return false })
 }
 
 // resolve is the shared body. relevant reports whether an Unprovable candidate
@@ -464,9 +618,17 @@ func (s *Snapshot) resolve(id string, relevant func(Candidate) bool) Resolution 
 	// Owners: candidates whose BODY identity equals id, deduplicated by canonical
 	// path. NEVER pre-filtered by filename (REV-156 CODEX-001).
 	ownersByCanonical := map[string]string{} // canonicalRel -> logicalRel (owner display)
+	frontmatterByCanonical := map[string]string{}
+	metadataByCanonical := map[string]Metadata{}
+	decodeFailureByCanonical := map[string]*SchemaFailure{}
 	for _, c := range s.candidates {
 		if c.Unprovable || c.BodyID != id {
 			continue
+		}
+		if _, ok := frontmatterByCanonical[c.CanonicalRel]; !ok {
+			frontmatterByCanonical[c.CanonicalRel] = c.Frontmatter
+			metadataByCanonical[c.CanonicalRel] = c.Metadata
+			decodeFailureByCanonical[c.CanonicalRel] = c.DecodeFailure
 		}
 		// Prefer a non-alias logical path for display when both exist.
 		existing, seen := ownersByCanonical[c.CanonicalRel]
@@ -491,6 +653,7 @@ func (s *Snapshot) resolve(id string, relevant func(Candidate) bool) Resolution 
 		res.Outcome = OutcomeUnprovable
 		res.UnprovablePath = firstUnprovable.LogicalRel
 		res.Reason = firstUnprovable.Reason
+		res.SchemaFailure = cloneSchemaFailure(firstUnprovable.SchemaFailure)
 		return res
 	}
 
@@ -502,14 +665,25 @@ func (s *Snapshot) resolve(id string, relevant func(Candidate) bool) Resolution 
 		for canonRel, logRel := range ownersByCanonical {
 			res.OwnerLogicalRel = logRel
 			res.OwnerCanonicalAbs = filepath.Join(s.projectRoot, filepath.FromSlash(canonRel))
+			res.OwnerFrontmatter = frontmatterByCanonical[canonRel]
+			res.OwnerMetadata = cloneMetadata(metadataByCanonical[canonRel])
+			res.OwnerDecodeFailure = cloneSchemaFailure(decodeFailureByCanonical[canonRel])
 		}
 	default:
 		res.Outcome = OutcomeAmbiguous
 		owners := make([]string, 0, len(ownersByCanonical))
-		for _, logRel := range ownersByCanonical {
+		for canonRel, logRel := range ownersByCanonical {
 			owners = append(owners, logRel)
+			res.AmbiguousEvidence = append(res.AmbiguousEvidence, OwnerEvidence{
+				LogicalRel:    logRel,
+				Metadata:      cloneMetadata(metadataByCanonical[canonRel]),
+				DecodeFailure: cloneSchemaFailure(decodeFailureByCanonical[canonRel]),
+			})
 		}
 		sort.Strings(owners)
+		sort.Slice(res.AmbiguousEvidence, func(i, j int) bool {
+			return res.AmbiguousEvidence[i].LogicalRel < res.AmbiguousEvidence[j].LogicalRel
+		})
 		res.Owners = owners
 	}
 	return res
@@ -726,12 +900,13 @@ type OwnershipError struct {
 	// id or nothing. A candidate found by SCOPE rather than by id has no id to
 	// report -- that is why it is unprovable -- so ID stays empty and Scope
 	// carries the folder instead.
-	ID      string
-	Outcome Outcome
-	Owners  []string         // Ambiguous
-	Path    string           // Unprovable
-	Scope   string           // Unprovable found by scope: the folder that selected it
-	Reason  UnprovableReason // Unprovable
+	ID            string
+	Outcome       Outcome
+	Owners        []string         // Ambiguous
+	Path          string           // Unprovable
+	Scope         string           // Unprovable found by scope: the folder that selected it
+	Reason        UnprovableReason // Unprovable
+	SchemaFailure *SchemaFailure
 }
 
 // UnprovableInScope builds the diagnostic for a candidate that an operation
@@ -747,10 +922,12 @@ type OwnershipError struct {
 // the right facts.
 func UnprovableInScope(scopeRel string, c Candidate) *OwnershipError {
 	return &OwnershipError{
-		Outcome: OutcomeUnprovable,
-		Path:    c.LogicalRel,
-		Scope:   strings.TrimSuffix(filepath.ToSlash(scopeRel), "/"),
-		Reason:  c.Reason,
+		ID:            c.BodyID,
+		Outcome:       OutcomeUnprovable,
+		Path:          c.LogicalRel,
+		Scope:         strings.TrimSuffix(filepath.ToSlash(scopeRel), "/"),
+		Reason:        c.Reason,
+		SchemaFailure: c.SchemaFailure,
 	}
 }
 
@@ -766,6 +943,10 @@ func (e *OwnershipError) Error() string {
 		return fmt.Sprintf("test case ID '%s' is ambiguous -- it has %d project-wide owners:\n    %s\n    Resolve the duplicate IDs before targeting '%s'.",
 			sanitizeIdentityString(e.ID), len(e.Owners), strings.Join(display, "\n    "), sanitizeIdentityString(e.ID))
 	case OutcomeUnprovable:
+		repair := repairSentence(e.Reason, sanitizeIdentityString(e.Path))
+		if e.SchemaFailure != nil {
+			repair = schemaRepairSentence(e.SchemaFailure, sanitizeIdentityString(e.Path))
+		}
 		// A scope-derived candidate has no id: say so, and name the scope that
 		// selected it, instead of labelling its path as a TC id (CLAUDE-007). The
 		// "cannot be proved from <path>: <repair>" clause is identical in both
@@ -776,10 +957,10 @@ func (e *OwnershipError) Error() string {
 				scope = layout.Current().TestCases
 			}
 			return fmt.Sprintf("ownership of a candidate spec under %s/ cannot be proved from %s: %s.",
-				sanitizeIdentityString(scope), sanitizeIdentityString(e.Path), repairSentence(e.Reason, sanitizeIdentityString(e.Path)))
+				sanitizeIdentityString(scope), sanitizeIdentityString(e.Path), repair)
 		}
 		return fmt.Sprintf("ownership of test case ID '%s' cannot be proved from %s: %s.",
-			sanitizeIdentityString(e.ID), sanitizeIdentityString(e.Path), repairSentence(e.Reason, sanitizeIdentityString(e.Path)))
+			sanitizeIdentityString(e.ID), sanitizeIdentityString(e.Path), repair)
 	case OutcomeNotFound:
 		return fmt.Sprintf("test case '%s' not found under %s/", sanitizeIdentityString(e.ID), layout.Current().TestCases)
 	default:
@@ -796,7 +977,7 @@ func OwnershipErrorFor(res Resolution) *OwnershipError {
 	case OutcomeAmbiguous:
 		return &OwnershipError{ID: res.ID, Outcome: res.Outcome, Owners: res.Owners}
 	case OutcomeUnprovable:
-		return &OwnershipError{ID: res.ID, Outcome: res.Outcome, Path: res.UnprovablePath, Reason: res.Reason}
+		return &OwnershipError{ID: res.ID, Outcome: res.Outcome, Path: res.UnprovablePath, Reason: res.Reason, SchemaFailure: res.SchemaFailure}
 	default:
 		return &OwnershipError{ID: res.ID, Outcome: OutcomeNotFound}
 	}

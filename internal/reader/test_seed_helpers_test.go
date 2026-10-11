@@ -35,6 +35,7 @@ import (
 
 	"github.com/aitestmanagement/gtms-cli/internal/pipeline"
 	"github.com/aitestmanagement/gtms-cli/internal/result"
+	"github.com/aitestmanagement/gtms-cli/internal/testcase"
 	"github.com/aitestmanagement/gtms-cli/internal/wiring"
 )
 
@@ -116,9 +117,8 @@ func seedLegacyRecord(t *testing.T, root string, r legacyRecord) {
 	// current content AND artefact present). Tests that want to assert
 	// drift or missing-artefact behaviour set TestCaseHash / ArtefactHash
 	// explicitly and that value wins over the disk-derived one.
-	tcSpecPath, _ := pipeline.ResolveTestCaseSpec(root, r.TC)
-	if tcSpecPath != "" && r.TestCaseHash == "" {
-		if h, err := pipeline.HashFile(filepath.Join(root, filepath.FromSlash(tcSpecPath))); err == nil {
+	if owner, oerr := testcase.ResolveOwner(root, r.TC); oerr == nil && r.TestCaseHash == "" {
+		if h, err := pipeline.HashFile(owner.SpecAbs()); err == nil {
 			r.TestCaseHash = h
 		}
 	}

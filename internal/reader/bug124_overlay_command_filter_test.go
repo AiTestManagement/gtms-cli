@@ -24,6 +24,9 @@ import (
 func TestBUG124_AutomateHandoffNotShownAsExecuteResult(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, root, filepath.Join("gtms/test/cases", "demo", "tc-aaa1111-pw.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-aaa1111
 title: Playwright TC
 ---
@@ -61,6 +64,9 @@ title: Playwright TC
 func TestBUG124_ExecuteErrorStillSurfaces(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, root, filepath.Join("gtms/test/cases", "demo", "tc-bbb2222-bats.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-bbb2222
 title: Bats TC
 ---
@@ -83,6 +89,9 @@ title: Bats TC
 func TestBUG124_ExecutePassStillSurfaces(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, root, filepath.Join("gtms/test/cases", "demo", "tc-ccc3333-bats.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-ccc3333
 title: Bats TC
 ---

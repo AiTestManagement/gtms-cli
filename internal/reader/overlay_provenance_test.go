@@ -43,7 +43,7 @@ func TestScanTerminalResults_CarriesProvenanceAndKeepsReaderVocabulary(t *testin
 	specPath := filepath.Join(root, "gtms", "test", "cases", tc+".md")
 	require.NoError(t, os.MkdirAll(filepath.Dir(specPath), 0755))
 	require.NoError(t, os.WriteFile(specPath,
-		[]byte("---\ntest_case_id: "+tc+"\n---\n\n## Test Objective\nProbe.\n"), 0644))
+		[]byte("---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: "+tc+"\n---\n\n## Test Objective\nProbe.\n"), 0644))
 
 	artefactPath := filepath.Join(root, filepath.FromSlash(artefact))
 	require.NoError(t, os.MkdirAll(filepath.Dir(artefactPath), 0755))
@@ -125,7 +125,7 @@ func TestScanTerminalResults_OmitsAbsentOptionalProvenance(t *testing.T) {
 	specPath := filepath.Join(root, "gtms", "test", "cases", tc+".md")
 	require.NoError(t, os.MkdirAll(filepath.Dir(specPath), 0755))
 	require.NoError(t, os.WriteFile(specPath,
-		[]byte("---\ntest_case_id: "+tc+"\n---\n\n## Test Objective\nThin.\n"), 0644))
+		[]byte("---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: "+tc+"\n---\n\n## Test Objective\nThin.\n"), 0644))
 
 	artefactPath := filepath.Join(root, filepath.FromSlash(artefact))
 	require.NoError(t, os.MkdirAll(filepath.Dir(artefactPath), 0755))

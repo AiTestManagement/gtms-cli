@@ -1,7 +1,7 @@
 package adapter
 
 import (
-	"github.com/aitestmanagement/gtms-cli/internal/testcase"
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,10 +14,11 @@ import (
 
 	"github.com/aitestmanagement/gtms-cli/internal/config"
 	"github.com/aitestmanagement/gtms-cli/internal/scaffold"
+	"github.com/aitestmanagement/gtms-cli/internal/testcase"
 	"github.com/aitestmanagement/gtms-cli/internal/wiring"
 )
 
-func TestBuiltinCreate_StampsSkeletonWithID(t *testing.T) {
+func TestBuiltinCreate_EmitsCanonicalV2(t *testing.T) {
 	dir := t.TempDir()
 
 	ctx := &AdapterContext{
@@ -41,9 +42,19 @@ func TestBuiltinCreate_StampsSkeletonWithID(t *testing.T) {
 	data, err := os.ReadFile(outPath)
 	require.NoError(t, err)
 	content := string(data)
-	assert.Contains(t, content, "test_case_id: tc-aabbccdd")
-	assert.Contains(t, content, "priority: Medium")
-	assert.Contains(t, content, "type: Functional")
+	lines := strings.Split(strings.ReplaceAll(content, "\r\n", "\n"), "\n")
+	canonicalPrefix := []string{
+		`gtms_schema: "test-case/v2"`,
+		"type: Test Case Spec",
+		"test_type: Functional",
+		"test_case_id: tc-aabbccdd",
+		`title: ""`,
+		"requirement: ",
+		"priority: Medium",
+	}
+	require.GreaterOrEqual(t, len(lines), len(canonicalPrefix)+1)
+	assert.Equal(t, canonicalPrefix, lines[1:1+len(canonicalPrefix)])
+	assert.Regexp(t, `^created: \d{4}-\d{2}-\d{2}$`, lines[1+len(canonicalPrefix)])
 	assert.NotContains(t, content, "status: draft")
 	assert.NotContains(t, content, "name:")
 	assert.Contains(t, content, "## Test Objective")
@@ -260,12 +271,13 @@ func TestValidateTestCaseOwner_ValidFile(t *testing.T) {
 	gtmsDir := filepath.Join(dir, "gtms")
 	require.NoError(t, os.WriteFile(filepath.Join(gtmsDir, ".gtms-root"), []byte(""), 0644))
 
-	tcContent := "---\ntest_case_id: tc-aabbccdd\ntitle: \"Test case\"\nstatus: draft\n---\n## Test Objective\n"
+	tcContent := "---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: tc-aabbccdd\ntitle: \"Test case\"\nstatus: draft\n---\n## Test Objective\n"
 	require.NoError(t, os.WriteFile(filepath.Join(casesDir, "tc-aabbccdd-test.md"), []byte(tcContent), 0644))
 
 	owner, err := testcase.ResolveOwner(dir, "tc-aabbccdd")
 	require.NoError(t, err, "a valid unique spec must resolve to an owner")
-	assert.Empty(t, ValidateTestCaseOwner(dir, owner))
+	violations := ValidateTestCaseOwner(dir, owner)
+	assert.Empty(t, violations)
 }
 
 // Filename/body ID mismatch. The old gate walked to tc-aabbccdd-test.md and
@@ -279,7 +291,7 @@ func TestValidateTestCaseOwner_IDMismatchHasNoOwner(t *testing.T) {
 	require.NoError(t, os.MkdirAll(casesDir, 0755))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "gtms", ".gtms-root"), []byte(""), 0644))
 
-	tcContent := "---\ntest_case_id: tc-99999999\ntitle: \"Mismatched ID\"\n---\n"
+	tcContent := "---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: tc-99999999\ntitle: \"Mismatched ID\"\n---\n"
 	require.NoError(t, os.WriteFile(filepath.Join(casesDir, "tc-aabbccdd-test.md"), []byte(tcContent), 0644))
 
 	_, err := testcase.ResolveOwner(dir, "tc-aabbccdd")
@@ -291,7 +303,8 @@ func TestValidateTestCaseOwner_IDMismatchHasNoOwner(t *testing.T) {
 	// (ADR-024 s1/s4: renamed owners are expressly permitted).
 	owner, ownErr := testcase.ResolveOwner(dir, "tc-99999999")
 	require.NoError(t, ownErr)
-	assert.Empty(t, ValidateTestCaseOwner(dir, owner))
+	violations := ValidateTestCaseOwner(dir, owner)
+	assert.Empty(t, violations)
 }
 
 // Missing test_case_id. The old gate walked to the file and reported the missing
@@ -303,7 +316,7 @@ func TestValidateTestCaseOwner_MissingFrontmatterIsUnprovable(t *testing.T) {
 	require.NoError(t, os.MkdirAll(casesDir, 0755))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "gtms", ".gtms-root"), []byte(""), 0644))
 
-	tcContent := "---\ntitle: \"No test_case_id\"\n---\n"
+	tcContent := "---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntitle: \"No test_case_id\"\n---\n"
 	require.NoError(t, os.WriteFile(filepath.Join(casesDir, "tc-aabbccdd-test.md"), []byte(tcContent), 0644))
 
 	_, err := testcase.ResolveOwner(dir, "tc-aabbccdd")
@@ -325,8 +338,8 @@ func TestValidateTestCaseOwner_DuplicateIDsAreAmbiguous(t *testing.T) {
 	require.NoError(t, os.MkdirAll(casesDir, 0755))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "gtms", ".gtms-root"), []byte(""), 0644))
 
-	tc1 := "---\ntest_case_id: tc-aabbccdd\ntitle: \"First\"\n---\n"
-	tc2 := "---\ntest_case_id: tc-aabbccdd\ntitle: \"Duplicate\"\n---\n"
+	tc1 := "---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: tc-aabbccdd\ntitle: \"First\"\n---\n"
+	tc2 := "---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: tc-aabbccdd\ntitle: \"Duplicate\"\n---\n"
 	require.NoError(t, os.WriteFile(filepath.Join(casesDir, "tc-aabbccdd-first.md"), []byte(tc1), 0644))
 	require.NoError(t, os.WriteFile(filepath.Join(casesDir, "tc-aabbccdd-duplicate.md"), []byte(tc2), 0644))
 
@@ -347,7 +360,7 @@ func TestValidateTestCaseOwner_CrossFolderDuplicateIsAmbiguous(t *testing.T) {
 	for _, folder := range []string{"alpha", "beta"} {
 		d := filepath.Join(dir, "gtms", "test", "cases", folder)
 		require.NoError(t, os.MkdirAll(d, 0755))
-		body := "---\ntest_case_id: tc-aabbccdd\ntitle: " + folder + "\n---\n"
+		body := "---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: tc-aabbccdd\ntitle: " + folder + "\n---\n"
 		require.NoError(t, os.WriteFile(filepath.Join(d, "tc-aabbccdd-spec.md"), []byte(body), 0644))
 	}
 
@@ -367,13 +380,13 @@ func TestValidateTestCaseOwner_ReportsUnparseableOwner(t *testing.T) {
 	require.NoError(t, os.MkdirAll(casesDir, 0755))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "gtms", ".gtms-root"), []byte(""), 0644))
 	spec := filepath.Join(casesDir, "tc-aabbccdd-test.md")
-	require.NoError(t, os.WriteFile(spec, []byte("---\ntest_case_id: tc-aabbccdd\n---\nok\n"), 0644))
+	require.NoError(t, os.WriteFile(spec, []byte("---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: tc-aabbccdd\n---\nok\n"), 0644))
 
 	owner, err := testcase.ResolveOwner(dir, "tc-aabbccdd")
 	require.NoError(t, err)
 
 	// The spec loses its identity after the owner was resolved.
-	require.NoError(t, os.WriteFile(spec, []byte("---\ntitle: gone\n---\n"), 0644))
+	require.NoError(t, os.WriteFile(spec, []byte("---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntitle: gone\n---\n"), 0644))
 
 	violations := ValidateTestCaseOwner(dir, owner)
 	require.NotEmpty(t, violations, "the gate must read the owner, not trust the resolution")
@@ -382,7 +395,8 @@ func TestValidateTestCaseOwner_ReportsUnparseableOwner(t *testing.T) {
 
 // A nil owner is not a violation: the command owns the not-found wording.
 func TestValidateTestCaseOwner_NilOwnerIsNotAViolation(t *testing.T) {
-	assert.Empty(t, ValidateTestCaseOwner(t.TempDir(), nil))
+	violations := ValidateTestCaseOwner(t.TempDir(), nil)
+	assert.Empty(t, violations)
 }
 
 func TestYamlEscape(t *testing.T) {
@@ -409,11 +423,13 @@ func setupAutomateFixture(t *testing.T) (root string) {
 	tcDir := filepath.Join(root, "gtms", "test", "cases", "my-feature")
 	require.NoError(t, os.MkdirAll(tcDir, 0755))
 	require.NoError(t, os.WriteFile(filepath.Join(tcDir, "tc-auto0001-test-skeleton.md"), []byte(`---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-auto0001
 title: Test automation skeleton
 requirement: REQ-A
 priority: Medium
-type: Functional
 ---
 
 ## Test Objective
@@ -461,11 +477,13 @@ func setupBareAutomateFixture(t *testing.T) (root string) {
 	tcDir := filepath.Join(root, "gtms", "test", "cases", "my-feature")
 	require.NoError(t, os.MkdirAll(tcDir, 0755))
 	require.NoError(t, os.WriteFile(filepath.Join(tcDir, "tc-auto0001.md"), []byte(`---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-auto0001
 title: Bare test case
 requirement: REQ-B
 priority: Medium
-type: Functional
 ---
 
 ## Test Objective
@@ -827,11 +845,13 @@ func TestBuiltinCreate_ReadsFromTemplateFile(t *testing.T) {
 	// Custom template content -- includes a marker not in the fallback so we
 	// can prove the on-disk template was used.
 	require.NoError(t, os.WriteFile(tmplPath, []byte(`---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: ${TESTCASE_ID}
 title: "${TITLE}"
 requirement: ${REQUIREMENT}
 priority: High
-type: Functional
 created: ${CREATED}
 ---
 
@@ -1067,6 +1087,25 @@ func TestBuiltinPrime_FallbackOnMissingTemplate(t *testing.T) {
 // stamped result must remain parseable YAML.
 func TestBuiltinPrime_TCSnapshotFieldsWithRiskChars(t *testing.T) {
 	dir := t.TempDir()
+	tcPath := filepath.Join(dir, "gtms", "test", "cases", "tc-aabbccdd-risk.md")
+	require.NoError(t, os.MkdirAll(filepath.Dir(tcPath), 0o755))
+	doc := `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: 'Functional #1'
+test_case_id: tc-aabbccdd
+title: 'Login: error "msg" with \ slash'
+requirement: 'REQ: value-with-colon'
+priority: '-Medium'
+created: 2026-09-26
+---
+`
+	require.NoError(t, os.WriteFile(tcPath, []byte(doc), 0o644))
+	owner, err := testcase.ResolveOwner(dir, "tc-aabbccdd")
+	require.NoError(t, err)
+	fresh, violations := ValidateTestCaseOwnerFresh(dir, owner)
+	require.Empty(t, violations)
+
 	tmplPath := filepath.Join(dir, "manual-result.template.yaml")
 	require.NoError(t, os.WriteFile(tmplPath, []byte(`test_case_id: ${TESTCASE}
 test_case_hash: ${TESTCASE_HASH}
@@ -1075,23 +1114,21 @@ result:
 title: "${TC_TITLE}"
 requirement: "${TC_REQUIREMENT}"
 priority: "${TC_PRIORITY}"
-type: "${TC_TYPE}"
+test_type: "${TEST_TYPE}"
 branch: ${BRANCH}
 `), 0644))
 
 	outPath := filepath.Join(dir, "tc-aabbccdd--manual.result.yaml")
 	ctx := &AdapterContext{
-		TemplateFile:  tmplPath,
-		OutputFile:    outPath,
-		TestCase:      "tc-aabbccdd",
-		TestCaseHash:  "abcdef0123456789",
-		Branch:        "main",
-		TCTitle:       `Login: error "msg" with \ slash`,
-		TCRequirement: "REQ: value-with-colon",
-		TCPriority:    "-Medium",
-		TCType:        `Functional #1`,
-		Force:         false,
+		Owner:        owner,
+		TemplateFile: tmplPath,
+		OutputFile:   outPath,
+		TestCase:     "tc-aabbccdd",
+		Branch:       "main",
+		Force:        false,
 	}
+	populateBuiltinPrimeFields(ctx, dir, "tc-aabbccdd", "manual-prime", fresh)
+	outPath = ctx.OutputFile
 	result, err := BuiltinPrime(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, 0, result.ExitCode)
@@ -1102,13 +1139,82 @@ branch: ${BRANCH}
 		Title       string `yaml:"title"`
 		Requirement string `yaml:"requirement"`
 		Priority    string `yaml:"priority"`
-		Type        string `yaml:"type"`
+		TestType    string `yaml:"test_type"`
 	}
 	require.NoError(t, yaml.Unmarshal(data, &fm), "stamped result must be parseable YAML")
 	assert.Equal(t, ctx.TCTitle, fm.Title)
 	assert.Equal(t, ctx.TCRequirement, fm.Requirement)
 	assert.Equal(t, ctx.TCPriority, fm.Priority)
-	assert.Equal(t, ctx.TCType, fm.Type)
+	assert.Equal(t, ctx.TestType, fm.TestType)
+}
+
+func TestPopulateBuiltinPrimeFields_UsesFreshNormalizedTestType(t *testing.T) {
+	root := t.TempDir()
+	abs := filepath.Join(root, "gtms", "test", "cases", "tc-aabbccdd-security.md")
+	require.NoError(t, os.MkdirAll(filepath.Dir(abs), 0o755))
+	require.NoError(t, os.WriteFile(abs, strictOwnedSpec("tc-aabbccdd", "Fresh title", "ENH-219", "High", "Security", "\n", false), 0o644))
+	owner, err := testcase.ResolveOwner(root, "tc-aabbccdd")
+	require.NoError(t, err)
+	fresh, violations := ValidateTestCaseOwnerFresh(root, owner)
+	require.Empty(t, violations)
+
+	ctx := &AdapterContext{Owner: owner}
+	populateBuiltinPrimeFields(ctx, root, "tc-aabbccdd", "manual-prime", fresh)
+	assert.Equal(t, fresh.Hash, ctx.TestCaseHash)
+	assert.Equal(t, "Fresh title", ctx.TCTitle)
+	assert.Equal(t, "ENH-219", ctx.TCRequirement)
+	assert.Equal(t, "High", ctx.TCPriority)
+	assert.Equal(t, "Security", ctx.TestType)
+}
+
+func TestBuiltinPrime_SubstitutesTEST_TYPE(t *testing.T) {
+	dir := t.TempDir()
+	templatePath := filepath.Join(dir, "manual-result.template.yaml")
+	outputPath := filepath.Join(dir, "result.yaml")
+	require.NoError(t, os.WriteFile(templatePath, []byte("test_type: \"${TEST_TYPE}\"\n"), 0o644))
+	ctx := &AdapterContext{
+		TemplateFile: templatePath,
+		OutputFile:   outputPath,
+		TestType:     "Security",
+	}
+	result, err := BuiltinPrime(ctx)
+	require.NoError(t, err)
+	require.Equal(t, 0, result.ExitCode)
+	data, err := os.ReadFile(outputPath)
+	require.NoError(t, err)
+	assert.Equal(t, "test_type: \"Security\"\n", string(data))
+	assert.NotContains(t, string(data), "${TEST_TYPE}")
+}
+
+func TestPrimeCategoryPropagation_BuiltinAndScripted(t *testing.T) {
+	skipIfShort(t)
+	dir := t.TempDir()
+	templatePath := filepath.Join(dir, "manual-result.template.yaml")
+	builtinPath := filepath.Join(dir, "builtin-prime.yaml")
+	require.NoError(t, os.WriteFile(templatePath, []byte("test_type: \"${TEST_TYPE}\"\n"), 0o644))
+	builtinCtx := &AdapterContext{TemplateFile: templatePath, OutputFile: builtinPath, TestType: "Security"}
+	result, err := BuiltinPrime(builtinCtx)
+	require.NoError(t, err)
+	require.Equal(t, 0, result.ExitCode)
+	builtinData, err := os.ReadFile(builtinPath)
+	require.NoError(t, err)
+
+	scriptPath := filepath.Join(dir, "prime.sh")
+	scriptedPath := filepath.Join(dir, "scripted-prime.yaml")
+	script := `#!/bin/sh
+printf 'test_type: "%s"\n' "$GTMS_TEST_TYPE" > "$GTMS_OUTPUT_FILE"
+`
+	require.NoError(t, os.WriteFile(scriptPath, []byte(script), 0o755))
+	scriptedCtx := &AdapterContext{TestType: "Security", OutputFile: scriptedPath, OutputDir: dir, ProjectRoot: dir, WorkDir: dir}
+	scriptedResult, err := InvokeTier2(context.Background(), scriptedCtx, scriptPath)
+	require.NoError(t, err)
+	require.Equal(t, 0, scriptedResult.ExitCode)
+	scriptedData, err := os.ReadFile(scriptedPath)
+	require.NoError(t, err)
+
+	assert.Equal(t, "test_type: \"Security\"\n", string(builtinData))
+	assert.Equal(t, builtinData, scriptedData)
+	assert.NotContains(t, string(scriptedData), "Test Case Spec")
 }
 
 // --- ENH-162: BuiltinAutomate template-orchestration tests ---

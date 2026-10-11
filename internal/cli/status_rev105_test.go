@@ -19,6 +19,9 @@ import (
 func TestStatusDetail_RunnerLineScopedToSelectedFramework(t *testing.T) {
 	root := t.TempDir()
 	writeTestFile(t, root, filepath.Join("gtms/test/cases", "tc-mf000001-multi.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-mf000001
 title: Multi-framework runner provenance
 ---
@@ -29,7 +32,7 @@ title: Multi-framework runner provenance
 
 	var buf bytes.Buffer
 	// Text detail (jsonOut=false), selecting the bats framework.
-	require.NoError(t, runStatusDetail(&buf, root, "tc-mf000001", false, "bats", false, false, "", nil))
+	require.NoError(t, runStatusDetail(&buf, statusTestSnap(t, root), root, "tc-mf000001", false, "bats", false, false, "", nil))
 	out := buf.String()
 
 	assert.Contains(t, out, "Runner: bats-runner",

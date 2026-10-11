@@ -75,7 +75,7 @@ func buildRefreshFixture(t *testing.T, wiringCount int, withDecoys bool) (root s
 		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(p, []byte("---\ntest_case_id: "+id+"\ntitle: \"t\"\n---\n\nbody\n"), 0o644); err != nil {
+		if err := os.WriteFile(p, []byte("---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: "+id+"\ntitle: \"t\"\n---\n\nbody\n"), 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -84,7 +84,7 @@ func buildRefreshFixture(t *testing.T, wiringCount int, withDecoys bool) (root s
 		pad := strings.Repeat("x", refreshDecoyBytes)
 		for i := 0; i < refreshDecoySpecs; i++ {
 			id := refreshTCID(1000 + i)
-			body := "---\ntest_case_id: " + id + "\ntitle: \"t\"\n---\n\n" + pad + "\n"
+			body := "---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: " + id + "\ntitle: \"t\"\n---\n\n" + pad + "\n"
 			p := filepath.Join(cases, "decoy", id+"-spec.md")
 			if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 				t.Fatal(err)

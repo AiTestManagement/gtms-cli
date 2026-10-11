@@ -17,7 +17,7 @@ func seedOwnedSpec(t *testing.T, relPath, id string) (string, string) {
 	root := t.TempDir()
 	abs := filepath.Join(root, filepath.FromSlash(relPath))
 	require.NoError(t, os.MkdirAll(filepath.Dir(abs), 0o755))
-	require.NoError(t, os.WriteFile(abs, []byte("---\ntest_case_id: "+id+"\ntitle: t\n---\nbody\n"), 0o644))
+	require.NoError(t, os.WriteFile(abs, []byte("---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: "+id+"\ntitle: t\n---\nbody\n"), 0o644))
 	return root, abs
 }
 
@@ -33,7 +33,7 @@ func TestValidateTestCaseOwner_OwnerIDChangedAfterResolution(t *testing.T) {
 	require.NoError(t, err)
 
 	// The file changes after ownership was proved.
-	require.NoError(t, os.WriteFile(abs, []byte("---\ntest_case_id: tc-bbbb2222\ntitle: t\n---\nbody\n"), 0o644))
+	require.NoError(t, os.WriteFile(abs, []byte("---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: tc-bbbb2222\ntitle: t\n---\nbody\n"), 0o644))
 
 	violations := ValidateTestCaseOwner(root, owner)
 	require.Len(t, violations, 1, "a changed owner identity must fail validation")
@@ -51,7 +51,7 @@ func TestValidateTestCaseOwner_OwnerIDBecomesGrammarInvalid(t *testing.T) {
 	owner, err := testcase.ResolveOwner(root, "tc-aaaa1111")
 	require.NoError(t, err)
 
-	require.NoError(t, os.WriteFile(abs, []byte("---\ntest_case_id: \"tc-safe&calc\"\ntitle: t\n---\nbody\n"), 0o644))
+	require.NoError(t, os.WriteFile(abs, []byte("---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: \"tc-safe&calc\"\ntitle: t\n---\nbody\n"), 0o644))
 
 	violations := ValidateTestCaseOwner(root, owner)
 	require.Len(t, violations, 1, "a grammar-invalid owner identity must fail validation")
@@ -73,7 +73,7 @@ func TestValidateTestCaseOwner_ChangedIdentityIsSanitised(t *testing.T) {
 	owner, err := testcase.ResolveOwner(root, "tc-aaaa1111")
 	require.NoError(t, err)
 
-	require.NoError(t, os.WriteFile(abs, []byte("---\ntest_case_id: \"tc-\\u001b[31mred\"\ntitle: t\n---\nbody\n"), 0o644))
+	require.NoError(t, os.WriteFile(abs, []byte("---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: \"tc-\\u001b[31mred\"\ntitle: t\n---\nbody\n"), 0o644))
 
 	violations := ValidateTestCaseOwner(root, owner)
 	require.Len(t, violations, 1)

@@ -6,9 +6,9 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/aitestmanagement/gtms-cli/internal/reader"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/aitestmanagement/gtms-cli/internal/reader"
 )
 
 // writeFile creates a file with the given content, creating parent dirs as needed.
@@ -25,6 +25,9 @@ func setupMinimalProject(t *testing.T) string {
 	root := t.TempDir()
 	writeFile(t, root, "gtms.config", "project:\n  name: test\n  repo: test\n")
 	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-001.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-001
 title: Test One
 requirement: REQ-1
@@ -91,4 +94,20 @@ func TestInvokeBuiltin_UnknownCommand(t *testing.T) {
 	_, err := InvokeBuiltin(context.Background(), "unknown", nil, "/fake/path", []string{}, "")
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "unknown built-in command")
+}
+
+// TestInvokeBuiltin_AffectedIdentity_IncompleteReadError pins REV-184 CODEX-004:
+// the built-in status/gaps dispatch must not return partial rows as success when
+// a test-case identity is Ambiguous; it propagates the typed incomplete-read error.
+func TestInvokeBuiltin_AffectedIdentity_IncompleteReadError(t *testing.T) {
+	root := setupMinimalProject(t)
+	writeFile(t, root, filepath.Join("gtms/test/cases", "a", "tc-002.md"), "---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: tc-002\ntitle: A\n---\n")
+	writeFile(t, root, filepath.Join("gtms/test/cases", "b", "tc-002.md"), "---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: tc-002\ntitle: B\n---\n")
+
+	for _, command := range []string{"status", "gaps"} {
+		result, err := InvokeBuiltin(context.Background(), command, nil, root, []string{}, "")
+		var incomplete *reader.IncompleteReadError
+		assert.ErrorAsf(t, err, &incomplete, "%s must propagate *reader.IncompleteReadError", command)
+		assert.Nilf(t, result, "%s must not return a partial result", command)
+	}
 }

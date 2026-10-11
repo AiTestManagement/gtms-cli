@@ -15,7 +15,7 @@ func writeSpecID(t *testing.T, casesDir, relName, id string) string {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	body := "---\ntest_case_id: " + id + "\ntitle: \"t\"\n---\n\nbody\n"
+	body := "---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: " + id + "\ntitle: \"t\"\n---\n\nbody\n"
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 		t.Fatalf("write spec: %v", err)
 	}
@@ -164,9 +164,9 @@ func TestResolve_AllFourUnprovableVariants(t *testing.T) {
 	// missing id (well-formed YAML, no test_case_id)
 	writeRaw(t, cases, "u/tc-aaaaaaaa-missing.md", "---\ntitle: \"t\"\nrequirement: X\n---\nbody\n")
 	// malformed frontmatter
-	writeRaw(t, cases, "u/tc-bbbbbbbb-malformed.md", "---\ntest_case_id: [unclosed\ntitle:\n---\nbody\n")
+	writeRaw(t, cases, "u/tc-bbbbbbbb-malformed.md", "---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: [unclosed\ntitle:\n---\nbody\n")
 	// grammar-invalid id
-	writeRaw(t, cases, "u/tc-cccccccc-badid.md", "---\ntest_case_id: \"tc-safe&calc\"\n---\nbody\n")
+	writeRaw(t, cases, "u/tc-cccccccc-badid.md", "---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: \"tc-safe&calc\"\n---\nbody\n")
 	// unreadable regular file -- see the capability probe below. Permissions are
 	// restored by Cleanup whatever happens, including on a failed assertion, so a
 	// t.TempDir teardown is never blocked by a 0000 file.
@@ -225,7 +225,7 @@ func TestResolve_AllFourUnprovableVariants(t *testing.T) {
 func TestResolve_UnrelatedMalformedDoesNotBlock(t *testing.T) {
 	root, cases := casesDirFor(t)
 	writeSpecID(t, cases, "good/tc-99999999-owner.md", "tc-99999999")
-	writeRaw(t, cases, "junk/tc-zzzzzzzz-malformed.md", "---\ntest_case_id: [bad\n---\n")
+	writeRaw(t, cases, "junk/tc-zzzzzzzz-malformed.md", "---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: [bad\n---\n")
 
 	snap := mustSnapshot(t, root)
 	if r := snap.Resolve("tc-99999999"); r.Outcome != OutcomeUniqueOwner {

@@ -15,7 +15,7 @@ func writeBulkSpec(t *testing.T, root, rel, id string) {
 	t.Helper()
 	p := filepath.Join(root, filepath.FromSlash(rel))
 	require.NoError(t, os.MkdirAll(filepath.Dir(p), 0o755))
-	require.NoError(t, os.WriteFile(p, []byte("---\ntest_case_id: "+id+"\ntitle: t\n---\n"), 0o644))
+	require.NoError(t, os.WriteFile(p, []byte("---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: "+id+"\ntitle: t\n---\n"), 0o644))
 }
 
 // BUG-188 / C1: the bulk automate/execute work-set is the body-identity owners,

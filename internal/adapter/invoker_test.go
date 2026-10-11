@@ -76,7 +76,7 @@ func TestInvokeWithRoot_Tier1Sync(t *testing.T) {
 	assert.Equal(t, "sync", res.Mode)
 	assert.Equal(t, "complete", res.Status)
 	assert.Contains(t, res.TaskID, "task-")
-	// BUG-056: sync adapter in non-git temp dir → empty branch (no fake feature/ name)
+	// BUG-056: sync adapter in non-git temp dir -> empty branch (no fake feature/ name)
 	assert.Equal(t, "", res.Branch)
 
 	// Verify task file moved to complete
@@ -302,8 +302,14 @@ ID=$(echo "${GTMS_TC_IDS}" | cut -d',' -f1)
 OUTFILE="${GTMS_OUTPUT_DIR}/${ID}-direct-write.md"
 cat > "${OUTFILE}" <<TCEOF
 ---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: ${ID}
-name: "direct-write"
+title: "direct-write"
+requirement: BUG-063
+priority: Medium
+created: 2026-09-26
 ---
 TCEOF
 cat > "${GTMS_RESULT_FILE}" <<EOF
@@ -444,7 +450,7 @@ func TestInvokeWithRoot_TaskFileCreatedCorrectly(t *testing.T) {
 	assert.Equal(t, "create", tf.Type)
 	assert.Equal(t, "JIRA-CHECK", tf.Target)
 	assert.Equal(t, "test-adapter", tf.Adapter)
-	// BUG-056: sync adapter in non-git temp dir → empty branch
+	// BUG-056: sync adapter in non-git temp dir -> empty branch
 	assert.Equal(t, "", tf.Branch)
 	assert.NotEmpty(t, tf.Created)
 }
@@ -590,7 +596,7 @@ func TestBUG056_SyncAdapterRecordsEmptyBranchInNonGitDir(t *testing.T) {
 	res, err := InvokeWithRoot(context.Background(), root, cfg, resolved, "BUG056-SYNC", CommandFlags{})
 	require.NoError(t, err)
 	assert.Equal(t, "complete", res.Status)
-	// Non-git temp dir → empty branch for sync adapter
+	// Non-git temp dir -> empty branch for sync adapter
 	assert.Equal(t, "", res.Branch, "sync adapter in non-git dir should have empty branch")
 
 	// Verify task file also has empty branch
@@ -665,7 +671,7 @@ func TestBUG056_TaskBranchHelper_UnitTests(t *testing.T) {
 	t.Run("sync_mode_non_git_dir", func(t *testing.T) {
 		resolved := &ResolvedAdapter{Command: "create", Mode: "sync"}
 		branch := taskBranch(context.Background(), t.TempDir(), resolved, "TARGET-1")
-		assert.Equal(t, "", branch, "sync in non-git dir → empty")
+		assert.Equal(t, "", branch, "sync in non-git dir -> empty")
 	})
 
 	t.Run("async_mode_constructs_feature_branch", func(t *testing.T) {
@@ -893,8 +899,8 @@ func TestInvokeWithRoot_CancellationCleansUpTaskFile(t *testing.T) {
 	assert.Less(t, elapsed, 15*time.Second, "should have been killed by cancellation")
 
 	// Two valid outcomes depending on timing:
-	// Path A: InvokeTier1 returns error → invoker detects ctx.Err(), returns (nil, error with "cancelled")
-	// Path B: InvokeTier1 captures exit code → handleSyncResult processes it as non-zero exit → returns (result with status "error", nil)
+	// Path A: InvokeTier1 returns error -> invoker detects ctx.Err(), returns (nil, error with "cancelled")
+	// Path B: InvokeTier1 captures exit code -> handleSyncResult processes it as non-zero exit -> returns (result with status "error", nil)
 	// Both paths correctly move the task to "error".
 	if err != nil {
 		// Path A: cancellation detected by invoker
@@ -918,8 +924,8 @@ func TestInvokeWithRoot_CancellationCleansUpTaskFile(t *testing.T) {
 
 // TestInvokeWithRoot_Tier1_FailExitCodes covers ENH-078: an opt-in
 // fail-exit-codes list on a Tier 1 adapter maps listed non-zero exit codes
-// to status: fail. Codes outside the list — and any non-zero exit when the
-// list is unset — still produce status: error. Exit 0 is unaffected.
+// to status: fail. Codes outside the list -- and any non-zero exit when the
+// list is unset -- still produce status: error. Exit 0 is unaffected.
 func TestInvokeWithRoot_Tier1_FailExitCodes(t *testing.T) {
 	skipIfShort(t)
 
@@ -933,7 +939,7 @@ func TestInvokeWithRoot_Tier1_FailExitCodes(t *testing.T) {
 		expectTaskDir string // "complete" or "error"
 	}{
 		{
-			name:          "unset list — exit 1 still produces error",
+			name:          "unset list -- exit 1 still produces error",
 			failExitCodes: nil,
 			exitCode:      1,
 			expectStatus:  "error",
@@ -942,7 +948,7 @@ func TestInvokeWithRoot_Tier1_FailExitCodes(t *testing.T) {
 			expectTaskDir: "error",
 		},
 		{
-			name:          "list [1] — exit 1 produces complete+fail",
+			name:          "list [1] -- exit 1 produces complete+fail",
 			failExitCodes: []int{1},
 			exitCode:      1,
 			expectStatus:  "complete",
@@ -951,7 +957,7 @@ func TestInvokeWithRoot_Tier1_FailExitCodes(t *testing.T) {
 			expectTaskDir: "complete", // ENH-130: clean adapter run, task to complete/
 		},
 		{
-			name:          "list [1] — exit 127 produces error",
+			name:          "list [1] -- exit 127 produces error",
 			failExitCodes: []int{1},
 			exitCode:      127,
 			expectStatus:  "error",
@@ -960,7 +966,7 @@ func TestInvokeWithRoot_Tier1_FailExitCodes(t *testing.T) {
 			expectTaskDir: "error",
 		},
 		{
-			name:          "list [1] — exit 0 produces complete+pass",
+			name:          "list [1] -- exit 0 produces complete+pass",
 			failExitCodes: []int{1},
 			exitCode:      0,
 			expectStatus:  "complete",
@@ -969,7 +975,7 @@ func TestInvokeWithRoot_Tier1_FailExitCodes(t *testing.T) {
 			expectTaskDir: "complete",
 		},
 		{
-			name:          "list [1, 2, 3] — exit 2 produces complete+fail",
+			name:          "list [1, 2, 3] -- exit 2 produces complete+fail",
 			failExitCodes: []int{1, 2, 3},
 			exitCode:      2,
 			expectStatus:  "complete",
@@ -1400,7 +1406,7 @@ func TestAdapterSource_ExactMatch(t *testing.T) {
 	root := t.TempDir()
 	tcDir := filepath.Join(root, "gtms/test/cases")
 	require.NoError(t, os.MkdirAll(tcDir, 0755))
-	require.NoError(t, os.WriteFile(filepath.Join(tcDir, "tc-a1b2c3d-description.md"), []byte("---\ntest_case_id: tc-a1b2c3d\n---\ntest"), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(tcDir, "tc-a1b2c3d-description.md"), []byte("---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: tc-a1b2c3d\n---\ntest"), 0644))
 
 	result := sourceForTarget(root, "tc-a1b2c3d")
 	assert.Equal(t, "gtms/test/cases/tc-a1b2c3d-description.md", result)
@@ -1410,7 +1416,7 @@ func TestAdapterSource_NoPartialMatch(t *testing.T) {
 	root := t.TempDir()
 	tcDir := filepath.Join(root, "gtms/test/cases")
 	require.NoError(t, os.MkdirAll(tcDir, 0755))
-	require.NoError(t, os.WriteFile(filepath.Join(tcDir, "tc-a1b2c3d-description.md"), []byte("---\ntest_case_id: tc-a1b2c3d\n---\ntest"), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(tcDir, "tc-a1b2c3d-description.md"), []byte("---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: tc-a1b2c3d\n---\ntest"), 0644))
 
 	// tc-a1b should NOT match tc-a1b2c3d-description.md
 	result := sourceForTarget(root, "tc-a1b")
@@ -1421,7 +1427,7 @@ func TestAdapterSource_DotExtension(t *testing.T) {
 	root := t.TempDir()
 	tcDir := filepath.Join(root, "gtms/test/cases")
 	require.NoError(t, os.MkdirAll(tcDir, 0755))
-	require.NoError(t, os.WriteFile(filepath.Join(tcDir, "tc-a1b2c3d.md"), []byte("---\ntest_case_id: tc-a1b2c3d\n---\ntest"), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(tcDir, "tc-a1b2c3d.md"), []byte("---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: tc-a1b2c3d\n---\ntest"), 0644))
 
 	result := sourceForTarget(root, "tc-a1b2c3d")
 	assert.Equal(t, "gtms/test/cases/tc-a1b2c3d.md", result)
@@ -1527,7 +1533,7 @@ func TestBUG006_S3_PipelineRecordFailureWarns(t *testing.T) {
 	// step and reaches the MkdirAll on the (blocked) wiring directory.
 	require.NoError(t, os.WriteFile(
 		filepath.Join(root, "gtms/test/cases/tc-s3test-spec.md"),
-		[]byte("---\ntest_case_id: tc-s3test\n---\nbody\n"),
+		[]byte("---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: tc-s3test\n---\nbody\n"),
 		0644,
 	))
 
@@ -1542,7 +1548,7 @@ func TestBUG006_S3_PipelineRecordFailureWarns(t *testing.T) {
 	}
 
 	// Automate command. Framework is explicit so the wiring writer doesn't
-	// short-circuit on missing framework — we want it to fail at MkdirAll.
+	// short-circuit on missing framework -- we want it to fail at MkdirAll.
 	resolved := &ResolvedAdapter{
 		Command: "automate",
 		Name:    "mock-tier1",
@@ -2055,7 +2061,7 @@ func TestBuildAdapterContext_SetsTestCaseIDs_ForCreate(t *testing.T) {
 	}
 	flags := CommandFlags{}
 
-	ac := buildAdapterContext(root, "task-test123", resolved, "REQ-001", flags, "feature/test", cfg, root, "/tmp/result.yaml", "")
+	ac := buildAdapterContext(root, "task-test123", resolved, "REQ-001", flags, "feature/test", cfg, root, "/tmp/result.yaml", "", ValidatedTestCaseOwner{})
 
 	// TestCaseIDs should be populated
 	require.NotEmpty(t, ac.TestCaseIDs, "TestCaseIDs should be set for create command")
@@ -2090,7 +2096,7 @@ func TestBuildAdapterContext_NoTestCaseIDs_ForAutomate(t *testing.T) {
 	}
 	flags := CommandFlags{}
 
-	ac := buildAdapterContext(root, "task-test456", resolved, "tc-abc1234", flags, "feature/test", cfg, root, "/tmp/result.yaml", "")
+	ac := buildAdapterContext(root, "task-test456", resolved, "tc-abc1234", flags, "feature/test", cfg, root, "/tmp/result.yaml", "", ValidatedTestCaseOwner{})
 	assert.Empty(t, ac.TestCaseIDs, "TestCaseIDs should be empty for automate command")
 }
 
@@ -2108,7 +2114,7 @@ func TestBuildAdapterContext_NoTestCaseIDs_ForExecute(t *testing.T) {
 	}
 	flags := CommandFlags{}
 
-	ac := buildAdapterContext(root, "task-test789", resolved, "tc-def5678", flags, "feature/test", cfg, root, "/tmp/result.yaml", "")
+	ac := buildAdapterContext(root, "task-test789", resolved, "tc-def5678", flags, "feature/test", cfg, root, "/tmp/result.yaml", "", ValidatedTestCaseOwner{})
 	assert.Empty(t, ac.TestCaseIDs, "TestCaseIDs should be empty for execute command")
 }
 
@@ -2136,7 +2142,7 @@ func TestBUG023_PassAfterFailUpdatesPipelineRecord(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "error", res.Status)
 
-	// CON-023 / ENH-146: assert against the result contract — the legacy
+	// CON-023 / ENH-146: assert against the result contract -- the legacy
 	// .automation.md update is retired on the execute path.
 	failRC, err := result.Read(result.ResultPath(root, res.TaskID))
 	require.NoError(t, err)
@@ -2206,8 +2212,8 @@ func TestENH080_AutomateMultiFileFails_Tier1(t *testing.T) {
 	assert.Contains(t, rc.Summary, "exactly one is expected")
 
 	// NO wiring record should have been written. This is the whole point
-	// of ENH-080 — a comma-separated artefact: field never ships in a record
-	// GTMS writes. (CON-023 retargeted records → wiring; the guard fires
+	// of ENH-080 -- a comma-separated artefact: field never ships in a record
+	// GTMS writes. (CON-023 retargeted records -> wiring; the guard fires
 	// before buildPipelineRecords either way.)
 	wiringDir := filepath.Join(root, "gtms/automation", "wiring")
 	if entries, statErr := os.ReadDir(wiringDir); statErr == nil {
@@ -2303,7 +2309,7 @@ func TestENH080_AutomateSingleFileStillWorks(t *testing.T) {
 	// Seed a TC spec so testcase-hash can be computed.
 	require.NoError(t, os.WriteFile(
 		filepath.Join(root, "gtms/test/cases/tc-enh080c-spec.md"),
-		[]byte("---\ntest_case_id: tc-enh080c\n---\nbody\n"),
+		[]byte("---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: tc-enh080c\n---\nbody\n"),
 		0644,
 	))
 
@@ -2366,7 +2372,7 @@ func TestENH080_CreateMultiFileStillWorks(t *testing.T) {
 	res, err := InvokeWithRoot(context.Background(), root, cfg, resolved, "ENH-REF", CommandFlags{Folder: "enh-ref"})
 	require.NoError(t, err)
 
-	assert.Equal(t, "complete", res.Status, "create with many files must still succeed — guard is automate-only")
+	assert.Equal(t, "complete", res.Status, "create with many files must still succeed -- guard is automate-only")
 	assert.Equal(t, 3, res.ArtifactCount, "all three streamed files must be captured")
 }
 
@@ -2409,15 +2415,15 @@ func TestInvokeWithRoot_Tier1_FailureCarriesLog(t *testing.T) {
 		expectStatus  string
 	}{
 		{
-			name:         "exit 1 no fail-exit-codes — error carries log",
+			name:         "exit 1 no fail-exit-codes -- error carries log",
 			exitCode:     1,
 			expectStatus: "error",
 		},
 		{
-			name:          "exit 1 with fail-exit-codes [1] — complete+fail carries log",
+			name:          "exit 1 with fail-exit-codes [1] -- complete+fail carries log",
 			failExitCodes: []int{1},
 			exitCode:      1,
-			expectStatus:  "complete", // ENH-130: fail-exit-code → complete
+			expectStatus:  "complete", // ENH-130: fail-exit-code -> complete
 		},
 	}
 

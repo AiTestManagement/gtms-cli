@@ -36,11 +36,13 @@ func setupBootstrapFixture(t *testing.T, pending bool) string {
 	// TC spec
 	tcDir := filepath.Join("gtms", "test", "cases", "bootstrap")
 	writeFile(t, root, filepath.Join(tcDir, "tc-b102a001-bootstrap-field.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-b102a001
 title: Bootstrap field test
 requirement: REQ-B102
 priority: Medium
-type: Functional
 created: 2026-06-01
 ---
 

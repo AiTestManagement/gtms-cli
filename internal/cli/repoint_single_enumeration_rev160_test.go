@@ -71,7 +71,7 @@ func seedRepointEnumerationProject(t *testing.T, withDecoys bool) string {
 	specDir := filepath.Join(root, "gtms/test/cases/feat")
 	require.NoError(t, os.MkdirAll(specDir, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(specDir, "tc-77777777-spec.md"),
-		[]byte("---\ntest_case_id: tc-77777777\ntitle: t\n---\n# body\n"), 0o644))
+		[]byte("---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: tc-77777777\ntitle: t\n---\n# body\n"), 0o644))
 
 	art := filepath.Join(root, "test/acceptance/feat/tc-77777777.bats")
 	require.NoError(t, os.MkdirAll(filepath.Dir(art), 0o755))
@@ -90,7 +90,7 @@ func seedRepointEnumerationProject(t *testing.T, withDecoys bool) string {
 		pad := strings.Repeat("x", repointDecoySpecBytes)
 		for i := 0; i < repointDecoySpecs; i++ {
 			id := fmt.Sprintf("tc-decoy%03d", i)
-			body := "---\ntest_case_id: " + id + "\ntitle: decoy\n---\n" + pad + "\n"
+			body := "---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: " + id + "\ntitle: decoy\n---\n" + pad + "\n"
 			require.NoError(t, os.WriteFile(filepath.Join(decoyDir, id+"-spec.md"), []byte(body), 0o644))
 		}
 	}

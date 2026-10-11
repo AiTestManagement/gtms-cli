@@ -28,7 +28,7 @@ func seedStaleLinkedTC(t *testing.T, root, folder, tcID string) string {
 	require.NoError(t, os.MkdirAll(specDir, 0o755))
 	specPath := filepath.Join(specDir, tcID+"-spec.md")
 	require.NoError(t, os.WriteFile(specPath,
-		[]byte("---\ntest_case_id: "+tcID+"\ntitle: t\n---\n# body\n"), 0o644))
+		[]byte("---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: "+tcID+"\ntitle: t\n---\n# body\n"), 0o644))
 
 	art := filepath.Join(root, "test/acceptance", folder, tcID+".bats")
 	require.NoError(t, os.MkdirAll(filepath.Dir(art), 0o755))
@@ -64,7 +64,7 @@ func TestLinkRefresh_FolderMalformedWiring_CountedFailure(t *testing.T) {
 	// file (unknown field fails strict decode).
 	specDir := filepath.Join(root, "gtms/test/cases", folder)
 	require.NoError(t, os.WriteFile(filepath.Join(specDir, "tc-c0c00002-spec.md"),
-		[]byte("---\ntest_case_id: tc-c0c00002\ntitle: t\n---\n"), 0o644))
+		[]byte("---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: tc-c0c00002\ntitle: t\n---\n"), 0o644))
 	malformed := filepath.Join(root, "gtms/automation/wiring", "tc-c0c00002--bats.wiring.yaml")
 	malformedBytes := "testcase: tc-c0c00002\ntestcase-hash: 0011223344556677\nframework: bats\nadapter: bats-runner\nartefact: test/acceptance/malformed-scope/tc-c0c00002.bats\nartefact-hash: aabbccddeeff0011\nstatus: complete\n"
 	require.NoError(t, os.WriteFile(malformed, []byte(malformedBytes), 0o644))
@@ -148,7 +148,7 @@ func TestLinkRefresh_NoRecordPreview_CarriesDryRunMarker(t *testing.T) {
 	specDir := filepath.Join(root, "gtms/test/cases/misc")
 	require.NoError(t, os.MkdirAll(specDir, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(specDir, "tc-eeee2222-spec.md"),
-		[]byte("---\ntest_case_id: tc-eeee2222\ntitle: t\n---\n# body\n"), 0o644))
+		[]byte("---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: tc-eeee2222\ntitle: t\n---\n# body\n"), 0o644))
 
 	cases := []struct {
 		name  string
@@ -236,9 +236,9 @@ func TestLinkRefresh_DuplicateFolderTCID_FailsClosed(t *testing.T) {
 
 	specDir := filepath.Join(root, "gtms/test/cases", folder)
 	require.NoError(t, os.WriteFile(filepath.Join(specDir, "tc-dddddddd-one.md"),
-		[]byte("---\ntest_case_id: tc-dddddddd\ntitle: one\n---\n"), 0o644))
+		[]byte("---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: tc-dddddddd\ntitle: one\n---\n"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(specDir, "tc-dddddddd-two.md"),
-		[]byte("---\ntest_case_id: tc-dddddddd\ntitle: two\n---\n"), 0o644))
+		[]byte("---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: tc-dddddddd\ntitle: two\n---\n"), 0o644))
 
 	// A real wiring so a buggy path would have something to (wrongly) act on.
 	wrec := filepath.Join(root, "gtms/automation/wiring", "tc-dddddddd--bats.wiring.yaml")
@@ -302,7 +302,7 @@ func TestLinkRefresh_DryRunState_ExecutionScoped_RealSingleton(t *testing.T) {
 	specDir := filepath.Join(root, "gtms/test/cases/foo")
 	require.NoError(t, os.MkdirAll(specDir, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(specDir, "tc-abc12345-real.md"),
-		[]byte("---\ntest_case_id: tc-abc12345\ntitle: real\n---\n# body\n"), 0o644))
+		[]byte("---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: tc-abc12345\ntitle: real\n---\n# body\n"), 0o644))
 	art := filepath.Join(root, "test/acceptance/foo/real.bats")
 	require.NoError(t, os.MkdirAll(filepath.Dir(art), 0o755))
 	require.NoError(t, os.WriteFile(art, []byte("@test \"x\" { true; }\n"), 0o644))
@@ -370,11 +370,11 @@ func seedFlagLeakFixture(t *testing.T) (root, topBats, topPlaywright, nestedBats
 	subDir := filepath.Join(topDir, "sub")
 	require.NoError(t, os.MkdirAll(subDir, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(topDir, "tc-top11111.md"),
-		[]byte("---\ntest_case_id: tc-top11111\ntitle: top-bats\n---\n# body\n"), 0o644))
+		[]byte("---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: tc-top11111\ntitle: top-bats\n---\n# body\n"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(topDir, "tc-top22222.md"),
-		[]byte("---\ntest_case_id: tc-top22222\ntitle: top-playwright\n---\n# body\n"), 0o644))
+		[]byte("---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: tc-top22222\ntitle: top-playwright\n---\n# body\n"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(subDir, "tc-sub33333.md"),
-		[]byte("---\ntest_case_id: tc-sub33333\ntitle: nested-bats\n---\n# body\n"), 0o644))
+		[]byte("---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: tc-sub33333\ntitle: nested-bats\n---\n# body\n"), 0o644))
 
 	// Matching artefacts.
 	mkArtefact := func(rel, body string) {
@@ -490,7 +490,7 @@ func linkCurrentTC(t *testing.T, root, tcID string) {
 	specDir := filepath.Join(root, "gtms/test/cases/misc")
 	require.NoError(t, os.MkdirAll(specDir, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(specDir, tcID+"-spec.md"),
-		[]byte("---\ntest_case_id: "+tcID+"\ntitle: t\n---\n# body\n"), 0o644))
+		[]byte("---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: "+tcID+"\ntitle: t\n---\n# body\n"), 0o644))
 	art := filepath.Join(root, "test/acceptance/misc", tcID+".bats")
 	require.NoError(t, os.MkdirAll(filepath.Dir(art), 0o755))
 	require.NoError(t, os.WriteFile(art, []byte("@test \"x\" { true; }\n"), 0o644))
@@ -529,7 +529,7 @@ func TestLinkRefresh_EmptyScopeMessages(t *testing.T) {
 	emptyDir := filepath.Join(root, "gtms/test/cases", "unlinked")
 	require.NoError(t, os.MkdirAll(emptyDir, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(emptyDir, "tc-cccc2222-spec.md"),
-		[]byte("---\ntest_case_id: tc-cccc2222\ntitle: t\n---\n# body\n"), 0o644))
+		[]byte("---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: tc-cccc2222\ntitle: t\n---\n# body\n"), 0o644))
 
 	outEmpty, err := runCmdCaptureStdout(t, newLinkCmd(), "unlinked", "--refresh", "--dry-run")
 	require.NoError(t, err, "an empty scope still exits 0 (AC2)")
@@ -555,7 +555,7 @@ func TestLinkRefresh_DirectoryScanFailure_CarriesDryRunMarker(t *testing.T) {
 	specDir := filepath.Join(root, "gtms/test/cases", folder)
 	require.NoError(t, os.MkdirAll(specDir, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(specDir, "tc-ffff1111-spec.md"),
-		[]byte("---\ntest_case_id: tc-ffff1111\ntitle: t\n---\n# body\n"), 0o644))
+		[]byte("---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: tc-ffff1111\ntitle: t\n---\n# body\n"), 0o644))
 
 	// Replace the wiring DIRECTORY with a regular file. It exists, so discovery
 	// does not take the missing-directory shortcut, but os.ReadDir fails on it.
@@ -608,9 +608,9 @@ func TestLinkRefresh_AmbiguousIDRespectsWiringScope(t *testing.T) {
 	dir := filepath.Join(root, "gtms/test/cases", nowiring)
 	require.NoError(t, os.MkdirAll(dir, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "tc-ab000001-one.md"),
-		[]byte("---\ntest_case_id: tc-ab000001\ntitle: one\n---\n"), 0o644))
+		[]byte("---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: tc-ab000001\ntitle: one\n---\n"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "tc-ab000001-two.md"),
-		[]byte("---\ntest_case_id: tc-ab000001\ntitle: two\n---\n"), 0o644))
+		[]byte("---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: tc-ab000001\ntitle: two\n---\n"), 0o644))
 
 	// ADR-024 supersedes the old framework-governed, per-record ambiguity model:
 	// ambiguity is a PROJECT-WIDE OWNERSHIP concern, so an ambiguous id in the
@@ -630,9 +630,9 @@ func TestLinkRefresh_AmbiguousIDRespectsWiringScope(t *testing.T) {
 	dir2 := filepath.Join(root, "gtms/test/cases", scoped)
 	require.NoError(t, os.MkdirAll(dir2, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(dir2, "tc-ab000002-one.md"),
-		[]byte("---\ntest_case_id: tc-ab000002\ntitle: one\n---\n"), 0o644))
+		[]byte("---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: tc-ab000002\ntitle: one\n---\n"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(dir2, "tc-ab000002-two.md"),
-		[]byte("---\ntest_case_id: tc-ab000002\ntitle: two\n---\n"), 0o644))
+		[]byte("---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: tc-ab000002\ntitle: two\n---\n"), 0o644))
 	_, werr := wiring.Write(root, &wiring.WiringRecord{
 		TestCase: "tc-ab000002", TestCaseHash: "0011223344556677", Framework: "playwright",
 		Adapter: "pw-runner", Artefact: "test/acceptance/ambiguous-scoped/x.spec.ts",

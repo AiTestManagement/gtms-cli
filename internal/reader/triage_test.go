@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/aitestmanagement/gtms-cli/internal/pipeline"
+	"github.com/aitestmanagement/gtms-cli/internal/testcase"
 	"github.com/aitestmanagement/gtms-cli/internal/triage"
 )
 
@@ -49,6 +50,9 @@ func writeTriageSpec(t *testing.T, root, tc string) {
 	t.Helper()
 	// The e-acute is built from a rune so this source file stays ASCII.
 	body := "---\n" +
+		"gtms_schema: \"test-case/v2\"\n" +
+		"type: Test Case Spec\n" +
+		"test_type: Functional\n" +
 		"test_case_id: " + tc + "\n" +
 		"title: \"Triage subject\"\n" +
 		"requirement: ENH-200\n" +
@@ -88,8 +92,8 @@ func TestClassifyTriage_WritesCompleteRecord(t *testing.T) {
 	assert.Equal(t, "JIRA-789", on.Defect)
 
 	// testcase_hash_at_triage must equal pipeline.HashFile of the spec.
-	specPath, _ := pipeline.ResolveTestCaseSpec(root, "tc-11111111")
-	wantHash, _ := pipeline.HashFile(filepath.Join(root, filepath.FromSlash(specPath)))
+	owner, _ := testcase.ResolveOwner(root, "tc-11111111")
+	wantHash, _ := pipeline.HashFile(owner.SpecAbs())
 	assert.Equal(t, wantHash, on.Snapshot.TestcaseHashAtTriage)
 	assert.NotEmpty(t, on.Snapshot.Task)
 }

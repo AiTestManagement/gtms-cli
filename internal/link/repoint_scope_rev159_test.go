@@ -30,7 +30,7 @@ func writeSpecAt(t *testing.T, root, relPath, id string) {
 	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	body := "---\ntest_case_id: " + id + "\ntitle: \"t\"\n---\n\nbody\n"
+	body := "---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: " + id + "\ntitle: \"t\"\n---\n\nbody\n"
 	if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
 		t.Fatalf("write spec: %v", err)
 	}

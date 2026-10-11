@@ -97,6 +97,9 @@ func TestRunBulkExecute_TamperedWiring_RelativeTraversal_Errored(t *testing.T) {
 
 	// Test case spec under a single-TC folder.
 	writeTestFile(t, root, filepath.Join("gtms/test/cases", "pathsafe", "tc-deadbeef-unsafe.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-deadbeef
 title: Path-safety regression
 ---
@@ -154,12 +157,18 @@ func TestRunBulkExecute_TamperedWiring_FailFast_HaltsBatch(t *testing.T) {
 	// the safe TC must never run.
 	specA := filepath.Join("gtms/test/cases", "pathsafe-ff", "tc-11111111-unsafe.md")
 	writeTestFile(t, root, specA, `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-11111111
 title: Unsafe wiring (first)
 ---
 `)
 	specB := filepath.Join("gtms/test/cases", "pathsafe-ff", "tc-22222222-safe.md")
 	writeTestFile(t, root, specB, `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-22222222
 title: Safe wiring (second)
 ---
@@ -270,11 +279,17 @@ func TestRunBulkExecute_Mode3DefaultBypassesWiring(t *testing.T) {
 
 	// Two test case specs, neither with wiring records.
 	writeTestFile(t, root, filepath.Join("gtms/test/cases", "manual-folder", "tc-aaaaaaaa-first.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-aaaaaaaa
 title: First manual TC
 ---
 `)
 	writeTestFile(t, root, filepath.Join("gtms/test/cases", "manual-folder", "tc-bbbbbbbb-second.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-bbbbbbbb
 title: Second manual TC
 ---
@@ -329,11 +344,17 @@ func TestRunBulkExecute_NonMode3DefaultKeepsWiringSkips(t *testing.T) {
 	// One wired TC, one unwired TC.
 	specWired := filepath.Join("gtms/test/cases", "mixed-folder", "tc-cccccccc-wired.md")
 	writeTestFile(t, root, specWired, `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-cccccccc
 title: Wired TC
 ---
 `)
 	writeTestFile(t, root, filepath.Join("gtms/test/cases", "mixed-folder", "tc-dddddddd-unwired.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-dddddddd
 title: Unwired TC
 ---
@@ -408,6 +429,9 @@ func TestExecuteDispatch_Mode3BypassesStaleWiring(t *testing.T) {
 
 	// TC spec.
 	writeTestFile(t, root, filepath.Join("gtms/test/cases", "m3bypass", "tc-b165a001-dispatch.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-b165a001
 title: BUG-165 dispatch regression
 ---

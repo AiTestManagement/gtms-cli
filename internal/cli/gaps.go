@@ -102,20 +102,26 @@ missing artefacts, and manual test cases with spec drift.
 
 // runGapsFolderSummary displays the folder summary view for gaps (no-arg default).
 func runGapsFolderSummary(w io.Writer, projectRoot string, jsonOut bool, defaultFramework string) error {
-	entries, err := reader.GapsFolderSummary(projectRoot, defaultFramework)
+	entries, diags, err := reader.GapsFolderSummaryWithDiagnostics(projectRoot, defaultFramework)
 	if err != nil {
 		return err
 	}
 
 	if jsonOut {
-		return writeGapsFolderJSON(w, entries)
+		if err := writeGapsFolderJSON(w, entries); err != nil {
+			return failWithIdentityDiagnostics(diags, err)
+		}
+		return finishWithIdentityDiagnostics(diags)
 	}
 
 	if len(entries) == 0 {
+		if diags.Affected() {
+			return finishWithIdentityDiagnostics(diags)
+		}
 		fmt.Fprintln(w, "No test cases found.")
 		fmt.Fprintln(w)
 		output.Dimln(w, "Next: gtms create <folder> --reference <doc>  \u2014 create your first test cases")
-		return nil
+		return finishWithIdentityDiagnostics(diags)
 	}
 
 	// CON-023 / ENH-146: "Not run here" is not a gap -- fresh clones legitimately
@@ -141,7 +147,7 @@ func runGapsFolderSummary(w io.Writer, projectRoot string, jsonOut bool, default
 
 	fmt.Fprintln(w)
 	output.Dimln(w, "Next: gtms gaps <folder>  \u2014 see detailed gap breakdown")
-	return nil
+	return finishWithIdentityDiagnostics(diags)
 }
 
 // writeGapsFolderJSON outputs the gaps folder summary as indented JSON.
@@ -158,13 +164,16 @@ func writeGapsFolderJSON(w io.Writer, entries []reader.GapsFolderSummaryEntry) e
 // ENH-082: strictFramework is true when the user supplied --framework explicitly,
 // causing per-TC categorisation to skip TCs without a matching framework record.
 func runGaps(w io.Writer, projectRoot string, scope *reader.ScopeInfo, jsonOut bool, defaultFramework string, strictFramework bool) error {
-	report, err := reader.Gaps(projectRoot, scope, defaultFramework, strictFramework)
+	report, diags, err := reader.GapsWithDiagnostics(projectRoot, scope, defaultFramework, strictFramework)
 	if err != nil {
 		return err
 	}
 
 	if jsonOut {
-		return writeGapsJSON(w, report)
+		if err := writeGapsJSON(w, report); err != nil {
+			return failWithIdentityDiagnostics(diags, err)
+		}
+		return finishWithIdentityDiagnostics(diags)
 	}
 
 	// Print scope feedback BEFORE the empty-state check
@@ -180,13 +189,16 @@ func runGaps(w io.Writer, projectRoot string, scope *reader.ScopeInfo, jsonOut b
 	// Distinguish empty project from fully covered
 	if report.TotalGaps() == 0 {
 		if report.TotalTestCases == 0 {
-			fmt.Fprintln(w, "No test cases found.")
-			fmt.Fprintln(w)
-			output.Dimln(w, "Next: gtms create <folder> --reference <doc>  \u2014 create your first test cases")
+			// ADR-024 5b (e) point 7: an all-affected read is not an empty state.
+			if !diags.Affected() {
+				fmt.Fprintln(w, "No test cases found.")
+				fmt.Fprintln(w)
+				output.Dimln(w, "Next: gtms create <folder> --reference <doc>  \u2014 create your first test cases")
+			}
 		} else {
 			fmt.Fprintln(w, "No coverage gaps found.")
 		}
-		return nil
+		return finishWithIdentityDiagnostics(diags)
 	}
 
 	fmt.Fprintln(w, "GAPS REPORT")
@@ -212,7 +224,7 @@ func runGaps(w io.Writer, projectRoot string, scope *reader.ScopeInfo, jsonOut b
 	printGapCategory(w, "Missing artefacts", report.MissingArtefact)
 	printGapCategory(w, "Manual results with TC drift", report.DriftDetected)
 
-	return nil
+	return finishWithIdentityDiagnostics(diags)
 }
 
 // printGapCategory prints a single gap category with its entries.

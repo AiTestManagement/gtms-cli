@@ -69,7 +69,7 @@ Use 'gaps' for coverage analysis or 'map' for requirement traceability.
 			if triageFilter != "" && len(args) == 0 && !recursive {
 				msg := "--triage requires a folder, test-case ID, or --recursive scope."
 				output.Errorf(msg, "Try 'gtms status -r --triage environment'.")
-				return output.AsDisplayed(fmt.Errorf(msg))
+				return output.AsDisplayed(errors.New(msg))
 			}
 			// The filter implies presentation for the scoped views.
 			showTriageEff := showTriage || triageFilter != ""
@@ -92,13 +92,21 @@ Use 'gaps' for coverage analysis or 'map' for requirement traceability.
 					return output.AsDisplayed(err)
 				}
 				if res.Kind == targetpkg.KindTCID {
+					// ENH-205: build ONE snapshot and run both the scoped-owner check
+					// (qualified only) and the detail read against it, so a qualified
+					// `status <folder>/<tc-id>` performs exactly one project-wide
+					// enumeration (ADR-024 5b "Qualified targets resolve once").
+					snap, serr := testcase.NewSnapshot(root)
+					if serr != nil {
+						return serr
+					}
 					// BUG-059 (REV-113): a folder-qualified TC must resolve scoped.
-					if err := requireScopedSpec(root, res); err != nil {
+					if err := requireScopedSpecIn(snap, root, res); err != nil {
 						output.Errorf(err.Error(), "")
 						return output.AsDisplayed(err)
 					}
 					// TC ID -> detail view (flat lookup on the bare ID)
-					return runStatusDetail(os.Stdout, root, res.TCID, jsonOut, defaultFw, strict, showTriageEff, triageFilter, triageValues)
+					return runStatusDetail(os.Stdout, snap, root, res.TCID, jsonOut, defaultFw, strict, showTriageEff, triageFilter, triageValues)
 				}
 				// Folder scope for overview
 				scope, serr := buildScopeFromArg(root, res.Target, recursive)
@@ -148,7 +156,7 @@ Use 'gaps' for coverage analysis or 'map' for requirement traceability.
 // to test cases whose selected framework carries that active value; an empty
 // match is a successful, empty result.
 func runStatusOverview(w io.Writer, projectRoot string, scope *reader.ScopeInfo, jsonOut bool, defaultFramework string, strictFramework bool, showTriage bool, triageFilter string, triageValues map[string]string) error {
-	entries, err := reader.PipelineStatus(projectRoot, scope, defaultFramework, strictFramework)
+	entries, diags, err := reader.PipelineStatusWithDiagnostics(projectRoot, scope, defaultFramework, strictFramework)
 	if err != nil {
 		return err
 	}
@@ -163,19 +171,24 @@ func runStatusOverview(w io.Writer, projectRoot string, scope *reader.ScopeInfo,
 		// Per-TC JSON always exposes triage; the filter, when set, narrows both
 		// which rows appear and which triage objects attach.
 		if err := reader.AttachTriageToEntries(projectRoot, entries, triageValues, triageFilter, explicitFramework); err != nil {
-			return err
+			return failWithIdentityDiagnostics(diags, err)
 		}
 		if triageFilter != "" {
 			entries = filterEntriesByTriage(entries)
 		}
-		return writeStatusJSON(w, entries)
+		if err := writeStatusJSON(w, entries); err != nil {
+			return failWithIdentityDiagnostics(diags, err)
+		}
+		// ADR-024 5b (e): the JSON keeps its existing (possibly empty) shape on
+		// stdout; affected identities are named on stderr and force exit 1.
+		return finishWithIdentityDiagnostics(diags)
 	}
 
 	// Human output. Attach triage only when it will be shown (showTriage is the
 	// caller's showTriage||filter), so default output stays byte-identical.
 	if showTriage {
 		if err := reader.AttachTriageToEntries(projectRoot, entries, triageValues, triageFilter, explicitFramework); err != nil {
-			return err
+			return failWithIdentityDiagnostics(diags, err)
 		}
 		if triageFilter != "" {
 			entries = filterEntriesByTriage(entries)
@@ -194,15 +207,24 @@ func runStatusOverview(w io.Writer, projectRoot string, scope *reader.ScopeInfo,
 
 	// ENH-202: an empty --triage match is a successful, empty result with a
 	// diagnostic naming the value (tc-cd5d4d75 steps 4-5). Exit status alone
-	// separates it from the refused root invocation.
+	// separates it from the refused root invocation. ADR-024 5b (e) point 7
+	// (REV-184 CODEX-002): with affected identities no reliable match decision
+	// was possible, so no empty-match claim is printed.
 	if triageFilter != "" && len(entries) == 0 {
-		fmt.Fprintf(w, "No test cases match triage value '%s'.\n", triageFilter)
-		return nil
+		if !diags.Affected() {
+			fmt.Fprintf(w, "No test cases match triage value '%s'.\n", triageFilter)
+		}
+		return finishWithIdentityDiagnostics(diags)
 	}
 
 	if len(entries) == 0 {
-		fmt.Fprintln(w, "No test cases found.")
-		return nil
+		// ADR-024 5b (e) point 7: do not render an all-affected result as an empty
+		// state (that would present the failures as absence). The diagnostics and
+		// the closing line stand alone.
+		if !diags.Affected() {
+			fmt.Fprintln(w, "No test cases found.")
+		}
+		return finishWithIdentityDiagnostics(diags)
 	}
 
 	var tbl *output.Table
@@ -262,7 +284,7 @@ func runStatusOverview(w io.Writer, projectRoot string, scope *reader.ScopeInfo,
 		fmt.Fprintln(w)
 		output.Dimln(w, "Next: "+hint)
 	}
-	return nil
+	return finishWithIdentityDiagnostics(diags)
 }
 
 // selectedFrameworkTriage returns the triage object attached to a test case's
@@ -325,39 +347,35 @@ func formatTriageCell(t *reader.FrameworkTriage) (string, bool) {
 // gtms/test/cases/ IS the creation). AUTOMATE/EXECUTE columns apply the
 // documented priority rule via the formatFolder*Cell helpers below.
 func runStatusFolderSummary(w io.Writer, projectRoot string, jsonOut bool, defaultFramework string, showTriage bool, triageValues map[string]string) error {
-	entries, err := reader.PipelineFolderSummary(projectRoot, defaultFramework)
+	// ENH-205: one snapshot per operation. --show-triage folds the per-folder
+	// TRIAGED count in from the same snapshot pass so the two readers share one
+	// operation and diagnose each affected identity once (tc-64663eb0 step 5). The
+	// TRIAGED pointer stays nil without the flag, so default output is byte-unchanged.
+	entries, diags, err := reader.PipelineFolderSummaryWithDiagnostics(projectRoot, defaultFramework, showTriage)
 	if err != nil {
 		return err
 	}
 
-	// ENH-202: the root summary gains a per-folder TRIAGED count only under
-	// --show-triage. It stays an aggregate: one count per folder, never a
-	// per-test-case expansion (tc-db0624fc). Without the flag the count is not
-	// computed and not emitted (default output byte-unchanged), so the *int
-	// Triaged pointer stays nil and its JSON key is omitted (tc-db0624fc step 8).
-	if showTriage {
-		counts, cErr := reader.FolderTriagedCounts(projectRoot, defaultFramework)
-		if cErr != nil {
-			return cErr
-		}
-		for i := range entries {
-			c := counts[entries[i].Folder]
-			entries[i].Triaged = &c
-		}
-	}
-
 	if jsonOut {
-		return writeStatusFolderJSON(w, entries)
+		if err := writeStatusFolderJSON(w, entries); err != nil {
+			return failWithIdentityDiagnostics(diags, err)
+		}
+		return finishWithIdentityDiagnostics(diags)
 	}
 
 	if len(entries) == 0 {
+		// ADR-024 5b (e) point 7: an all-affected summary is not rendered as an
+		// empty state. Only the genuine no-test-cases case prints the onboarding hint.
+		if diags.Affected() {
+			return finishWithIdentityDiagnostics(diags)
+		}
 		fmt.Fprintln(w, "No test cases found.")
 		fmt.Fprintln(w)
 		output.Dimln(w, "Next:")
 		output.Dimln(w, "    gtms create <folder>                    \u2014 create your first test case")
 		output.Dimln(w, "  or")
 		output.Dimln(w, "    gtms create <folder> --reference <doc>  \u2014 create with a linked reference")
-		return nil
+		return finishWithIdentityDiagnostics(diags)
 	}
 
 	fmt.Fprintln(w)
@@ -412,7 +430,7 @@ func runStatusFolderSummary(w io.Writer, projectRoot string, jsonOut bool, defau
 
 	fmt.Fprintln(w)
 	output.Dimln(w, "Next: gtms status <folder>  \u2014 see individual test cases")
-	return nil
+	return finishWithIdentityDiagnostics(diags)
 }
 
 // formatFolderAutomateCell returns the AUTOMATE-column text for a folder summary row.
@@ -603,11 +621,12 @@ func adapterHint(command string) string {
 // ENH-082: strictFramework is true when the user supplied --framework on the
 // command line, so the detail view shows em-dashes for AUTOMATE/EXECUTE
 // instead of falling back to a different framework's record.
-func runStatusDetail(w io.Writer, projectRoot, testCaseID string, jsonOut bool, defaultFramework string, strictFramework bool, showTriage bool, triageFilter string, triageValues map[string]string) error {
+func runStatusDetail(w io.Writer, snap *testcase.Snapshot, projectRoot, testCaseID string, jsonOut bool, defaultFramework string, strictFramework bool, showTriage bool, triageFilter string, triageValues map[string]string) error {
 	// F3: direct single-TC read resolves ownership once and reuses that snapshot
-	// for the rest of the read (one project-wide enumeration per operation).
+	// for the rest of the read (one project-wide enumeration per operation). ENH-205
+	// shares that one snapshot with the qualified scoped-owner check.
 
-	detail, err := reader.PipelineDetail(projectRoot, testCaseID, defaultFramework, strictFramework)
+	detail, err := reader.PipelineDetailWithSnapshot(snap, projectRoot, testCaseID, defaultFramework, strictFramework)
 	if err != nil {
 		// ADR-024 / BUG-185 / BUG-188: direct single-TC read refuses an ambiguous id
 		// (naming its owners) or an unprovable candidate (with its repair), visibly

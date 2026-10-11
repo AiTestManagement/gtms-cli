@@ -8,6 +8,52 @@ install instructions are in `README.md`.
 
 ---
 
+## v0.4.0
+
+A new test case spec format, `test-case/v2`. Every spec now starts with a
+versioned header, and GTMS reads only specs that carry it. This release breaks
+existing projects: convert your specs before you use it.
+
+**Changes**
+
+- Every test case spec opens with `gtms_schema: "test-case/v2"`,
+  `type: Test Case Spec` and `test_type`. The test category moves from `type`
+  to `test_type`, keeping its value.
+- The format is GTMS's profile of the Open Knowledge Format (OKF) v0.2, so each
+  spec GTMS creates is also a valid OKF concept. The full definition is in
+  `USER-GUIDE.md`, "GTMS test case OKF profile".
+- A spec without the header is refused, never guessed at. The error names the
+  file and the exact line to add.
+- `gtms create` rejects adapter output with an old, partial or unreadable header,
+  or with no `test_case_id`, instead of listing it by filename.
+- `gtms status`, `map`, `gaps` and `triage --list` find test cases by the ID
+  inside each spec. A duplicated ID or an unreadable spec is left out, named on
+  stderr, and the command exits 1. Asked about one such test case directly,
+  `status`, `map` and `triage --list` refuse it.
+- Adapters see the category as `GTMS_TEST_TYPE`; `GTMS_TC_TYPE` is gone.
+- Release binaries need macOS 12 or later, or Linux kernel 3.2 or later.
+  Building from source needs Go 1.26.
+
+**Upgrading**
+
+- Commit or back up your project first, then convert your specs as described in
+  `USER-GUIDE.md` under "Converting test case specs from an earlier version",
+  by hand or with an AI coding agent, and run `gtms link --refresh <folder> -r`.
+- Scripts and CI that run the read commands may now see exit 1 until duplicate
+  or unreadable specs are fixed.
+- Need help migrating? Contact us through www.TestManagement.com.
+
+**Known limitations**
+
+- Editing an automation script marks every test case wired to it stale; run
+  `gtms link --refresh <folder>` after a deliberate edit. A bulk
+  `gtms execute` that skips stale test cases still exits 0, so check its output
+  in CI.
+- A test-case ID pasted with a trailing non-breaking space is reported as an
+  invalid folder name. Delete the character and retry.
+
+---
+
 ## v0.3.3
 
 Configurable triage. You define what a failure can be classified as, GTMS

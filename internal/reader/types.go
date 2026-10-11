@@ -111,14 +111,14 @@ func (e *PipelineEntry) UnmarshalJSON(data []byte) error {
 // frameworks[] array. CON-023 / ENH-146.
 type FrameworkEntry struct {
 	Framework       string `json:"framework"`
-	Wired           bool   `json:"wired"` // true for wiring-derived entries; false for the synthesized `manual` result-file entry (BUG-127)
+	Wired           bool   `json:"wired"`        // true for wiring-derived entries; false for the synthesized `manual` result-file entry (BUG-127)
 	WiringDrift     string `json:"wiring_drift"` // "" | "testcase" | "artefact" | "both"
 	ArtefactPresent bool   `json:"artefact_present"`
 	Artefact        string `json:"artefact"`
 	// ENH-191: dual-provenance fields. Scoped to wiring-derived entries
 	// (Wired: true) only; the synthesized manual entry (BUG-127, Wired: false)
 	// gains neither field and its rendering is unchanged.
-	WiredAdapter  string `json:"wired_adapter,omitempty"`   // adapter stamped in the wiring record
+	WiredAdapter   string `json:"wired_adapter,omitempty"`    // adapter stamped in the wiring record
 	LastRunAdapter string `json:"last_run_adapter,omitempty"` // adapter that produced the latest terminal result
 	// BUG-102: bootstrap state of the wiring record's artefact-hash.
 	// "pending" when artefact-hash is the uninitialised sentinel
@@ -452,11 +452,11 @@ type GapsFolderSummaryEntry struct {
 
 // testCaseFrontmatter represents the YAML frontmatter of a test case file.
 type testCaseFrontmatter struct {
-	ID          string   `yaml:"test_case_id"`
-	Title       string   `yaml:"title"`
-	Requirement string   `yaml:"requirement"`
-	Priority    string   `yaml:"priority,omitempty"`
-	Type        string   `yaml:"type,omitempty"`
+	ID          string `yaml:"test_case_id"`
+	Title       string `yaml:"title"`
+	Requirement string `yaml:"requirement"`
+	Priority    string `yaml:"priority,omitempty"`
+	Type        string
 	Status      string   `yaml:"status,omitempty"`
 	Tags        []string `yaml:"tags,omitempty"`
 	Created     string   `yaml:"created,omitempty"`

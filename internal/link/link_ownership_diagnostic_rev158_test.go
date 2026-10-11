@@ -74,7 +74,7 @@ func TestLinkRecord_UnprovableOwnership_TypedDiagnostic(t *testing.T) {
 	dir := filepath.Join(layout.TestCasesDir(root), "feat")
 	require.NoError(t, os.MkdirAll(dir, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "tc-77777777-broken.md"),
-		[]byte("---\ntest_case_id: [unclosed\n---\n"), 0o644))
+		[]byte("---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: [unclosed\n---\n"), 0o644))
 	require.NoError(t, os.MkdirAll(filepath.Join(root, "test"), 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(root, "test", "a.bats"), []byte("x\n"), 0o644))
 

@@ -17,16 +17,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// --- Audit #15: specscanner regex uses {3,8} upper bound ---
-
-func TestSourceShape_SpecScannerRegexUpperBound8(t *testing.T) {
-	src, err := os.ReadFile("specscanner.go")
-	require.NoError(t, err)
-	content := string(src)
-
-	assert.Contains(t, content, "{3,8}",
-		"specscanner.go regex must use {3,8} to accept 3-to-8-char hex IDs")
-}
+// Audit #15 (specscanner regex upper bound) was retired with internal/reader/
+// specscanner.go, which ENH-205 deleted as a dead legacy spec walk.
 
 // --- ENH-128: delete.go must contain zero framework-specific literals ---
 

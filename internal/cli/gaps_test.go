@@ -7,11 +7,11 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 	"github.com/aitestmanagement/gtms-cli/internal/config"
 	"github.com/aitestmanagement/gtms-cli/internal/output"
 	"github.com/aitestmanagement/gtms-cli/internal/reader"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // setupGapsFixture creates a fixture with gaps: test case but no spec file.
@@ -21,6 +21,9 @@ func setupGapsFixture(t *testing.T) string {
 
 	// Test case with no automation spec → NoAutomation gap
 	writeTestFile(t, root, filepath.Join("gtms/test/cases", "tc-aaa1111-login-happy.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-aaa1111
 title: Login Happy Path
 requirement: REQ-A
@@ -36,6 +39,9 @@ func setupGapsNoGapsFixture(t *testing.T) string {
 	root := t.TempDir()
 
 	writeTestFile(t, root, filepath.Join("gtms/test/cases", "tc-aaa1111-login-happy.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-aaa1111
 title: Login Happy Path
 requirement: REQ-A
@@ -168,11 +174,17 @@ func TestRunGapsFolderSummary_Table(t *testing.T) {
 	root := t.TempDir()
 
 	writeTestFile(t, root, filepath.Join("gtms/test/cases", "login", "tc-aaa1111-login.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-aaa1111
 title: Login Test
 ---
 `)
 	writeTestFile(t, root, filepath.Join("gtms/test/cases", "checkout", "tc-bbb1111-checkout.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-bbb1111
 title: Checkout Test
 ---
@@ -197,6 +209,9 @@ func TestRunGapsFolderSummary_JSON(t *testing.T) {
 	root := t.TempDir()
 
 	writeTestFile(t, root, filepath.Join("gtms/test/cases", "login", "tc-aaa1111-login.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-aaa1111
 title: Login Test
 ---
@@ -266,12 +281,18 @@ func setupGapsFolderFixture(t *testing.T) string {
 
 	// Folder "login" — 2 TCs, 1 with automation
 	writeTestFile(t, root, filepath.Join("gtms/test/cases", "login", "tc-aaa1111-login-happy.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-aaa1111
 title: Login Happy Path
 requirement: REQ-A
 ---
 `)
 	writeTestFile(t, root, filepath.Join("gtms/test/cases", "login", "tc-aaa2222-login-error.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-aaa2222
 title: Login Error
 requirement: REQ-A
@@ -286,6 +307,9 @@ requirement: REQ-A
 
 	// Folder "checkout" — 1 TC, no automation
 	writeTestFile(t, root, filepath.Join("gtms/test/cases", "checkout", "tc-bbb1111-checkout.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-bbb1111
 title: Checkout Flow
 requirement: REQ-B
@@ -335,6 +359,9 @@ func TestRunGaps_RuntimeSkippedCategory(t *testing.T) {
 	root := t.TempDir()
 
 	writeTestFile(t, root, filepath.Join("gtms/test/cases", "tc-skip01-skipped-test.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-skip01
 title: Skipped Test
 ---
@@ -359,6 +386,9 @@ func TestRunGaps_RuntimeSkippedJSON(t *testing.T) {
 	root := t.TempDir()
 
 	writeTestFile(t, root, filepath.Join("gtms/test/cases", "tc-skip01-skipped-test.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-skip01
 title: Skipped Test
 ---
@@ -385,6 +415,9 @@ func TestRunGaps_RuntimeSkippedCountsInTotalGaps(t *testing.T) {
 	root := t.TempDir()
 
 	writeTestFile(t, root, filepath.Join("gtms/test/cases", "tc-skip01-skipped-test.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-skip01
 title: Skipped Test
 ---
@@ -416,6 +449,9 @@ func TestRunGaps_AdapterError_SurfacesAsExecutionError(t *testing.T) {
 	root := t.TempDir()
 
 	writeTestFile(t, root, filepath.Join("gtms/test/cases", "tc-ae0001-adapter-error.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-ae0001
 title: Adapter error
 requirement: REQ-E
@@ -452,6 +488,9 @@ func TestRunGaps_MultiWiring_StaleAndCurrent(t *testing.T) {
 	root := t.TempDir()
 
 	writeTestFile(t, root, filepath.Join("gtms/test/cases", "tc-mw0001-multi.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-mw0001
 title: Multi-framework wiring
 requirement: REQ-M
@@ -511,6 +550,9 @@ func TestRunGaps_MultiWiring_PassAndFail(t *testing.T) {
 	root := t.TempDir()
 
 	writeTestFile(t, root, filepath.Join("gtms/test/cases", "tc-mw0003-pass-fail.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-mw0003
 title: Multi-framework pass + fail
 requirement: REQ-M
@@ -568,6 +610,9 @@ func TestRunGaps_MultiWiring_PassAndAdapterError(t *testing.T) {
 	root := t.TempDir()
 
 	writeTestFile(t, root, filepath.Join("gtms/test/cases", "tc-mw0004-pass-adapter-error.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-mw0004
 title: Multi-framework pass + adapter error
 requirement: REQ-M
@@ -615,6 +660,9 @@ func TestRunGaps_MultiWiring_PassAndSkipped(t *testing.T) {
 	root := t.TempDir()
 
 	writeTestFile(t, root, filepath.Join("gtms/test/cases", "tc-mw0005-pass-skip.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-mw0005
 title: Multi-framework pass + skip
 requirement: REQ-M
@@ -659,6 +707,9 @@ func TestRunGaps_MultiWiring_MissingAndCurrent(t *testing.T) {
 	root := t.TempDir()
 
 	writeTestFile(t, root, filepath.Join("gtms/test/cases", "tc-mw0002-multi-miss.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-mw0002
 title: Multi-framework wiring with missing artefact
 requirement: REQ-M
@@ -702,6 +753,9 @@ func TestRunGaps_WiringCategories_Human(t *testing.T) {
 
 	// TC #1: stale testcase-hash (wiring hash differs from current spec content).
 	writeTestFile(t, root, filepath.Join("gtms/test/cases", "tc-st0001-stale-tc.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-st0001
 title: Stale testcase
 requirement: REQ-S
@@ -715,6 +769,9 @@ requirement: REQ-S
 
 	// TC #2: stale artefact-hash (artefact-hash wrong; spec hash matches).
 	writeTestFile(t, root, filepath.Join("gtms/test/cases", "tc-st0002-stale-art.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-st0002
 title: Stale artefact
 requirement: REQ-S
@@ -728,6 +785,9 @@ requirement: REQ-S
 
 	// TC #3: missing artefact (wiring points to a path that doesn't exist).
 	writeTestFile(t, root, filepath.Join("gtms/test/cases", "tc-mi0001-missing.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-mi0001
 title: Missing artefact
 requirement: REQ-M
@@ -771,6 +831,9 @@ func TestRunGaps_WiringCategories_JSON(t *testing.T) {
 	root := t.TempDir()
 
 	writeTestFile(t, root, filepath.Join("gtms/test/cases", "tc-mi0002-missing.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-mi0002
 title: Missing artefact JSON
 requirement: REQ-M
@@ -813,6 +876,9 @@ func TestRunGaps_NotRunHereIsNotAGap(t *testing.T) {
 	root := t.TempDir()
 
 	writeTestFile(t, root, filepath.Join("gtms/test/cases", "tc-nr0001-not-run.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-nr0001
 title: Wired but never executed
 requirement: REQ-N
@@ -848,6 +914,9 @@ func TestGapsFolderSummary_AllRecords_SiblingFailing(t *testing.T) {
 	root := t.TempDir()
 
 	writeTestFile(t, root, filepath.Join("gtms/test/cases", "feature", "tc-fs0001-multi.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-fs0001
 title: Multi-framework folder summary
 ---
@@ -881,6 +950,9 @@ func TestRunGaps_ManualFail_NotInCurrentlyFailing(t *testing.T) {
 	root := t.TempDir()
 
 	writeTestFile(t, root, filepath.Join("gtms/test/cases", "tc-mf0001-manual-fail.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-mf0001
 title: Manual fail
 ---
@@ -911,6 +983,9 @@ func TestRunGaps_ManualSkip_NotInRuntimeSkipped(t *testing.T) {
 	root := t.TempDir()
 
 	writeTestFile(t, root, filepath.Join("gtms/test/cases", "tc-ms0001-manual-skip.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-ms0001
 title: Manual skip
 ---
@@ -940,6 +1015,9 @@ func TestRunGaps_BatsFailPlusManualPass_StillFails(t *testing.T) {
 	root := t.TempDir()
 
 	writeTestFile(t, root, filepath.Join("gtms/test/cases", "tc-bm0001-bats-fail-manual-pass.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-bm0001
 title: Bats fail + manual pass
 ---
@@ -977,6 +1055,9 @@ func TestRunGaps_ManualDrift_SelectedRecordRule(t *testing.T) {
 
 	tcID := "tc-md0001"
 	writeTestFile(t, root, filepath.Join("gtms/test/cases", tcID+"-manual-drift.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-md0001
 title: Manual drift under framework filter
 ---
@@ -1056,6 +1137,9 @@ func TestBUG081_GapsRejectsTcIdWhenFolderAbsent(t *testing.T) {
 	// Create a TC file (flat under gtms/test/cases/) so the TC exists as a test
 	// case but NOT as a folder name. The existence-first guard must reject.
 	writeTestFile(t, root, filepath.Join("gtms/test/cases", "tc-aaa1111-login.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-aaa1111
 title: Login
 requirement: REQ-A
@@ -1075,6 +1159,9 @@ requirement: REQ-A
 func TestBUG081_GapsRejectsTcIdJSONFlagAlsoRejects(t *testing.T) {
 	root := t.TempDir()
 	writeTestFile(t, root, filepath.Join("gtms/test/cases", "tc-aaa1111-login.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-aaa1111
 title: Login
 requirement: REQ-A
@@ -1098,6 +1185,9 @@ func TestBUG081_GapsTcShapedFolderStillScopes(t *testing.T) {
 	// "tc-" prefix. This guards against a blanket TC-shape rejection.
 	root := t.TempDir()
 	writeTestFile(t, root, filepath.Join("gtms/test/cases", "tc-regression", "tc-xyz12345-edge.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-xyz12345
 title: Edge case
 requirement: REQ-A

@@ -25,7 +25,7 @@ func writeSpec(t *testing.T, root, tcID, relPath string) string {
 	abs := filepath.Join(root, filepath.FromSlash(relPath))
 	require.NoError(t, os.MkdirAll(filepath.Dir(abs), 0755))
 	require.NoError(t, os.WriteFile(abs,
-		[]byte("---\ntest_case_id: "+tcID+"\ntitle: "+tcID+"\n---\n"), 0644))
+		[]byte("---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: "+tcID+"\ntitle: "+tcID+"\n---\n"), 0644))
 	return abs
 }
 

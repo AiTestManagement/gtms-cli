@@ -1,16 +1,17 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 
-	"github.com/adrg/frontmatter"
 	"github.com/aitestmanagement/gtms-cli/internal/adapter"
 	"github.com/aitestmanagement/gtms-cli/internal/layout"
 	"github.com/aitestmanagement/gtms-cli/internal/output"
+	"github.com/aitestmanagement/gtms-cli/internal/testcase"
 	"github.com/spf13/cobra"
 )
 
@@ -125,7 +126,7 @@ Adapter execution:
 				if !validNamePattern.MatchString(nameArg) {
 					msg := fmt.Sprintf("Invalid name '%s'. Only letters, numbers, dashes, and underscores are allowed.", nameArg)
 					output.Errorf(msg, "Use a name like: user-can-login")
-					return output.AsDisplayed(fmt.Errorf(msg))
+					return output.AsDisplayed(errors.New(msg))
 				}
 			}
 
@@ -196,7 +197,7 @@ func validateFolderStructure(root string) error {
 		if _, err := os.Stat(path); os.IsNotExist(err) {
 			msg := fmt.Sprintf("Required directory '%s' not found.", dir)
 			output.Errorf(msg, fmt.Sprintf("Create the GTMS folder structure: %s/", paths.TestCases))
-			return output.AsDisplayed(fmt.Errorf(msg))
+			return output.AsDisplayed(errors.New(msg))
 		}
 	}
 	return nil
@@ -298,38 +299,29 @@ func printCreatedHeadline(paths []string, target string, projectRoot string) {
 // readTCFrontmatter reads a test case file and extracts its test_case_id and title.
 // On any error, it falls back to extracting the tc-id from the filename.
 func readTCFrontmatter(projectRoot, relPath string) (id, title string) {
+	if testcase.IsReservedCasesCompanionPath(projectRoot, relPath) {
+		return "", ""
+	}
+
 	// Extract tc-id from filename as fallback
 	base := filepath.Base(relPath)
 	fallbackID := extractTCIDFromFilename(base)
 
 	absPath := filepath.Join(projectRoot, relPath)
-	f, err := os.Open(absPath)
+	data, err := os.ReadFile(absPath)
 	if err != nil {
 		return fallbackID, "(no frontmatter)"
 	}
-	defer f.Close()
-
-	var fm struct {
-		ID    string `yaml:"test_case_id"`
-		Title string `yaml:"title"`
-		Name  string `yaml:"name"`
-	}
-	_, err = frontmatter.Parse(f, &fm)
-	if err != nil || fm.ID == "" {
+	decoded := testcase.DecodeCandidate(data)
+	if decoded.Failure != nil || decoded.ParsedIdentity == "" {
 		return fallbackID, "(no frontmatter)"
 	}
 
-	// Prefer `title:`; fall back to `name:` when title is empty so the
-	// skeleton adapter (which writes `name:` only) doesn't surface as
-	// "(untitled)" in the create headline. ENH-121 finding #4.
-	title = fm.Title
-	if title == "" {
-		title = fm.Name
-	}
+	title = decoded.Metadata.Title
 	if title == "" {
 		title = "(untitled)"
 	}
-	return strings.ToLower(fm.ID), title
+	return strings.ToLower(decoded.ParsedIdentity), title
 }
 
 // tcIDPattern matches tc-XXXXXXXX in a filename.

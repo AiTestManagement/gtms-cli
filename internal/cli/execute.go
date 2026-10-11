@@ -77,7 +77,7 @@ Adapter execution:
 				return err
 			}
 
-			// ENH-125: resolve executed_by once at command entry (flag → env → git user.name).
+			// ENH-125: resolve executed_by once at command entry (flag -> env -> git user.name).
 			executedBy := pipeline.ResolveExecutedBy(ctx, root, executedByFlag)
 
 			// No argument = run all test cases from root (recursive implied)
@@ -110,7 +110,7 @@ Adapter execution:
 				}
 				msg := fmt.Sprintf("Invalid test case ID format: '%s'.", sanitizeForError(res.Target))
 				output.Errorf(msg, "Use format like tc-a1b2c3d4.")
-				return output.AsDisplayed(fmt.Errorf(msg))
+				return output.AsDisplayed(errors.New(msg))
 			}
 
 			// ADR-024 s5: resolve identity ONCE and pass the resolved owner forward.
@@ -137,7 +137,7 @@ Adapter execution:
 				if errors.Is(err, testcase.ErrOwnerNotFound) {
 					msg := fmt.Sprintf("Test case '%s' not found in gtms/test/cases/", res.Target)
 					output.Errorf(msg, "Create the test case first with 'gtms create'.")
-					return output.AsDisplayed(fmt.Errorf(msg))
+					return output.AsDisplayed(errors.New(msg))
 				}
 				output.Errorf(err.Error(), hint)
 				return output.AsDisplayed(err)
@@ -151,14 +151,14 @@ Adapter execution:
 			if violations := adapter.ValidateTestCaseOwner(root, owner); len(violations) > 0 {
 				summary := adapter.FormatValidationErrors(violations)
 				output.Errorf(summary, "Fix the test case frontmatter and try again.")
-				return output.AsDisplayed(fmt.Errorf(summary))
+				return output.AsDisplayed(errors.New(summary))
 			}
 
 			// Validate --framework flag if provided
 			if frameworkFlag != "" && !config.ValidateFramework(frameworkFlag) {
 				msg := fmt.Sprintf("Invalid framework '%s'. Framework must contain only lowercase letters, digits, and hyphens.", frameworkFlag)
 				output.Errorf(msg, "Example: --framework playwright")
-				return output.AsDisplayed(fmt.Errorf(msg))
+				return output.AsDisplayed(errors.New(msg))
 			}
 
 			// CON-023 / ENH-145 / ENH-146 / ENH-163:
@@ -212,7 +212,7 @@ Adapter execution:
 					if oErr != nil {
 						msg := fmt.Sprintf("Cannot use --adapter %q: %v", adapterFlag, oErr)
 						output.Errorf(msg, "Check gtms.config adapters.execute for valid same-framework adapters.")
-						return output.AsDisplayed(fmt.Errorf(msg))
+						return output.AsDisplayed(errors.New(msg))
 					}
 				}
 
@@ -236,7 +236,7 @@ Adapter execution:
 					if wiringRec == nil {
 						msg := fmt.Sprintf("No wiring record found for '%s' (framework: %s).", target, wiringFramework)
 						output.Errorf(msg, fmt.Sprintf("Run 'gtms automate %s --framework %s' (or 'gtms link') to wire it.", target, wiringFramework))
-						return output.AsDisplayed(fmt.Errorf(msg))
+						return output.AsDisplayed(errors.New(msg))
 					}
 				} else {
 					recs, wErr := wiring.FindAllForTC(root, target)
@@ -248,7 +248,7 @@ Adapter execution:
 					if len(recs) == 0 {
 						msg := fmt.Sprintf("No wiring records found for '%s'.", target)
 						output.Errorf(msg, fmt.Sprintf("Run 'gtms automate %s' (or 'gtms link') to wire it.", target))
-						return output.AsDisplayed(fmt.Errorf(msg))
+						return output.AsDisplayed(errors.New(msg))
 					}
 					if len(recs) > 1 {
 						frameworks := make([]string, len(recs))
@@ -257,7 +257,7 @@ Adapter execution:
 						}
 						msg := fmt.Sprintf("'%s' has multiple wiring records (%s).", target, strings.Join(frameworks, ", "))
 						output.Errorf(msg, "Re-run with --framework <name> to choose one.")
-						return output.AsDisplayed(fmt.Errorf(msg))
+						return output.AsDisplayed(errors.New(msg))
 					}
 					wiringRec = recs[0]
 				}
@@ -286,21 +286,21 @@ Adapter execution:
 				// fail here, not silently run. Use the canonical absolute
 				// path for hashing and the normalised relative form for
 				// adapter inputs. Wiring is NOT rewritten on execute -- with
-				// one exception: the pending → real hash bootstrap (ENH-151).
+				// one exception: the pending -> real hash bootstrap (ENH-151).
 				absArtefact, safeArtefact, safeErr := pathsafe.ResolveUnderRoot(root, wiringRec.Artefact)
 				if safeErr != nil {
 					msg := fmt.Sprintf("Unsafe wiring artefact path for %s--%s: %v", target, framework, safeErr)
 					output.Errorf(msg, fmt.Sprintf("Edit gtms/automation/wiring/%s--%s.wiring.yaml or re-run 'gtms link %s --framework %s --artefact <path inside project root> --force'.", target, framework, target, framework))
-					return output.AsDisplayed(fmt.Errorf(msg))
+					return output.AsDisplayed(errors.New(msg))
 				}
 				resolvedArtefact = safeArtefact
 
-				// ENH-151: bootstrap pending → real hash before drift check.
+				// ENH-151: bootstrap pending -> real hash before drift check.
 				// This runs unconditionally -- --allow-stale does not bypass it.
 				if err := bootstrapPendingWiring(root, wiringRec, absArtefact); err != nil {
 					msg := fmt.Sprintf("Cannot bootstrap wiring for %s--%s: %v", target, framework, err)
 					output.Errorf(msg, "Ensure the artefact file exists and is readable, then re-run.")
-					return output.AsDisplayed(fmt.Errorf(msg))
+					return output.AsDisplayed(errors.New(msg))
 				}
 
 				// Drift preflight: testcase-hash + artefact-hash currency.
@@ -315,7 +315,7 @@ Adapter execution:
 								"    To regenerate the artefact (overwrites): gtms automate %s --framework %s --force",
 							target, target, framework)
 						output.Errorf(diag, hint)
-						return output.AsDisplayed(fmt.Errorf(diag))
+						return output.AsDisplayed(errors.New(diag))
 					}
 				}
 
@@ -336,7 +336,7 @@ Adapter execution:
 				msg := fmt.Sprintf("An execute task for %s already exists: gtms/tasks/%s/%s-execute-%s.md",
 					target, existing.Status, existing.ID, existing.Target)
 				output.Errorf(msg, "Wait for the existing task to complete or remove it.")
-				return output.AsDisplayed(fmt.Errorf(msg))
+				return output.AsDisplayed(errors.New(msg))
 			}
 
 			// Invoke adapter with the wiring-resolved artefact / framework.
@@ -371,8 +371,8 @@ Adapter execution:
 			// Format output
 			formatExecuteOutput(result)
 
-			// ENH-130: status: error = adapter/infrastructure failure → non-zero exit.
-			// status: complete (any result) = clean adapter run → exit 0.
+			// ENH-130: status: error = adapter/infrastructure failure -> non-zero exit.
+			// status: complete (any result) = clean adapter run -> exit 0.
 			if result.Status == "error" {
 				return output.AsDisplayed(fmt.Errorf("task failed: %s", result.Summary))
 			}
@@ -396,7 +396,7 @@ Adapter execution:
 	return cmd
 }
 
-// bootstrapPendingWiring performs the one-way pending → <real hash>
+// bootstrapPendingWiring performs the one-way pending -> <real hash>
 // transition on the wiring record's artefact-hash field (ENH-151). If the
 // wiring's artefact-hash is not PendingArtefactHash, this is a no-op.
 //
@@ -405,7 +405,7 @@ Adapter execution:
 // write-back error), the wiring file is NOT mutated and the error is returned
 // so the caller can abort before invoking the adapter.
 //
-// execute may only transition pending → <real hash>. It never overwrites a
+// execute may only transition pending -> <real hash>. It never overwrites a
 // non-pending hash.
 func bootstrapPendingWiring(root string, wiringRec *wiring.WiringRecord, absArtefact string) error {
 	if !wiring.IsPendingArtefactHash(wiringRec.ArtefactHash) {
@@ -575,7 +575,7 @@ func runBulkExecute(cmd *cobra.Command, root string, folder string, adapterFlag,
 		if err != nil {
 			msg := fmt.Sprintf("Cannot use --adapter %q: %v", adapterFlag, err)
 			output.Errorf(msg, "Check gtms.config adapters.execute for valid same-framework adapters.")
-			return output.AsDisplayed(fmt.Errorf(msg))
+			return output.AsDisplayed(errors.New(msg))
 		}
 	}
 
@@ -666,7 +666,7 @@ func runBulkExecute(cmd *cobra.Command, root string, folder string, adapterFlag,
 			}
 			resolvedArtefact = safeArtefact
 
-			// ENH-151: bootstrap pending → real hash before drift check.
+			// ENH-151: bootstrap pending -> real hash before drift check.
 			if bErr := bootstrapPendingWiring(root, wiringRec, absArtefact); bErr != nil {
 				errored++
 				fmt.Fprintf(os.Stderr, "  %s %-16s error: %s  (%d/%d)\n",
@@ -813,7 +813,7 @@ func runBulkExecute(cmd *cobra.Command, root string, folder string, adapterFlag,
 
 	if failed > 0 || errored > 0 {
 		msg := fmt.Sprintf("%d failed, %d errored out of %d test cases", failed, errored, total)
-		return output.AsDisplayed(fmt.Errorf(msg))
+		return output.AsDisplayed(errors.New(msg))
 	}
 
 	return nil

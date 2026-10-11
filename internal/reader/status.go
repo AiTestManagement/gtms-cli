@@ -24,7 +24,7 @@ import (
 // multiple. strictFramework (ENH-082) honours an explicit --framework
 // filter: when true and defaultFramework is non-empty and pickWiring
 // finds no wiring record for that framework, the entry has no selected
-// framework — SelectedFramework is empty (JSON-encoded as null) and the
+// framework -- SelectedFramework is empty (JSON-encoded as null) and the
 // legacy Framework / AutomateStatus / ExecuteStatus / LastResult carriers
 // remain at their "none"/"" defaults. Wired remains true whenever any
 // wiring record exists for the TC, regardless of strict-framework
@@ -34,20 +34,46 @@ import (
 // runtime overlay from terminal handoffs (.gtms/results/, status: complete
 // or status: error only); manual-ready from gtms/manual/records/.
 func PipelineStatus(projectRoot string, scope *ScopeInfo, defaultFramework string, strictFramework bool) ([]PipelineEntry, error) {
-	testCases, err := scanTestCases(projectRoot, scope)
+	entries, diags, err := PipelineStatusWithDiagnostics(projectRoot, scope, defaultFramework, strictFramework)
 	if err != nil {
-		return nil, fmt.Errorf("scanning test cases: %w", err)
+		return nil, err
+	}
+	if ierr := incompleteReadErr(diags); ierr != nil {
+		return nil, ierr
+	}
+	return entries, nil
+}
+
+// PipelineStatusWithDiagnostics is PipelineStatus plus the ADR-024 5b identity
+// diagnostics for every in-scope test case that could not be resolved to a single
+// proven, decodable owner. The CLI uses this variant so it can surface those
+// identities on stderr and exit non-zero (policy (e)); PipelineStatus keeps its
+// slimmer signature but returns *IncompleteReadError (no rows) when any identity
+// is affected (REV-184 CODEX-004).
+//
+// ENH-205: identity and enumeration come from ONE project-wide snapshot per
+// operation (resolveScopedSpecs), not from the pre-migration scanTestCases walk.
+// Only proven, unique, display-decodable owners become rows; affected identities
+// are returned as diagnostics rather than silently dropped or double-counted.
+func PipelineStatusWithDiagnostics(projectRoot string, scope *ScopeInfo, defaultFramework string, strictFramework bool) ([]PipelineEntry, IdentityDiagnostics, error) {
+	snap, err := testcase.NewSnapshot(projectRoot)
+	if err != nil {
+		return nil, IdentityDiagnostics{}, err
+	}
+	testCases, diags, err := resolveScopedSpecs(snap, projectRoot, scope)
+	if err != nil {
+		return nil, IdentityDiagnostics{}, err
 	}
 
 	wiringByTC, err := wiringScan(projectRoot)
 	if err != nil {
-		return nil, fmt.Errorf("scanning wiring records: %w", err)
+		return nil, IdentityDiagnostics{}, fmt.Errorf("scanning wiring records: %w", err)
 	}
 	overlay := scanTerminalResults(projectRoot, wiringByTC)
 	manuals := scanManualByTC(projectRoot)
 	tasks, err := scanTasks(projectRoot)
 	if err != nil {
-		return nil, fmt.Errorf("scanning tasks: %w", err)
+		return nil, IdentityDiagnostics{}, fmt.Errorf("scanning tasks: %w", err)
 	}
 
 	entries := make([]PipelineEntry, 0, len(testCases))
@@ -62,7 +88,7 @@ func PipelineStatus(projectRoot string, scope *ScopeInfo, defaultFramework strin
 		return entries[i].TestCaseID < entries[j].TestCaseID
 	})
 
-	return entries, nil
+	return entries, diags, nil
 }
 
 // PipelineFolderSummary returns aggregate pipeline counts per folder.
@@ -87,17 +113,60 @@ func PipelineStatus(projectRoot string, scope *ScopeInfo, defaultFramework strin
 // retired alongside the automationFrontmatter struct fields marked with
 // the related retirement TODO in types.go.
 func PipelineFolderSummary(projectRoot string, defaultFramework string) ([]FolderSummaryEntry, error) {
-	testCases, err := scanTestCases(projectRoot, nil)
+	entries, diags, err := PipelineFolderSummaryWithDiagnostics(projectRoot, defaultFramework, false)
 	if err != nil {
-		return nil, fmt.Errorf("scanning test cases: %w", err)
+		return nil, err
 	}
+	if ierr := incompleteReadErr(diags); ierr != nil {
+		return nil, ierr
+	}
+	return entries, nil
+}
 
+// PipelineFolderSummaryWithDiagnostics is the ENH-205 folder-summary operation on
+// the snapshot. It builds ONE project-wide snapshot, resolves identity once, and
+// returns the per-folder summary plus the identity diagnostics for policy (e).
+// withTriage folds the per-folder TRIAGED counts in from the SAME snapshot pass, so
+// the no-argument `status --show-triage` operation -- which reaches both the summary
+// and the triaged counts -- enumerates the tree once and diagnoses each affected
+// identity once (ADR-024 5b "The operation, not the function, is the unit of
+// migration"; tc-64663eb0 step 5).
+func PipelineFolderSummaryWithDiagnostics(projectRoot string, defaultFramework string, withTriage bool) ([]FolderSummaryEntry, IdentityDiagnostics, error) {
+	snap, err := testcase.NewSnapshot(projectRoot)
+	if err != nil {
+		return nil, IdentityDiagnostics{}, err
+	}
+	testCases, diags, err := resolveScopedSpecs(snap, projectRoot, nil)
+	if err != nil {
+		return nil, IdentityDiagnostics{}, err
+	}
+	entries, err := folderSummaryFromSpecs(projectRoot, testCases, defaultFramework)
+	if err != nil {
+		return nil, IdentityDiagnostics{}, err
+	}
+	if withTriage {
+		counts, cErr := folderTriagedCountsFromSpecs(projectRoot, testCases, defaultFramework)
+		if cErr != nil {
+			return nil, IdentityDiagnostics{}, cErr
+		}
+		for i := range entries {
+			c := counts[entries[i].Folder]
+			entries[i].Triaged = &c
+		}
+	}
+	return entries, diags, nil
+}
+
+// folderSummaryFromSpecs computes the per-folder summary from already-resolved,
+// proven test-case specs (their SourceFile carries the owner path). It performs no
+// identity resolution or enumeration of its own.
+func folderSummaryFromSpecs(projectRoot string, testCases []testCaseFrontmatter, defaultFramework string) ([]FolderSummaryEntry, error) {
 	autoRecords, err := scanAutomationRecords(projectRoot)
 	if err != nil {
 		return nil, fmt.Errorf("scanning automation records: %w", err)
 	}
 
-	// ENH-089: load active tasks once and build a TC-id → in-flight set so
+	// ENH-089: load active tasks once and build a TC-id -> in-flight set so
 	// the per-TC loop is O(1) per check rather than O(tasks).
 	tasks, err := scanTasks(projectRoot)
 	if err != nil {
@@ -174,7 +243,7 @@ func PipelineFolderSummary(projectRoot string, defaultFramework string) ([]Folde
 			// a matching record for that framework (ENH-075).
 			if defaultFramework != "" && ar.Framework != defaultFramework {
 				// BUG-043: this TC has records under other frameworks but not the
-				// requested one — count as framework mismatch so --json consumers
+				// requested one -- count as framework mismatch so --json consumers
 				// can distinguish from "not automated at all".
 				acc.frameworkMismatch++
 				continue
@@ -187,7 +256,7 @@ func PipelineFolderSummary(projectRoot string, defaultFramework string) ([]Folde
 			if result != "" && result != "none" {
 				acc.executed++
 			}
-			// ENH-089/094: outcome breakdown — drives ✓ / ○ / ● / ✗ / ⊘ in EXECUTE column.
+			// ENH-089/094: outcome breakdown -- drives the EXECUTE column icons.
 			switch result {
 			case "pass":
 				acc.passing++
@@ -244,7 +313,7 @@ func deriveFolderName(tcDir, sourceFile string) string {
 }
 
 // PipelineDetail returns detailed pipeline information for a single test case.
-// It always performs an unscoped (global) scan — Convention 4: ID-based lookups are global.
+// It always performs an unscoped (global) scan -- Convention 4: ID-based lookups are global.
 // defaultFramework selects which wiring record to display when a TC has multiple.
 // strictFramework (ENH-082) honours an explicit --framework flag: when true and
 // defaultFramework is non-empty, a TC without a matching wiring record yields
@@ -252,19 +321,28 @@ func deriveFolderName(tcDir, sourceFile string) string {
 // instead of pretending another framework's record applies.
 //
 // CON-023 / ENH-146: detail builds its per-TC view through the same
-// wiring-aware path as PipelineStatus (buildPipelineEntry → frameworks[]) so
+// wiring-aware path as PipelineStatus (buildPipelineEntry -> frameworks[]) so
 // the --json shape is the per-TC ENH-146 contract with the selected
 // framework's overlay fields surfaced inside frameworks[].
 func PipelineDetail(projectRoot, testCaseID, defaultFramework string, strictFramework bool) (*PipelineDetailEntry, error) {
+	snap, err := testcase.NewSnapshot(projectRoot)
+	if err != nil {
+		return nil, err
+	}
+	return PipelineDetailWithSnapshot(snap, projectRoot, testCaseID, defaultFramework, strictFramework)
+}
+
+// PipelineDetailWithSnapshot is PipelineDetail against a snapshot the caller already
+// built. ENH-205: a folder-qualified `status <folder>/<tc-id>` runs its scoped-owner
+// check and this detail read against ONE snapshot, so the qualified operation
+// performs exactly one project-wide enumeration (ADR-024 5b "Qualified targets
+// resolve once, too").
+func PipelineDetailWithSnapshot(snap *testcase.Snapshot, projectRoot, testCaseID, defaultFramework string, strictFramework bool) (*PipelineDetailEntry, error) {
 	// ADR-024: direct single-TC read is in the first-half scope. It must refuse an
 	// Ambiguous id (naming its owners) and surface an Unprovable candidate with its
 	// repair, rather than presenting the first scan candidate as fact -- so a user
 	// refused a delete can ask `status <id>` why and get the same answer. Bulk
 	// read/list keeps its degraded policy (ENH-205).
-	snap, err := testcase.NewSnapshot(projectRoot)
-	if err != nil {
-		return nil, err
-	}
 	owner, err := snap.RequireOwner(testCaseID)
 	if err != nil {
 		if errors.Is(err, testcase.ErrOwnerNotFound) {
@@ -273,15 +351,11 @@ func PipelineDetail(projectRoot, testCaseID, defaultFramework string, strictFram
 		return nil, err
 	}
 
-	// ADR-024 s5: read the OWNER's spec directly. The previous
-	// scanTestCases(projectRoot, nil) walked the whole cases tree a SECOND time
-	// purely to find the file the resolution above had already located, then picked
-	// the first row whose id matched -- an independent identity decision sitting
-	// downstream of the authoritative one. With the owner in hand there is nothing
-	// to search for.
-	tc, err := parseTestCaseFile(owner.SpecAbs())
-	if err != nil {
-		return nil, fmt.Errorf("reading test case '%s' at %s: %w", testCaseID, owner.SpecRel(), err)
+	// ADR-024 s5: consume the normalized fields from the same snapshot read that
+	// proved this owner. Reopening the spec here would create a second schema view.
+	tc, badField := testCaseFromNormalized(owner.Metadata(), owner.DecodeFailure())
+	if badField != "" {
+		return nil, fmt.Errorf("reading test case '%s' at %s: field '%s' has the wrong type", testCaseID, owner.SpecRel(), badField)
 	}
 	tc.SourceFile = owner.SpecAbs()
 
@@ -366,124 +440,19 @@ func PipelineDetail(projectRoot, testCaseID, defaultFramework string, strictFram
 	return detail, nil
 }
 
-// scanTestCases reads test case markdown files.
-// When scope is nil, it recursively scans all of gtms/test/cases/ (backward compatible).
-// When scope is non-nil and Recursive is true, it uses filepath.Walk from scope.ScanDir.
-// When scope is non-nil and Recursive is false, it uses os.ReadDir for shallow scanning.
-func scanTestCases(projectRoot string, scope *ScopeInfo) ([]testCaseFrontmatter, error) {
-	if scope == nil {
-		// Backward compatible: scan all test cases recursively
-		return scanTestCasesAll(projectRoot)
-	}
-
-	if scope.Recursive {
-		return scanTestCasesRecursive(scope.ScanDir)
-	}
-
-	return scanTestCasesShallow(scope.ScanDir)
-}
-
-// scanTestCasesAll recursively scans all test case files under gtms/test/cases/.
-func scanTestCasesAll(projectRoot string) ([]testCaseFrontmatter, error) {
-	tcDir := layout.TestCasesDir(projectRoot)
-	return scanTestCasesRecursive(tcDir)
-}
-
-// scanTestCasesRecursive uses filepath.Walk to scan a directory and all subdirectories.
-func scanTestCasesRecursive(scanDir string) ([]testCaseFrontmatter, error) {
-	if _, err := os.Stat(scanDir); os.IsNotExist(err) {
-		return nil, nil // directory doesn't exist is fine
-	}
-
-	var results []testCaseFrontmatter
-
-	err := filepath.Walk(scanDir, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return nil // skip unreadable entries
-		}
-		if info.IsDir() || !strings.HasSuffix(info.Name(), ".md") {
-			return nil
-		}
-
-		tc, err := parseTestCaseFile(path)
-		if err != nil {
-			// Skip malformed files with a warning to stderr
-			fmt.Fprintf(os.Stderr, "warning: skipping %s: %v\n", path, err)
-			return nil
-		}
-		if tc.ID != "" {
-			tc.SourceFile = path
-			results = append(results, *tc)
-		}
-		return nil
-	})
-
-	return results, err
-}
-
-// scanTestCasesShallow reads only the .md files directly in the given directory,
-// without descending into subdirectories.
-func scanTestCasesShallow(scanDir string) ([]testCaseFrontmatter, error) {
-	if _, err := os.Stat(scanDir); os.IsNotExist(err) {
-		return nil, nil // directory doesn't exist is fine
-	}
-
-	entries, err := os.ReadDir(scanDir)
-	if err != nil {
-		return nil, err
-	}
-
-	var results []testCaseFrontmatter
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".md") {
-			continue
-		}
-
-		path := filepath.Join(scanDir, entry.Name())
-		tc, err := parseTestCaseFile(path)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "warning: skipping %s: %v\n", path, err)
-			continue
-		}
-		if tc.ID != "" {
-			tc.SourceFile = path
-			results = append(results, *tc)
-		}
-	}
-
-	return results, nil
-}
-
-// parseTestCaseFile reads and parses frontmatter from a test case file.
-func parseTestCaseFile(path string) (*testCaseFrontmatter, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-
-	var tc testCaseFrontmatter
-	_, err = frontmatter.Parse(f, &tc)
-	if err != nil {
-		return nil, fmt.Errorf("parsing frontmatter: %w", err)
-	}
-	tc.ID = strings.ToLower(tc.ID)
-	return &tc, nil
-}
-
 // scanAutomationRecords reads the canonical automation identity from
 // tracked wiring records (CON-023 / ENH-145) and overlays the latest
 // matching terminal result contract from .gtms/results/. Manual-only
 // TCs (no wiring) surface as framework="manual" rows sourced from
 // gtms/manual/records/.
 //
-// The returned shape is automationFrontmatter — a transitional carrier
+// The returned shape is automationFrontmatter -- a transitional carrier
 // kept while internal/reader/gaps.go and internal/reader/map.go are
 // refactored onto the new picker. No production read path touches the
 // legacy gtms/automation/records/*.automation.md directory.
 //
 // Synthesised fields:
-//   - Status = "developed"   (wiring has no lifecycle — synthetic stamp)
+//   - Status = "developed"   (wiring has no lifecycle -- synthetic stamp)
 //   - Cycle  = 0             (cycle is retired)
 func scanAutomationRecords(projectRoot string) (map[string][]automationFrontmatter, error) {
 	recs, err := wiringScan(projectRoot)
@@ -570,7 +539,7 @@ var wiringScanFn = defaultWiringScan
 // own framework gating).
 //
 // TODO(CON-023 / ENH-146): selectAutomationRecord is the picker for the
-// transitional automationFrontmatter carrier — it still consults the
+// transitional automationFrontmatter carrier -- it still consults the
 // retired Cycle field on step 5. Its only remaining caller is
 // PipelineFolderSummary; PipelineStatus, PipelineDetail, Map, and Triage
 // route through pickWiring (internal/reader/picker.go) instead. Retire
@@ -706,7 +675,7 @@ func parseTaskFile(path string) (*taskFrontmatter, error) {
 // exists with an empty Result (prime ran, execute hasn't), or "recorded"
 // if a manual record exists with a non-empty Result (post-execute coverage).
 //
-// ENH-134: this is additive — it does not alter the NoAutomation classification
+// ENH-134: this is additive -- it does not alter the NoAutomation classification
 // (hasNonManualRecord semantics unchanged). A TC in NoAutomation can carry
 // ManualCoverage = "prepared" or "recorded" to disambiguate from no-coverage.
 func deriveManualCoverage(records []automationFrontmatter) string {
@@ -731,7 +700,7 @@ type manualDriftDiagnostics struct {
 // manualResultDriftFields mirrors the three drift diagnostic fields in the
 // manual result YAML. The field names use the exact casing written by the
 // manual-execute adapter script (kebab-case for the first two, snake_case for
-// the third — matching driftFieldRe in internal/cli/prime.go:342).
+// the third -- matching driftFieldRe in internal/cli/prime.go:342).
 type manualResultDriftFields struct {
 	DriftDetected         bool   `yaml:"drift-detected"`
 	DriftDetectedAt       string `yaml:"drift-detected-at"`
@@ -791,8 +760,8 @@ func deriveCreateStatus(tc testCaseFrontmatter) string {
 // CON-023 / ENH-145: wiring records carry no lifecycle. scanAutomationRecords
 // synthesises Status = "developed" on every wiring-backed row to keep the
 // legacy carrier alive for downstream consumers. Under the new contract
-// "developed" and "accepted" both mean "wiring exists for this TC × framework"
-// — i.e. complete — so the two values collapse here.
+// "developed" and "accepted" both mean "wiring exists for this TC x framework"
+// -- i.e. complete -- so the two values collapse here.
 func deriveAutomateStatus(ar automationFrontmatter) string {
 	if ar.Framework == "manual" {
 		return "manual"
@@ -872,7 +841,7 @@ func applyTaskStatus(entry *PipelineEntry, tasks []taskFrontmatter) {
 	// infrastructure artefact (e.g. adapter cancelled) and must not override
 	// the authoritative record. The allow-list is strict: only pass/skipped
 	// records supersede. If the record's own result is fail or error, the
-	// error task is consistent with the record and the override proceeds —
+	// error task is consistent with the record and the override proceeds --
 	// otherwise the detail-view label renders "Fail"/"Error" instead of the
 	// "Error" that formatExecuteLabel emits when ExecuteStatus=="error".
 	if newestErrorCreated != "" && newestErrorCreated > newestCompleteCreated {
@@ -890,15 +859,17 @@ func applyTaskStatus(entry *PipelineEntry, tasks []taskFrontmatter) {
 // or if the spec cannot be resolved/hashed (graceful degradation).
 //
 // ENH-117: mirrors isStaleArtefact but compares the spec hash, not the artefact hash.
-func isStaleTestCaseHash(projectRoot string, ar automationFrontmatter) bool {
+// isStaleTestCaseHashForSpec compares ar.TestCaseHash against the current content of
+// the proven spec at specAbs (absolute). It performs no identity resolution. Empty
+// stored hash or an unreadable spec is not stale (graceful degradation, unchanged).
+func isStaleTestCaseHashForSpec(specAbs string, ar automationFrontmatter) bool {
 	if ar.TestCaseHash == "" {
 		return false
 	}
-	specPath, err := pipeline.ResolveTestCaseSpec(projectRoot, ar.TestCase)
-	if err != nil {
-		return false // spec missing — surfaces in gaps as a different issue
+	if specAbs == "" {
+		return false
 	}
-	currentHash, err := pipeline.HashFile(pipeline.AbsArtefactPath(projectRoot, specPath))
+	currentHash, err := pipeline.HashFile(specAbs)
 	if err != nil {
 		return false
 	}
@@ -907,13 +878,13 @@ func isStaleTestCaseHash(projectRoot string, ar automationFrontmatter) bool {
 
 // isStaleArtefact checks if the wiring-bound artefact has been modified
 // since wiring was written. CON-023 / ENH-145: read artefact directly
-// from ar.Artefact (the wiring path) — the legacy ResolveArtefact glob
+// from ar.Artefact (the wiring path) -- the legacy ResolveArtefact glob
 // fallback is retired.
 func isStaleArtefact(projectRoot string, ar automationFrontmatter) bool {
 	if ar.ArtefactHash == "" || ar.Artefact == "" {
 		return false
 	}
-	// ENH-151: pending artefact-hash is never stale — pre-bootstrap drift
+	// ENH-151: pending artefact-hash is never stale -- pre-bootstrap drift
 	// is not meaningful. The sentinel means "awaiting first execute."
 	if wiring.IsPendingArtefactHash(ar.ArtefactHash) {
 		return false
@@ -926,7 +897,7 @@ func isStaleArtefact(projectRoot string, ar automationFrontmatter) bool {
 }
 
 // resolveArtefactPath returns the wiring-bound artefact path verbatim.
-// CON-023 / ENH-145 retires the legacy glob fallback — wiring's
+// CON-023 / ENH-145 retires the legacy glob fallback -- wiring's
 // artefact field is authoritative.
 func resolveArtefactPath(ar automationFrontmatter) string {
 	return ar.Artefact

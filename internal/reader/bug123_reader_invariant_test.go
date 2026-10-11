@@ -33,6 +33,9 @@ func TestBUG123_ManualReaderInvariant_DefaultFrameworkManual(t *testing.T) {
 
 	// Manual-only project: TCs with manual result records (no wiring records).
 	writeFile(t, root, filepath.Join("gtms/test/cases", "demo", "tc-aaa1111-pass.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-aaa1111
 title: Manual Pass
 requirement: REQ-A
@@ -41,6 +44,9 @@ requirement: REQ-A
 	seedLegacyRecord(t, root, legacyRecord{TC: "tc-aaa1111", Framework: "manual", Result: "pass"})
 
 	writeFile(t, root, filepath.Join("gtms/test/cases", "demo", "tc-bbb2222-fail.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-bbb2222
 title: Manual Fail
 requirement: REQ-A
@@ -50,6 +56,9 @@ requirement: REQ-A
 
 	// A TC with no records at all (mixed reality the reader must handle).
 	writeFile(t, root, filepath.Join("gtms/test/cases", "demo", "tc-ccc3333-none.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-ccc3333
 title: No Records
 requirement: REQ-A

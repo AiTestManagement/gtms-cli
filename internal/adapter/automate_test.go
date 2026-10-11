@@ -51,6 +51,9 @@ func setupAutomateTestProject(t *testing.T) (string, *config.Config) {
 
 	// Create a test case file
 	testCaseContent := `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-auto
 title: Automate Test Case
 ---
@@ -246,7 +249,7 @@ func TestAutomate_ContextFile_Tier2Env(t *testing.T) {
 	// Create test case file
 	require.NoError(t, os.WriteFile(
 		filepath.Join(root, "gtms/test/cases", "tc-auto-test.md"),
-		[]byte("---\ntest_case_id: tc-auto\ntitle: Test\n---\n"), 0644,
+		[]byte("---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: tc-auto\ntitle: Test\n---\n"), 0644,
 	))
 
 	// Create context file
@@ -403,7 +406,7 @@ func TestWriteAutomateWiring_FallbackDiagnostic_NamesCompetingAdapters(t *testin
 	require.NoError(t, os.MkdirAll(filepath.Join(root, "gtms/test/cases"), 0755))
 	require.NoError(t, os.WriteFile(
 		filepath.Join(root, "gtms/test/cases", "tc-fb01-spec.md"),
-		[]byte("---\ntest_case_id: tc-fb01\n---\nbody\n"), 0644))
+		[]byte("---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: tc-fb01\n---\nbody\n"), 0644))
 
 	// Seed a produced artefact so artefact-hash can be computed.
 	require.NoError(t, os.MkdirAll(filepath.Join(root, "test/acceptance"), 0755))
@@ -461,7 +464,7 @@ func TestWriteAutomateWiring_DefaultSelectsAdapter_NoWarning(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Join(root, "gtms/test/cases"), 0755))
 	require.NoError(t, os.WriteFile(
 		filepath.Join(root, "gtms/test/cases", "tc-fb02-spec.md"),
-		[]byte("---\ntest_case_id: tc-fb02\n---\nbody\n"), 0644))
+		[]byte("---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: tc-fb02\n---\nbody\n"), 0644))
 	require.NoError(t, os.MkdirAll(filepath.Join(root, "test/acceptance"), 0755))
 	require.NoError(t, os.WriteFile(
 		filepath.Join(root, "test/acceptance/tc-fb02.bats"),
@@ -521,7 +524,7 @@ func TestWriteAutomateWiring_RejectsRelativeTraversalOutsideRoot(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Join(root, "gtms/test/cases"), 0755))
 	require.NoError(t, os.WriteFile(
 		filepath.Join(root, "gtms/test/cases", "tc-ps01-spec.md"),
-		[]byte("---\ntest_case_id: tc-ps01\n---\nbody\n"), 0644))
+		[]byte("---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: tc-ps01\n---\nbody\n"), 0644))
 
 	// File outside root that `..` would land on.
 	parent := filepath.Dir(root)
@@ -556,7 +559,7 @@ func TestWriteAutomateWiring_RejectsAbsoluteOutsideRoot(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Join(root, "gtms/test/cases"), 0755))
 	require.NoError(t, os.WriteFile(
 		filepath.Join(root, "gtms/test/cases", "tc-ps02-spec.md"),
-		[]byte("---\ntest_case_id: tc-ps02\n---\nbody\n"), 0644))
+		[]byte("---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: tc-ps02\n---\nbody\n"), 0644))
 
 	outside := t.TempDir()
 	outsidePath := filepath.Join(outside, "outside-target.txt")
@@ -590,7 +593,7 @@ func TestWriteAutomateWiring_AbsoluteInsideRootNormalisesToRelative(t *testing.T
 	require.NoError(t, os.MkdirAll(filepath.Join(root, "gtms/test/cases"), 0755))
 	require.NoError(t, os.WriteFile(
 		filepath.Join(root, "gtms/test/cases", "tc-ps03-spec.md"),
-		[]byte("---\ntest_case_id: tc-ps03\n---\nbody\n"), 0644))
+		[]byte("---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: tc-ps03\n---\nbody\n"), 0644))
 
 	require.NoError(t, os.MkdirAll(filepath.Join(root, "test/acceptance"), 0755))
 	absArtefact := filepath.Join(root, "test", "acceptance", "tc-ps03.bats")

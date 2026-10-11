@@ -161,7 +161,7 @@ func writeOwnedSpec(t *testing.T, root, relPath, bodyID string) *testcase.Owner 
 	t.Helper()
 	abs := filepath.Join(root, filepath.FromSlash(relPath))
 	require.NoError(t, os.MkdirAll(filepath.Dir(abs), 0o755))
-	body := "---\ntest_case_id: " + bodyID + "\ntitle: Ownership fixture\npriority: Medium\ntype: Functional\n---\n\n## Test Objective\n\nOwnership fixture spec.\n"
+	body := "---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: " + bodyID + "\ntitle: Ownership fixture\npriority: Medium\n---\n\n## Test Objective\n\nOwnership fixture spec.\n"
 	require.NoError(t, os.WriteFile(abs, []byte(body), 0o644))
 	owner, err := testcase.ResolveOwner(root, bodyID)
 	require.NoError(t, err, "resolving the owner just written")

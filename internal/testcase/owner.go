@@ -40,9 +40,11 @@ var ErrOwnerNotFound = errors.New("test case owner not found")
 // Owner is one proven, uniquely-owned test case: its id, the spec that owns it,
 // and where that spec physically lives.
 type Owner struct {
-	id           string
-	logicalRel   string
-	canonicalAbs string
+	id            string
+	logicalRel    string
+	canonicalAbs  string
+	metadata      Metadata
+	decodeFailure *SchemaFailure
 }
 
 // ID returns the bare, grammar-valid TC id this Owner proves.
@@ -58,15 +60,39 @@ func (o *Owner) SpecRel() string { return o.logicalRel }
 // hashing or reading through it cannot be redirected out of the project.
 func (o *Owner) SpecAbs() string { return o.canonicalAbs }
 
+// Metadata returns the normalized testcase fields from the snapshot read that
+// proved this owner. Mutable slices and maps are copied before they leave Owner.
+func (o *Owner) Metadata() Metadata { return cloneMetadata(o.metadata) }
+
+// DecodeFailure returns normalized decode evidence retained by the snapshot.
+func (o *Owner) DecodeFailure() *SchemaFailure { return cloneSchemaFailure(o.decodeFailure) }
+
 // ownerFrom builds an Owner from a UniqueOwner resolution. It is deliberately
 // unexported: every Owner in the process originates here, from a resolution that
 // actually proved ownership.
 func ownerFrom(res Resolution) *Owner {
 	return &Owner{
-		id:           res.ID,
-		logicalRel:   res.OwnerLogicalRel,
-		canonicalAbs: res.OwnerCanonicalAbs,
+		id:            res.ID,
+		logicalRel:    res.OwnerLogicalRel,
+		canonicalAbs:  res.OwnerCanonicalAbs,
+		metadata:      cloneMetadata(res.OwnerMetadata),
+		decodeFailure: cloneSchemaFailure(res.OwnerDecodeFailure),
 	}
+}
+
+func cloneSchemaFailure(failure *SchemaFailure) *SchemaFailure {
+	if failure == nil {
+		return nil
+	}
+	cloned := *failure
+	cloned.RetainedFields = append([]RetainedFieldFailure(nil), failure.RetainedFields...)
+	return &cloned
+}
+
+func cloneMetadata(metadata Metadata) Metadata {
+	cloned := metadata
+	cloned.Tags = append([]string(nil), metadata.Tags...)
+	return cloned
 }
 
 // RequireOwner resolves id to its proven unique owner from THIS snapshot.

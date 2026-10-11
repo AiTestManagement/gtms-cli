@@ -44,7 +44,7 @@ func TestLinkRefresh_MultipleAmbiguousIDs_ReportedOnceEachInSortedOrder(t *testi
 	specDir := filepath.Join(root, "gtms/test/cases", folder)
 	writeDup := func(id, slug string) {
 		require.NoError(t, os.WriteFile(filepath.Join(specDir, "tc-"+id[3:]+"-"+slug+".md"),
-			[]byte("---\ntest_case_id: "+id+"\ntitle: "+slug+"\n---\n"), 0o644))
+			[]byte("---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: "+id+"\ntitle: "+slug+"\n---\n"), 0o644))
 	}
 	// tc-mmmmmmmm claimed twice; tc-zzzzzzzz claimed THREE times. Written in an
 	// order that is not the sorted order, so a walk-order-dependent report would

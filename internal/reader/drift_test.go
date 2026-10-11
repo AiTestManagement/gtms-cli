@@ -7,9 +7,25 @@ import (
 	"testing"
 
 	"github.com/aitestmanagement/gtms-cli/internal/pipeline"
+	"github.com/aitestmanagement/gtms-cli/internal/testcase"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// testSpecAbs resolves the absolute path of a test case's proven owner via the
+// snapshot, or "" when the spec does not exist. ENH-205 replaced the legacy
+// isStaleTestCaseHash resolver with isStaleTestCaseHashForSpec, which takes the
+// proven owner path the caller resolves from the snapshot.
+func testSpecAbs(t *testing.T, root, tcID string) string {
+	t.Helper()
+	snap, err := testcase.NewSnapshot(root)
+	require.NoError(t, err)
+	owner, oerr := snap.RequireOwner(tcID)
+	if oerr != nil {
+		return ""
+	}
+	return owner.SpecAbs()
+}
 
 // --- readManualDriftDiagnostics unit tests ---
 
@@ -289,7 +305,7 @@ func TestIsStaleTestCaseHash_MatchingHash(t *testing.T) {
 		TestCaseHash: hash,
 	}
 
-	assert.False(t, isStaleTestCaseHash(root, ar), "hash matches — should not be stale")
+	assert.False(t, isStaleTestCaseHashForSpec(tcFile, ar), "hash matches — should not be stale")
 }
 
 func TestIsStaleTestCaseHash_DifferentHash(t *testing.T) {
@@ -305,7 +321,7 @@ func TestIsStaleTestCaseHash_DifferentHash(t *testing.T) {
 		TestCaseHash: "0000000000000000", // definitely wrong
 	}
 
-	assert.True(t, isStaleTestCaseHash(root, ar), "hash differs — should be stale")
+	assert.True(t, isStaleTestCaseHashForSpec(testSpecAbs(t, root, tcID), ar), "hash differs — should be stale")
 }
 
 func TestIsStaleTestCaseHash_EmptyHash_Legacy(t *testing.T) {
@@ -321,7 +337,7 @@ func TestIsStaleTestCaseHash_EmptyHash_Legacy(t *testing.T) {
 		TestCaseHash: "", // legacy record — no hash stored
 	}
 
-	assert.False(t, isStaleTestCaseHash(root, ar), "empty hash (legacy) — should not be stale")
+	assert.False(t, isStaleTestCaseHashForSpec(testSpecAbs(t, root, tcID), ar), "empty hash (legacy) — should not be stale")
 }
 
 func TestIsStaleTestCaseHash_MissingSpec(t *testing.T) {
@@ -335,7 +351,7 @@ func TestIsStaleTestCaseHash_MissingSpec(t *testing.T) {
 		TestCaseHash: "abcdef1234567890",
 	}
 
-	assert.False(t, isStaleTestCaseHash(root, ar), "missing spec — should not be stale")
+	assert.False(t, isStaleTestCaseHashForSpec(testSpecAbs(t, root, "tc-hs000004"), ar), "missing spec — should not be stale")
 }
 
 func TestPipelineStatus_StaleTestCaseHash(t *testing.T) {

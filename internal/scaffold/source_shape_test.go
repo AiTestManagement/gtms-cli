@@ -104,8 +104,9 @@ func TestSourceShape_StarterGuideMatchesDogfoodMirror(t *testing.T) {
 // appear as part of the documented contract.
 func TestSourceShape_StarterGuideDocumentsLeanContract(t *testing.T) {
 	// Required keys the documented skeleton must call out.
-	for _, key := range []string{"test_case_id:", "title:", "priority: Medium", "type: Functional", "created:"} {
-		assert.Contains(t, starterGuideContent, key,
+	lines := strings.Split(starterGuideContent, "\n")
+	for _, key := range []string{`gtms_schema: "test-case/v2"`, "type: Test Case Spec", "test_type: Functional", "test_case_id: tc-<8-char-hex-lowercase>", "priority: Medium", "created: YYYY-MM-DD"} {
+		assert.Contains(t, lines, key,
 			"starter guide must document skeleton key %q (post-BUG-099 contract)", key)
 	}
 

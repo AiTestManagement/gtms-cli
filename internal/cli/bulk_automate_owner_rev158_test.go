@@ -20,7 +20,7 @@ func seedBulkSpec(t *testing.T, root, folder, tcID, filename string) string {
 	dir := filepath.Join(root, "gtms", "test", "cases", folder)
 	require.NoError(t, os.MkdirAll(dir, 0o755))
 	abs := filepath.Join(dir, filename)
-	body := "---\ntest_case_id: " + tcID + "\ntitle: " + tcID + "\n---\n\n## Steps\n1. do\n"
+	body := "---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: " + tcID + "\ntitle: " + tcID + "\n---\n\n## Steps\n1. do\n"
 	require.NoError(t, os.WriteFile(abs, []byte(body), 0o644))
 	return abs
 }

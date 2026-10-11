@@ -26,7 +26,7 @@ func addBarDup(t *testing.T, root string) {
 	t.Helper()
 	dup := filepath.Join(root, "gtms/test/cases/bar/tc-abc12345-dup.md")
 	require.NoError(t, os.MkdirAll(filepath.Dir(dup), 0o755))
-	require.NoError(t, os.WriteFile(dup, []byte("---\ntest_case_id: tc-abc12345\ntitle: bar duplicate\n---\n"), 0o644))
+	require.NoError(t, os.WriteFile(dup, []byte("---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: tc-abc12345\ntitle: bar duplicate\n---\n"), 0o644))
 }
 
 func TestRequireScopedSpec_CrossFolderDuplicate_Ambiguous(t *testing.T) {
@@ -60,7 +60,7 @@ func TestRequireScopedSpec_AmbiguityError_SanitizesPaths(t *testing.T) {
 	weird := filepath.Join(root, "gtms/test/cases", "e\x1bvil")
 	require.NoError(t, os.MkdirAll(weird, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(weird, "tc-abc12345-dup.md"),
-		[]byte("---\ntest_case_id: tc-abc12345\n---\n"), 0o644))
+		[]byte("---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: tc-abc12345\n---\n"), 0o644))
 
 	err := requireScopedSpec(root, target.Result{Kind: target.KindTCID, Target: "foo/tc-abc12345", TCID: "tc-abc12345"})
 	require.Error(t, err)
@@ -79,9 +79,9 @@ func TestRequireScopedSpec_AmbiguityError_SanitizesPaths(t *testing.T) {
 func TestSanitizeControlChars(t *testing.T) {
 	cases := []struct{ in, want string }{
 		{"gtms/test/cases/foo/tc-abc12345.md", "gtms/test/cases/foo/tc-abc12345.md"}, // clean path untouched
-		{"e\x1bvil", "e?vil"},         // ANSI ESC (0x1b)
+		{"e\x1bvil", "e?vil"},           // ANSI ESC (0x1b)
 		{"a\x00b\x1fc\x7fd", "a?b?c?d"}, // NUL, US, DEL
-		{"tab\there", "tab?here"},     // C0 control (tab, 0x09)
+		{"tab\there", "tab?here"},       // C0 control (tab, 0x09)
 	}
 	for _, c := range cases {
 		assert.Equalf(t, c.want, pathsafe.SanitizeControlChars(c.in), "SanitizeControlChars(%q)", c.in)
@@ -171,7 +171,7 @@ func TestDelete_ScanError_FailsClosed_NoDeletion(t *testing.T) {
 	secret := filepath.Join(root, "gtms/test/cases/secret")
 	require.NoError(t, os.MkdirAll(secret, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(secret, "tc-abc12345-hidden.md"),
-		[]byte("---\ntest_case_id: tc-abc12345\n---\n"), 0o644))
+		[]byte("---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: tc-abc12345\n---\n"), 0o644))
 	require.NoError(t, os.Chmod(secret, 0o000))
 	t.Cleanup(func() { _ = os.Chmod(secret, 0o755) })
 

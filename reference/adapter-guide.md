@@ -95,7 +95,7 @@ gtms/test/cases/login/tc-e8d9c0b-invalid-password.md
 gtms/tasks/complete/task-f3a91b7-create-login.md
 ```
 
-Each test case is a markdown file with YAML frontmatter (`id`, `title`, `requirement`, `status`) and structured steps.
+Each test case is a markdown file with YAML frontmatter and structured steps. The frontmatter opens with the `test-case/v2` header (`gtms_schema: "test-case/v2"`, `type: Test Case Spec`, and `test_type`, the test category), followed by `test_case_id`, `title`, `requirement`, `priority`, and `created`. The full format is in [USER-GUIDE.md -- GTMS test case OKF profile](../USER-GUIDE.md#gtms-test-case-okf-profile).
 
 ### Step 2: Automate a test case
 
@@ -1007,7 +1007,7 @@ These variables are exported to Tier 2 scripts:
 | `GTMS_TC_TITLE` | TC frontmatter `title:` snapshot, copied at prime time for self-contained review. | Short | prime (manual-prime adapter) |
 | `GTMS_TC_REQUIREMENT` | TC frontmatter `requirement:` snapshot, copied at prime time. | Short | prime (manual-prime adapter) |
 | `GTMS_TC_PRIORITY` | TC frontmatter `priority:` snapshot, copied at prime time. | Short | prime (manual-prime adapter) |
-| `GTMS_TC_TYPE` | TC frontmatter `type:` snapshot, copied at prime time. | Short | prime (manual-prime adapter) |
+| `GTMS_TEST_TYPE` | TC frontmatter `test_type:` snapshot, copied at prime time. | Short | prime (manual-prime adapter) |
 | `GTMS_RESULT_FRAMEWORK` | Pre-parsed `framework:` field from the manual result YAML (always `manual` for the shipped adapter; reserved for future framework-tagged manual records). | Short | execute (manual-execute adapter only) |
 | `GTMS_TESTCASE_HASH` | 16-hex (truncated SHA-256) of the test case spec content, computed by GTMS at prime time and stamped into the manual result template. Distinct from `GTMS_RESULT_TESTCASE_HASH` (which is the value parsed back out of the filled manual result file). | Short | prime (manual-prime adapter) |
 | `GTMS_TEMPLATE_FILE` | Path to the role-specific template GTMS hands the adapter: a testcase template under `gtms/test/templates/` for create, a result template for prime. The shipped scripts read it and fall back to a built-in heredoc when unset. | Short | create, prime |
@@ -1355,7 +1355,7 @@ Migrating ~35 BATS fixtures off the legacy `--result` setup-shortcut surfaced a 
 
 ### Lessons: TC frontmatter snapshot at prime time
 
-Four `GTMS_TC_*` env vars (`TITLE`, `REQUIREMENT`, `PRIORITY`, `TYPE`) are sourced from the TC frontmatter and stamped into the manual result file at prime time. The work surfaced two patterns worth promoting for any future adapter that copies free-form metadata onto user-edited disk artefacts.
+The `GTMS_TC_TITLE`, `GTMS_TC_REQUIREMENT`, `GTMS_TC_PRIORITY`, and `GTMS_TEST_TYPE` env vars are sourced from normalized TC frontmatter and stamped into the manual result file at prime time. The work surfaced two patterns worth promoting for any future adapter that copies free-form metadata onto user-edited disk artefacts.
 
 - **`AdapterContext` + Tier 2 env-var allowlist must be kept in sync.** Adding a field to `internal/adapter/types.go` `AdapterContext` is necessary but **not sufficient** — `internal/adapter/tier2.go` has an explicit `env = append(env, ...)` allowlist that controls which fields actually reach the Tier 2 script (`minimalEnv()` strips everything else; see the [security note](#tier-2-environment-isolation)). Forget the matching `env = append` line and the value silently arrives as the empty string at the script. **Rule:** every new `AdapterContext` field intended for Tier 2 consumption needs a paired `env = append(env, "GTMS_FIELD=" + ctx.Field)` line in the same commit. The two cases must be tested together (a Go unit test that builds the context AND a BATS test that asserts the env var reaches the script).
 
@@ -1760,8 +1760,9 @@ printf '<gtms-file name="result.txt">\nok\n</gtms-file>\n'
 
 ### Create Validation Contract
 
-After a `create` adapter returns cleanly (exit 0), GTMS inspects every `.md` file in the output directory whose filename matches `tc-{8hex}-*.md` and enforces five invariants:
+After a `create` adapter returns cleanly (exit 0), GTMS inspects every `.md` file in the output directory whose filename matches `tc-{8hex}-*.md` and enforces six invariants:
 
+0. The file is a valid `test-case/v2` document: a frontmatter block that parses, `gtms_schema: "test-case/v2"`, `type: Test Case Spec`, a non-empty `test_type`, no key written twice, and every retained field of its declared kind. The exact rules and every reason string are in [USER-GUIDE.md -- GTMS test case OKF profile](../USER-GUIDE.md#gtms-test-case-okf-profile). An adapter that writes the old unversioned header, or a hybrid with the category still in `type`, fails here.
 1. The frontmatter contains a non-empty `test_case_id` field.
 2. `test_case_id` matches the format `^tc-[0-9a-f]{8}$`.
 3. `test_case_id` equals the filename ID portion (the `tc-XXXXXXXX` prefix).
@@ -1781,7 +1782,7 @@ Files that don't match the `tc-{8hex}-*.md` naming pattern (e.g. `notes.txt`, `c
 
 **Why this matters.** GTMS pre-generates the IDs and hands them to the adapter. This validator is how GTMS proves the adapter used them. Without it an adapter that invents an ID, reuses one, or writes a filename disagreeing with the frontmatter it just emitted produces a test case the operator never asked for, with no signal until something downstream behaves oddly.
 
-Note what the contract is NOT. It is not a downstream join key. Every command that ACTS ON a specific existing test case -- `automate`, `prime`, `execute`, `triage --value` -- resolves it through the frontmatter `test_case_id`, so a spec whose filename later diverges from its body ID is a valid, working test case (ADR-024). The bulk listing views are the exception and still discover specs BY FILENAME: `gtms status <folder>`, `gtms gaps`, and `gtms map` (see ENH-205, which owns migrating them). This validator is a contract with the adapter about a file being born, not a rule about files already on disk.
+Note what the contract is NOT. It is not a downstream join key. Every command that ACTS ON a specific existing test case -- `automate`, `prime`, `execute`, `triage --value` -- resolves it through the frontmatter `test_case_id`, so a spec whose filename later diverges from its body ID is a valid, working test case (ADR-024). The folder and project views (`gtms status`, `gtms gaps`, `gtms map`, and `gtms triage --list`) find specs the same way: they list every spec they can read, leave out a duplicated or unprovable ID, name it on stderr, and exit 1. This validator is a contract with the adapter about a file being born, not a rule about files already on disk.
 
 ### Spec-Authored Command Hallucinations (beyond ID integrity)
 
@@ -1812,7 +1813,8 @@ These are all **spec-quality** defects, not ID-integrity defects. They slip thro
 - Adapter invents a fresh ID instead of using the pre-generated batch. Violates #4.
 - Adapter uses the same batch ID for two files. Violates #5.
 - Adapter writes a filename like `tc-AAAAAAAA-slug.md` with `test_case_id: tc-bbbbbbbb` in the frontmatter. Violates #3.
-- Adapter emits a spec whose frontmatter YAML is missing `test_case_id` entirely, or whose frontmatter cannot be parsed at all. These DEGRADE rather than violate (BUG-106): the file is recorded as degraded, listed by filename only, and the create task still succeeds. Only a PARSED-but-invalid `test_case_id`, or a malformed filename shape, is a hard violation.
+- Adapter emits a spec whose frontmatter YAML is missing `test_case_id` entirely, or whose frontmatter cannot be parsed at all. Violates #0 or #1 (`could not parse frontmatter: ...` or `frontmatter is missing required field 'test_case_id'`). These used to degrade to a filename-only listing; under the v2 format they fail the task like any other violation.
+- Adapter writes the old header (`type: Functional`, no `gtms_schema`) -- usually a prompt template or guide written for an earlier GTMS version. Violates #0 (`missing schema discriminator: key 'gtms_schema' is absent`). Update the template or guide to the v2 header.
 
 Whatever the trigger — prompt drift, context compaction, model quirk — the validator treats all of them the same way: fail the task, name the file, leave the evidence.
 
@@ -1842,7 +1844,7 @@ Two things this is NOT, both of which the previous contract asserted and neither
 
 The decision is **not tier-gated** -- identical for Tier 0, 1, and 2 adapters. On a refusal the command exits non-zero with a `✗` error naming the file and reason. No adapter is invoked, no task file is created.
 
-`gtms triage --value` runs the same guard, and is easy to miss because it lives in a reader package. It is a MUTATING consumer by effect: it writes a record attributed to an identity and hashes that identity's spec, so it refuses an ambiguous or unprovable id before hashing and before writing anything (`ClassifyTriage`, `internal/reader/triage.go`). `--resolve`, `--show`, and `--list` do not resolve ownership this way -- they select an existing record by path.
+`gtms triage --value` runs the same guard, and is easy to miss because it lives in a reader package. It is a MUTATING consumer by effect: it writes a record attributed to an identity and hashes that identity's spec, so it refuses an ambiguous or unprovable id before hashing and before writing anything (`ClassifyTriage`, `internal/reader/triage.go`). `--resolve` and `--show` do not resolve ownership this way -- they select an existing record by path. `--list` does: a root, folder, or `-r` list reports a duplicated or unprovable spec ID on stderr and exits 1, and `--list <tc-id>` refuses such a target outright (nothing on stdout, exit 1).
 
 **Automate has a second, separate check on the OUTPUT file.** Resolving the test case says who owns the spec; it says nothing about who owns the file the artefact will land on. Before writing or deleting anything, `gtms automate` requires positive proof of artefact ownership -- a wiring record whose parsed `testcase` is the target and whose `artefact` names that file. A foreign claim, or an occupant no wiring record accounts for, refuses the run; so does a wiring record that cannot be read, since the record GTMS could not read may be the one holding the veto. This is not gated on `--force`.
 
@@ -3164,8 +3166,8 @@ The execute pipeline is keyed on the wiring record -- `gtms/automation/wiring/<t
 - In `GtmsTestHelper.psm1`, `New-GtmsTestRepo` temporarily sets `$ErrorActionPreference = 'SilentlyContinue'` around git calls. If you write custom test helpers that call git, do the same.
 - Tests pass with `Invoke-Pester -Output Detailed` (lenient) but fail with `-CI` (strict) — this is almost always a suppressed-stderr issue.
 
-**UTF-8 BOM breaks GTMS file parsing:**
-- PowerShell 5.1's `Set-Content -Encoding UTF8` writes a BOM (byte order mark: `EF BB BF`). Go's YAML/frontmatter parser cannot handle BOM — it silently fails to parse the file. GTMS then skips the file entirely (`gtms status` shows "No test cases found" even though the file exists).
+**UTF-8 BOM and GTMS file parsing:**
+- PowerShell 5.1's `Set-Content -Encoding UTF8` writes a BOM (byte order mark: `EF BB BF`). A test case spec may start with one BOM: GTMS reads it normally. A second BOM, or anything else before the opening `---`, makes the frontmatter malformed -- the spec is left out of `gtms status`, named on stderr with `repair the malformed YAML frontmatter in <file>, or remove the file`, and the command exits 1. For the other files GTMS parses, keep writing without a BOM.
 - Use `Write-GtmsFixture` (from `GtmsTestHelper.psm1`) instead of `Set-Content` for any file that GTMS will parse — test cases, automation records, task files, result contracts.
 - PowerShell 7's `Set-Content -Encoding utf8NoBOM` also works, but PS 5.1 doesn't have that option.
 

@@ -39,7 +39,7 @@ func requireScopedSpec(root string, res target.Result) error {
 	}
 
 	// One snapshot serves both checks below (ADR-024 s2). They used to build two:
-	// FindAllSpecs walked the tree, then Exists walked it again to ask a question
+	// the since-deleted FindAllSpecs walked the tree, then Exists walked it again to ask a question
 	// the same snapshot could already answer.
 	snap, err := testcase.NewSnapshot(root)
 	if err != nil {
@@ -76,7 +76,7 @@ func requireScopedSpecIn(snap *testcase.Snapshot, root string, res target.Result
 		return fmt.Errorf("test case ID '%s' is ambiguous -- it exists in %d places:\n    %s\n    Resolve the duplicate IDs (or use a form that targets a single spec) before targeting '%s'.",
 			res.TCID, len(r.Owners), strings.Join(display, "\n    "), res.Target)
 	case testcase.OutcomeUnprovable:
-		// Fail closed, matching FindAllSpecs' contract: an unprovable candidate must
+		// Fail closed (the contract the deleted FindAllSpecs had): an unprovable candidate must
 		// abort the qualified operation rather than be undercounted.
 		return testcase.OwnershipErrorFor(r)
 	}

@@ -105,7 +105,7 @@ is not deletable through the link.`,
 			if !IsBulkFolder(root, folder) {
 				msg := fmt.Sprintf("No test cases folder found at gtms/test/cases/%s/.", folder)
 				output.Errorf(msg, "Check the folder name and try again.")
-				return output.AsDisplayed(fmt.Errorf(msg))
+				return output.AsDisplayed(errors.New(msg))
 			}
 
 			scope, serr := buildScopeFromArg(root, folder, recursive)

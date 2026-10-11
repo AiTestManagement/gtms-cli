@@ -81,7 +81,7 @@ Every `gtms ...` example in this README works the same way from that folder: rea
 
 On Windows, release binaries are **not code-signed**, so SmartScreen shows *"Windows protected your PC"* with **Unknown publisher**. This is expected. Click **More info → Run anyway**, or avoid the prompt entirely with `go install` (below), which builds locally. See [SIGNING.md](SIGNING.md) for the current signing status and the future policy.
 
-**Prefer to type just `gtms` from anywhere?** Add the folder to your PATH, or install with Go (requires Go 1.21+):
+**Prefer to type just `gtms` from anywhere?** Add the folder to your PATH, or install with Go (requires Go 1.26+):
 
 ```bash
 go install github.com/aitestmanagement/gtms-cli/cmd/gtms@latest
@@ -188,7 +188,7 @@ GTMS is not, and will never be, a test automation tool. Plenty of tools chase th
 
 ## Requirements
 
-- Go 1.21+ (for building from source)
+- Go 1.26+ (for building from source)
 - Git on PATH
 - An AI coding tool (Claude, GPT, Copilot, etc.) for create/automate adapters
 

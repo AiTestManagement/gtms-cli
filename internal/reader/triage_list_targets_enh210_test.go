@@ -18,7 +18,7 @@ import (
 func writeSpecUnder(t *testing.T, root, folder, tc string) {
 	t.Helper()
 	writeFile(t, root, filepath.Join("gtms", "test", "cases", folder, tc+".md"),
-		"---\ntest_case_id: "+tc+"\ntitle: t\n---\nbody\n")
+		"---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: "+tc+"\ntitle: t\n---\nbody\n")
 }
 
 func writeMalformedTriage(t *testing.T, root, filename string) {

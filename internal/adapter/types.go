@@ -10,6 +10,7 @@ type AdapterContext struct {
 	// manual-prime and manual-execute helpers read and hash the owning spec they
 	// were GIVEN, rather than re-deriving it from TestCase (ADR-024 s5).
 	Owner              *testcase.Owner
+	ValidatedOwner     ValidatedTestCaseOwner
 	TaskID             string
 	Command            string
 	Reference          string
@@ -38,7 +39,7 @@ type AdapterContext struct {
 	TCTitle            string // TC frontmatter title snapshot at prime time (ENH-142)
 	TCRequirement      string // TC frontmatter requirement snapshot at prime time (ENH-142)
 	TCPriority         string // TC frontmatter priority snapshot at prime time (ENH-142)
-	TCType             string // TC frontmatter type snapshot at prime time (ENH-142)
+	TestType           string // TC frontmatter test_type snapshot at prime time (ENH-142)
 	TemplateFile       string // ENH-161: role-specific template path. For create, the testcase template (gtms/test/templates/{manual,agent}-testcase.template.md). For prime, the result template (gtms/manual/templates/{manual,agent}-result.template.yaml). Resolved per the resolved adapter name via ResolveTemplatePath. Originally introduced for the manual prime stage in ENH-132; ENH-161 extended it to create and added role-specific routing.
 	OutputFile         string // Path for the single stamped output file (ENH-132: manual prime)
 	ResultTemplate     string // Path to the filled manual result file (ENH-133: manual execute)

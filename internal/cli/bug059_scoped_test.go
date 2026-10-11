@@ -25,7 +25,7 @@ func addEscapeSymlink(t *testing.T, root string) {
 	outside := filepath.Join(root, "outside-cases")
 	require.NoError(t, os.MkdirAll(outside, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(outside, "tc-abc12345-out.md"),
-		[]byte("---\ntest_case_id: tc-abc12345\n---\n"), 0o644))
+		[]byte("---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: tc-abc12345\n---\n"), 0o644))
 	if err := os.Symlink(outside, filepath.Join(root, "gtms/test/cases/escape")); err != nil {
 		t.Skipf("symlink unsupported in this environment: %v", err)
 	}
@@ -55,7 +55,7 @@ func setupScopedProject(t *testing.T) string {
 	fooSpec := filepath.Join(root, "gtms/test/cases/foo/tc-abc12345-real.md")
 	require.NoError(t, os.MkdirAll(filepath.Dir(fooSpec), 0o755))
 	require.NoError(t, os.WriteFile(fooSpec,
-		[]byte("---\ntest_case_id: tc-abc12345\ntitle: Real spec under foo\n---\n# real\n"), 0o644))
+		[]byte("---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: tc-abc12345\ntitle: Real spec under foo\n---\n# real\n"), 0o644))
 
 	require.NoError(t, os.MkdirAll(filepath.Join(root, "gtms/test/cases/bar"), 0o755))
 

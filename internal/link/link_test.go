@@ -40,7 +40,7 @@ func createTCSpecFixture(t *testing.T, root, tcID string) {
 	t.Helper()
 	dir := filepath.Join(root, "gtms", "test", "cases", "test")
 	require.NoError(t, os.MkdirAll(dir, 0755))
-	spec := "---\ntest_case_id: " + tcID + "\n---\n# Sample\n"
+	spec := "---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: " + tcID + "\n---\n# Sample\n"
 	require.NoError(t, os.WriteFile(filepath.Join(dir, tcID+"-sample.md"), []byte(spec), 0644))
 }
 
@@ -50,7 +50,7 @@ func createTCSpecAt(t *testing.T, root, subdir, tcID string) {
 	t.Helper()
 	dir := filepath.Join(root, "gtms", "test", "cases", subdir)
 	require.NoError(t, os.MkdirAll(dir, 0755))
-	spec := "---\ntest_case_id: " + tcID + "\n---\n# " + tcID + "\n"
+	spec := "---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: " + tcID + "\n---\n# " + tcID + "\n"
 	require.NoError(t, os.WriteFile(filepath.Join(dir, tcID+"-test.md"), []byte(spec), 0644))
 }
 
@@ -672,8 +672,8 @@ func TestRefreshRecord_PendingArtefactHash_Preserved(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(root, "tests/tc-pending1.bats"), []byte("# skeleton"), 0644))
 
 	// We need a real testcase hash for the seed
-	specPath, _ := pipeline.ResolveTestCaseSpec(root, "tc-pending1")
-	oldTCHash, _ := pipeline.HashFile(filepath.Join(root, filepath.FromSlash(specPath)))
+	owner, _ := testcase.ResolveOwner(root, "tc-pending1")
+	oldTCHash, _ := pipeline.HashFile(owner.SpecAbs())
 
 	pendingRec := &wiring.WiringRecord{
 		TestCase:     "tc-pending1",
@@ -861,8 +861,8 @@ func TestPlanRefresh_PendingArtefact_TestcaseHashOnly(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Join(root, "tests"), 0755))
 	require.NoError(t, os.WriteFile(filepath.Join(root, "tests/tc-pending1.bats"), []byte("# skeleton"), 0644))
 
-	specPath, _ := pipeline.ResolveTestCaseSpec(root, "tc-pending1")
-	oldTCHash, _ := pipeline.HashFile(filepath.Join(root, filepath.FromSlash(specPath)))
+	owner, _ := testcase.ResolveOwner(root, "tc-pending1")
+	oldTCHash, _ := pipeline.HashFile(owner.SpecAbs())
 
 	pendingRec := &wiring.WiringRecord{
 		TestCase:     "tc-pending1",
@@ -1279,7 +1279,7 @@ func TestRequireScopeOwnership_UnprovableInScopeAborts(t *testing.T) {
 	createTCSpecAt(t, root, "feature-a", "tc-aaa11111")
 	dir := filepath.Join(layout.TestCasesDir(root), "feature-a")
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "tc-bbb22222-broken.md"),
-		[]byte("---\ntest_case_id: [unclosed\n---\n"), 0644))
+		[]byte("---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: [unclosed\n---\n"), 0644))
 
 	_, err := scopeOwnerIDsForTest(t, root, "feature-a", false)
 	require.Error(t, err)
@@ -1295,7 +1295,7 @@ func TestRequireScopeOwnership_RenamedDuplicateOwnerRefuses(t *testing.T) {
 	dir := filepath.Join(layout.TestCasesDir(root), "feature-b")
 	require.NoError(t, os.MkdirAll(dir, 0755))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "tc-deadbeef-renamed.md"),
-		[]byte("---\ntest_case_id: tc-aaa11111\n---\n"), 0644))
+		[]byte("---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: tc-aaa11111\n---\n"), 0644))
 
 	_, err := scopeOwnerIDsForTest(t, root, "feature-a", false)
 	require.Error(t, err, "a renamed second owner makes the id ambiguous project-wide")
@@ -1369,7 +1369,7 @@ func TestValidateScopeFolder_EscapingSymlinkRejected(t *testing.T) {
 	root := t.TempDir()
 	outside := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(outside, "tc-out11111-test.md"),
-		[]byte("---\ntest_case_id: tc-out11111\n---\n"), 0644))
+		[]byte("---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: tc-out11111\n---\n"), 0644))
 	casesDir := layout.TestCasesDir(root)
 	require.NoError(t, os.MkdirAll(casesDir, 0755))
 	require.NoError(t, os.Symlink(outside, filepath.Join(casesDir, "alias")))
@@ -1410,7 +1410,7 @@ func TestValidateScopeFolder_RecursiveEscapingSymlinkRejected(t *testing.T) {
 	root := t.TempDir()
 	outside := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(outside, "tc-out22222-test.md"),
-		[]byte("---\ntest_case_id: tc-out22222\n---\n"), 0644))
+		[]byte("---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: tc-out22222\n---\n"), 0644))
 	casesDir := layout.TestCasesDir(root)
 	require.NoError(t, os.MkdirAll(casesDir, 0755))
 	require.NoError(t, os.Symlink(outside, filepath.Join(casesDir, "alias")))
@@ -1562,7 +1562,7 @@ func TestRepointBulk_EscapingScopeSymlinkRejected(t *testing.T) {
 	seedBulkFixture(t, root, "real", "tc-55550001", "old-runner")
 	outside := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(outside, "tc-55550001-test.md"),
-		[]byte("---\ntest_case_id: tc-55550001\n---\n"), 0644))
+		[]byte("---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: tc-55550001\n---\n"), 0644))
 	casesDir := layout.TestCasesDir(root)
 	require.NoError(t, os.Symlink(outside, filepath.Join(casesDir, "alias")))
 

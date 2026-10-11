@@ -28,8 +28,11 @@ func TestSourceShape_TriageCLIDoesNotScanTriageDir(t *testing.T) {
 	// Positive: the read surfaces are delegated to the reader package.
 	assert.Contains(t, code, "reader.ShowTriage(",
 		"triage.go must show records through reader.ShowTriage")
-	assert.Contains(t, code, "reader.ListTriage(",
-		"triage.go must list records through reader.ListTriage")
+	// ENH-205 renamed the bulk list entry to reader.ListTriageWithDiagnostics (and
+	// the single-TC route stays reader.ListTriageForTC); the delegation intent is
+	// unchanged, so match the reader.ListTriage* family rather than one literal.
+	assert.Contains(t, code, "reader.ListTriage",
+		"triage.go must list records through the reader.ListTriage* family")
 
 	// Negative: the CLI must not walk or address the triage directory itself.
 	for _, lit := range []string{

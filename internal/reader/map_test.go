@@ -13,18 +13,27 @@ func TestMap_GroupsByRequirement(t *testing.T) {
 
 	// 2 test cases for REQ-A, 1 for REQ-B
 	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-aaa1111-login-happy.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-aaa1111
 title: Login Happy Path
 requirement: REQ-A
 ---
 `)
 	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-aaa2222-login-error.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-aaa2222
 title: Login Error Path
 requirement: REQ-A
 ---
 `)
 	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-bbb1111-checkout-flow.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-bbb1111
 title: Checkout Flow
 requirement: REQ-B
@@ -58,12 +67,18 @@ func TestMap_UnlinkedTestCases(t *testing.T) {
 	root := t.TempDir()
 
 	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-aaa1111-linked.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-aaa1111
 title: Linked Test
 requirement: REQ-A
 ---
 `)
 	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-bbb1111-orphan.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-bbb1111
 title: Unlinked Test
 requirement: ""
@@ -84,6 +99,9 @@ func TestMap_SlugDerivation(t *testing.T) {
 	root := t.TempDir()
 
 	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-a1b2c3d-tier1-sync-happy-path.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-a1b2c3d
 title: Tier 1 Sync Happy Path Test
 requirement: REQ-1
@@ -105,6 +123,9 @@ func TestMap_SlugDerivation_ShortFilename(t *testing.T) {
 	root := t.TempDir()
 
 	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-001.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-001
 title: Short Filename Test
 requirement: REQ-1
@@ -140,6 +161,9 @@ func TestMap_WithAutomation(t *testing.T) {
 	root := t.TempDir()
 
 	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-aaa1111-automated.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-aaa1111
 title: Automated Test
 requirement: REQ-1
@@ -165,6 +189,9 @@ func TestMap_WithExecution(t *testing.T) {
 	root := t.TempDir()
 
 	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-aaa1111-executed.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-aaa1111
 title: Executed Test
 requirement: REQ-1
@@ -190,6 +217,9 @@ func TestMap_ExecuteStatusReflectsResult(t *testing.T) {
 	root := t.TempDir()
 
 	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-aaa1111-failing.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-aaa1111
 title: Failing Test
 requirement: REQ-1
@@ -215,6 +245,9 @@ func TestMap_ExecuteStatusReflectsSkippedResult(t *testing.T) {
 	root := t.TempDir()
 
 	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-aaa1111-skipped.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-aaa1111
 title: Skipped Test
 requirement: REQ-1
@@ -240,6 +273,9 @@ func TestMap_ExecuteStatusCompleteForPass(t *testing.T) {
 	root := t.TempDir()
 
 	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-aaa1111-passing.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-aaa1111
 title: Passing Test
 requirement: REQ-1
@@ -266,12 +302,18 @@ func TestMap_Summary(t *testing.T) {
 
 	// 2 test cases across 2 requirements
 	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-aaa1111-first.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-aaa1111
 title: First Test
 requirement: REQ-A
 ---
 `)
 	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-bbb1111-second.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-bbb1111
 title: Second Test
 requirement: REQ-B
@@ -279,6 +321,9 @@ requirement: REQ-B
 `)
 	// 1 unlinked
 	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-ccc1111-unlinked.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-ccc1111
 title: Unlinked
 ---
@@ -311,6 +356,9 @@ func TestMap_ActiveTaskOverride(t *testing.T) {
 	root := t.TempDir()
 
 	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-aaa1111-pending.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-aaa1111
 title: Pending Automate
 requirement: REQ-1
@@ -341,6 +389,9 @@ func TestMap_ActiveTaskOverride_InProgress(t *testing.T) {
 	root := t.TempDir()
 
 	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-aaa1111-active.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-aaa1111
 title: Active Automate
 requirement: REQ-1
@@ -377,6 +428,9 @@ func TestMap_ActiveTaskOverride_ExecuteTask(t *testing.T) {
 	root := t.TempDir()
 
 	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-aaa1111-executing.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-aaa1111
 title: Executing Test
 requirement: REQ-1
@@ -408,6 +462,9 @@ func TestMap_MalformedTestCase(t *testing.T) {
 
 	// Valid test case
 	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-aaa1111-valid.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-aaa1111
 title: Valid Test
 requirement: REQ-1
@@ -419,8 +476,17 @@ broken: yaml: [[[
 ---
 `)
 
-	report, err := Map(root, nil, "", false)
+	// REV-184 CODEX-004: the diagnostics-free entry point must not return the
+	// partial map as success -- the malformed spec is an Unprovable identity.
+	_, err := Map(root, nil, "", false)
+	var incomplete *IncompleteReadError
+	require.ErrorAs(t, err, &incomplete)
+	assert.True(t, incomplete.Diagnostics.Affected())
+
+	// The policy (e) form keeps the proven rows and carries the diagnostic.
+	report, diags, err := MapWithDiagnostics(root, nil, "", false)
 	require.NoError(t, err)
+	assert.True(t, diags.Affected())
 	require.Len(t, report.Groups, 1)
 	assert.Len(t, report.Groups[0].TestCases, 1)
 	assert.Equal(t, "tc-aaa1111", report.Groups[0].TestCases[0].TestCaseID)

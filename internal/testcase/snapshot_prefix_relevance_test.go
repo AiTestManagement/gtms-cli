@@ -17,7 +17,7 @@ import (
 func TestResolve_ExtendedIDSiblingCorruptionIsNotRelevantToShorterID(t *testing.T) {
 	root, cases := casesDirFor(t)
 	writeSpecID(t, cases, "feat/tc-11111111-login.md", "tc-11111111")
-	writeRaw(t, cases, "feat/tc-11111111--legacy.md", "---\ntest_case_id: [unclosed\n---\nbody\n")
+	writeRaw(t, cases, "feat/tc-11111111--legacy.md", "---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: [unclosed\n---\nbody\n")
 
 	snap := mustSnapshot(t, root)
 
@@ -38,7 +38,7 @@ func TestResolve_ExtendedIDSiblingCorruptionIsNotRelevantToShorterID(t *testing.
 func TestResolve_ShorterIDCorruptionIsNotRelevantToExtendedID(t *testing.T) {
 	root, cases := casesDirFor(t)
 	writeSpecID(t, cases, "feat/tc-11111111--legacy-sibling.md", "tc-11111111--legacy")
-	writeRaw(t, cases, "feat/tc-11111111-login.md", "---\ntest_case_id: [unclosed\n---\nbody\n")
+	writeRaw(t, cases, "feat/tc-11111111-login.md", "---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: [unclosed\n---\nbody\n")
 
 	snap := mustSnapshot(t, root)
 

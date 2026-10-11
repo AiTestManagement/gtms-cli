@@ -21,6 +21,7 @@ import (
 	"strings"
 
 	"github.com/aitestmanagement/gtms-cli/internal/layout"
+	"github.com/aitestmanagement/gtms-cli/internal/testcase"
 	"github.com/aitestmanagement/gtms-cli/internal/triage"
 )
 
@@ -159,11 +160,29 @@ func tcIsTriaged(byFramework map[string]*triage.Record, defaultFramework string)
 // only under --show-triage so default status output is unchanged. Every folder
 // that has test cases appears in the map (with 0 when none are triaged).
 func FolderTriagedCounts(projectRoot, defaultFramework string) (map[string]int, error) {
-	testCases, err := scanTestCases(projectRoot, nil)
+	// ENH-205: identity from the one project-wide snapshot. Affected identities are
+	// left out of the counts (their diagnostics are surfaced by the folder-summary
+	// operation this backs, which shares its snapshot -- see
+	// PipelineFolderSummaryWithDiagnostics). This standalone entry is kept for
+	// internal callers that want only the counts; it returns *IncompleteReadError
+	// rather than partial counts when any identity is affected (REV-184 CODEX-004).
+	snap, err := testcase.NewSnapshot(projectRoot)
 	if err != nil {
-		return nil, fmt.Errorf("scanning test cases: %w", err)
+		return nil, err
 	}
+	testCases, diags, err := resolveScopedSpecs(snap, projectRoot, nil)
+	if err != nil {
+		return nil, err
+	}
+	if ierr := incompleteReadErr(diags); ierr != nil {
+		return nil, ierr
+	}
+	return folderTriagedCountsFromSpecs(projectRoot, testCases, defaultFramework)
+}
 
+// folderTriagedCountsFromSpecs computes per-folder triaged counts from
+// already-resolved, proven specs, performing no identity resolution of its own.
+func folderTriagedCountsFromSpecs(projectRoot string, testCases []testCaseFrontmatter, defaultFramework string) (map[string]int, error) {
 	// Root scope: nil means "read and validate every triage record", so a
 	// corrupt orphan is reported rather than skipped for having no test case.
 	byTC, err := activeTriageByTC(projectRoot, nil)

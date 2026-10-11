@@ -76,27 +76,27 @@ Repoint mode (reassign the stored execute adapter):
 				if artefactFlag != "" {
 					msg := "--artefact is not valid with --adapter repoint. Repoint changes only the adapter field."
 					output.Errorf(msg, "Drop --artefact and retry.")
-					return output.AsDisplayed(fmt.Errorf(msg))
+					return output.AsDisplayed(errors.New(msg))
 				}
 				if refreshFlag {
 					msg := "--refresh is not valid with --adapter repoint. These are separate modes."
 					output.Errorf(msg, "Use --refresh alone to recompute hashes, or --adapter alone to repoint.")
-					return output.AsDisplayed(fmt.Errorf(msg))
+					return output.AsDisplayed(errors.New(msg))
 				}
 				if forceFlag {
 					msg := "--force is not valid with --adapter repoint."
 					output.Errorf(msg, "Repoint is idempotent -- rerun to update remaining records.")
-					return output.AsDisplayed(fmt.Errorf(msg))
+					return output.AsDisplayed(errors.New(msg))
 				}
 				if checkFlag {
 					msg := "--check is not valid with --adapter repoint. Use --dry-run to preview."
 					output.Errorf(msg, "")
-					return output.AsDisplayed(fmt.Errorf(msg))
+					return output.AsDisplayed(errors.New(msg))
 				}
 				if strictFlag {
 					msg := "--strict is not valid with --adapter repoint."
 					output.Errorf(msg, "")
-					return output.AsDisplayed(fmt.Errorf(msg))
+					return output.AsDisplayed(errors.New(msg))
 				}
 				// BUG-167 / REV-118: the classifier's decision crosses the
 				// orchestration boundary as a TYPED result. runRepoint switches on
@@ -121,14 +121,14 @@ Repoint mode (reassign the stored execute adapter):
 			if fromAdapterFlag != "" {
 				msg := "--from-adapter requires --adapter."
 				output.Errorf(msg, "Example: gtms link tc-x --from-adapter old --adapter new")
-				return output.AsDisplayed(fmt.Errorf(msg))
+				return output.AsDisplayed(errors.New(msg))
 			}
 
 			// --all without --adapter is invalid.
 			if allFlag {
 				msg := "--all requires --adapter for repoint mode."
 				output.Errorf(msg, "Example: gtms link --all --from-adapter old --adapter new")
-				return output.AsDisplayed(fmt.Errorf(msg))
+				return output.AsDisplayed(errors.New(msg))
 			}
 
 			// BUG-146: refresh mode now honours --dry-run (preview). Write and
@@ -137,14 +137,14 @@ Repoint mode (reassign the stored execute adapter):
 			if dry && !refreshFlag {
 				msg := "--dry-run is not yet supported for non-repoint link operations."
 				output.Errorf(msg, "Use --adapter to enter repoint mode, or --refresh --dry-run to preview a refresh; write and check modes do not support --dry-run.")
-				return output.AsDisplayed(fmt.Errorf(msg))
+				return output.AsDisplayed(errors.New(msg))
 			}
 
 			// Non-repoint modes require a positional argument.
 			if len(args) == 0 {
 				msg := "A test case ID or folder is required."
 				output.Errorf(msg, "Example: gtms link tc-a1b2c3d4 --framework playwright --artefact tests/login.spec.ts")
-				return output.AsDisplayed(fmt.Errorf(msg))
+				return output.AsDisplayed(errors.New(msg))
 			}
 
 			// BUG-167: shared classifier -- preserve folder case for --refresh,
@@ -178,7 +178,7 @@ Repoint mode (reassign the stored execute adapter):
 			if res.Kind != targetpkg.KindTCID {
 				msg := fmt.Sprintf("Invalid test case ID format: '%s'.", sanitizeForError(args[0]))
 				output.Errorf(msg, "Use format like tc-a1b2c3d4.")
-				return output.AsDisplayed(fmt.Errorf(msg))
+				return output.AsDisplayed(errors.New(msg))
 			}
 			// BUG-059 (REV-114 CLAUDE-001): scope-validate a folder-qualified target
 			// BEFORE the check/link split, regardless of --strict. LinkRecord's own
@@ -197,12 +197,12 @@ Repoint mode (reassign the stored execute adapter):
 			if frameworkFlag == "" {
 				msg := "--framework is required for gtms link."
 				output.Errorf(msg, "Example: gtms link tc-a1b2c3d4 --framework playwright --artefact tests/login.spec.ts")
-				return output.AsDisplayed(fmt.Errorf(msg))
+				return output.AsDisplayed(errors.New(msg))
 			}
 			if !config.ValidateFramework(frameworkFlag) {
 				msg := fmt.Sprintf("Invalid framework '%s'. Framework must contain only lowercase letters, digits, and hyphens.", frameworkFlag)
 				output.Errorf(msg, "Example: --framework playwright")
-				return output.AsDisplayed(fmt.Errorf(msg))
+				return output.AsDisplayed(errors.New(msg))
 			}
 
 			if checkFlag {
@@ -218,7 +218,7 @@ Repoint mode (reassign the stored execute adapter):
 			if artefactFlag == "" {
 				msg := "--artefact is required for gtms link."
 				output.Errorf(msg, "Example: gtms link tc-a1b2c3d4 --framework playwright --artefact tests/login.spec.ts")
-				return output.AsDisplayed(fmt.Errorf(msg))
+				return output.AsDisplayed(errors.New(msg))
 			}
 
 			cfg := GetConfig()
@@ -301,29 +301,29 @@ func runRefresh(root string, classified targetpkg.Result, frameworkFlag, artefac
 	if artefactFlag != "" {
 		msg := "--artefact is not valid with --refresh. Refresh sources the artefact from the existing wiring record."
 		output.Errorf(msg, fmt.Sprintf("To change the artefact path, use: gtms link %s --framework <fw> --artefact <path> --force", classified.Target))
-		return output.AsDisplayed(fmt.Errorf(msg))
+		return output.AsDisplayed(errors.New(msg))
 	}
 	if checkFlag {
 		msg := "--check is not valid with --refresh. To preview a refresh without writing, use: gtms link " + classified.Target + " --refresh --dry-run"
 		output.Errorf(msg, "")
-		return output.AsDisplayed(fmt.Errorf(msg))
+		return output.AsDisplayed(errors.New(msg))
 	}
 	if forceFlag {
 		msg := "--force is not valid with --refresh. Refresh is itself the explicit acknowledgement."
 		output.Errorf(msg, "")
-		return output.AsDisplayed(fmt.Errorf(msg))
+		return output.AsDisplayed(errors.New(msg))
 	}
 	if strictFlag {
 		msg := "--strict is not valid with --refresh."
 		output.Errorf(msg, "")
-		return output.AsDisplayed(fmt.Errorf(msg))
+		return output.AsDisplayed(errors.New(msg))
 	}
 
 	// Validate --framework if provided.
 	if frameworkFlag != "" && !config.ValidateFramework(frameworkFlag) {
 		msg := fmt.Sprintf("Invalid framework '%s'. Framework must contain only lowercase letters, digits, and hyphens.", frameworkFlag)
 		output.Errorf(msg, "Example: --framework playwright")
-		return output.AsDisplayed(fmt.Errorf(msg))
+		return output.AsDisplayed(errors.New(msg))
 	}
 
 	// Dispatch strictly by classified kind (target safety was already enforced by
@@ -475,7 +475,7 @@ func runSingleTCRefresh(root, tcID, frameworkFlag string, dry bool) error {
 	if err != nil {
 		msg := fmt.Sprintf("%sScanning wiring for %s: %v", dryMarker(dry), tcID, err)
 		output.Errorf(msg, "Check gtms/automation/wiring/ for parse errors.")
-		return output.AsDisplayed(fmt.Errorf(msg))
+		return output.AsDisplayed(errors.New(msg))
 	}
 	if len(targets) == 0 {
 		// BUG-146 CODEX-128-002 / AC2: a preview labels every line it emits,
@@ -490,11 +490,11 @@ func runSingleTCRefresh(root, tcID, frameworkFlag string, dry bool) error {
 		if frameworkFlag != "" {
 			msg := fmt.Sprintf("%sNo wiring record found for '%s' (framework: %s).", marker, tcID, frameworkFlag)
 			output.Errorf(msg, fmt.Sprintf("Run 'gtms link %s --framework %s --artefact <path>' to create it.", tcID, frameworkFlag))
-			return output.AsDisplayed(fmt.Errorf(msg))
+			return output.AsDisplayed(errors.New(msg))
 		}
 		msg := fmt.Sprintf("%sNo wiring records found for '%s'.", marker, tcID)
 		output.Errorf(msg, fmt.Sprintf("Run 'gtms link %s --framework <fw> --artefact <path>' to create one.", tcID))
-		return output.AsDisplayed(fmt.Errorf(msg))
+		return output.AsDisplayed(errors.New(msg))
 	}
 
 	failCount := 0
@@ -506,7 +506,7 @@ func runSingleTCRefresh(root, tcID, frameworkFlag string, dry bool) error {
 
 	if failCount > 0 {
 		msg := fmt.Sprintf("%d of %d wiring records failed to refresh for %s", failCount, len(targets), tcID)
-		return output.AsDisplayed(fmt.Errorf(msg))
+		return output.AsDisplayed(errors.New(msg))
 	}
 	return nil
 }
@@ -562,10 +562,11 @@ func runFolderRefresh(root, folder, frameworkFlag string, recursive, dry bool) e
 		// there", that one is "the folder is there and holds no test cases".
 		msg := folderNotFoundMessage(dryMarker(dry), folder)
 		output.Errorf(msg, "Check the folder name and try again.")
-		return output.AsDisplayed(fmt.Errorf(msg))
+		return output.AsDisplayed(errors.New(msg))
 	}
 	ownerIDs, inScopeUnprovable := snap.SelectFolder(scopeRel, recursive)
-	if len(ownerIDs) == 0 && len(inScopeUnprovable) == 0 {
+	// inScopeUnprovable is tested first so it is read on every path (REV-184 round 6).
+	if len(inScopeUnprovable) == 0 && len(ownerIDs) == 0 {
 		// REV-160 CLAUDE-005: an existing but EMPTY folder is a "No test cases
 		// found" error, not a silent zero-work success. At b524c9b5 this branch
 		// went through DiscoverTestCases, which returned exactly this message with
@@ -577,7 +578,7 @@ func runFolderRefresh(root, folder, frameworkFlag string, recursive, dry bool) e
 		// exactly this case; refresh must not be the odd one out.
 		msg := fmt.Sprintf("%sNo test cases found in %s/%s/", dryMarker(dry), layout.Current().TestCases, folder)
 		output.Errorf(msg, fmt.Sprintf("Check that %s/%s/ contains tc-*.md files.", layout.Current().TestCases, folder))
-		return output.AsDisplayed(fmt.Errorf(msg))
+		return output.AsDisplayed(errors.New(msg))
 	}
 
 	// Partition the folder's owner ids by PROJECT-WIDE ownership. A duplicate
@@ -602,9 +603,13 @@ func runFolderRefresh(root, folder, frameworkFlag string, recursive, dry bool) e
 	// (CODEX-002). Only proven unique owners reach discovery/refresh.
 	targets, err := link.DiscoverRefreshTargets(root, okIDs, frameworkFlag)
 	if err != nil {
+		// REV-184 round 6: a wiring-scan failure must not hide the in-scope
+		// unprovable specs. Report them first, then keep the scan error and the
+		// non-zero exit.
+		printInScopeUnprovable(scopeRel, inScopeUnprovable, dry)
 		msg := fmt.Sprintf("%sScanning wiring for %s/: %v", dryMarker(dry), folder, err)
 		output.Errorf(msg, "Check gtms/automation/wiring/ for parse errors.")
-		return output.AsDisplayed(fmt.Errorf(msg))
+		return output.AsDisplayed(errors.New(msg))
 	}
 
 	failCount := 0
@@ -619,11 +624,7 @@ func runFolderRefresh(root, folder, frameworkFlag string, recursive, dry bool) e
 	}
 	// In-scope unprovable specs have no body id and no wiring to refresh; report
 	// each with the repair for its specific failure.
-	for _, c := range inScopeUnprovable {
-		oe := testcase.UnprovableInScope(scopeRel, c)
-		fmt.Printf("  %s %s%v\n", output.IconError, dryMarker(dry), oe)
-		failCount++
-	}
+	failCount += printInScopeUnprovable(scopeRel, inScopeUnprovable, dry)
 
 	for _, tgt := range targets {
 		switch processRefreshTarget(root, snap, tgt, dry) {
@@ -659,9 +660,18 @@ func runFolderRefresh(root, folder, frameworkFlag string, recursive, dry bool) e
 
 	if failCount > 0 {
 		msg := fmt.Sprintf("%d wiring records failed to refresh in %s/", failCount, folder)
-		return output.AsDisplayed(fmt.Errorf(msg))
+		return output.AsDisplayed(errors.New(msg))
 	}
 	return nil
+}
+
+// printInScopeUnprovable prints one failure line per in-scope unprovable spec,
+// each with the repair for its specific failure, and returns how many it printed.
+func printInScopeUnprovable(scopeRel string, unprovable []testcase.Candidate, dry bool) int {
+	for _, c := range unprovable {
+		fmt.Printf("  %s %s%v\n", output.IconError, dryMarker(dry), testcase.UnprovableInScope(scopeRel, c))
+	}
+	return len(unprovable)
 }
 
 // formatCheckOutput prints the result of a --check validation.
@@ -705,7 +715,7 @@ func runRepoint(root string, classified *targetpkg.Result, adapterFlag, fromAdap
 	if recursive && !allFlag && classified != nil && classified.Kind == targetpkg.KindTCID {
 		msg := "-r is only valid for a folder repoint, not a single test case."
 		output.Errorf(msg, "Drop -r, or target a folder under gtms/test/cases/.")
-		return output.AsDisplayed(fmt.Errorf(msg))
+		return output.AsDisplayed(errors.New(msg))
 	}
 
 	// The new adapter (existence + Mode-3 exclusion + framework derivation) is
@@ -750,7 +760,7 @@ func runRepoint(root string, classified *targetpkg.Result, adapterFlag, fromAdap
 		if fromAdapterFlag == "" {
 			msg := "--from-adapter is required for folder repoint."
 			output.Errorf(msg, fmt.Sprintf("Example: gtms link %s --from-adapter old --adapter %s", classified.Target, adapterFlag))
-			return output.AsDisplayed(fmt.Errorf(msg))
+			return output.AsDisplayed(errors.New(msg))
 		}
 		return runRepointFolder(root, snap, classified.Target, recursive, opts)
 	case targetpkg.KindTCID:
@@ -786,17 +796,17 @@ func validateRepointFlags(target, adapterFlag, fromAdapterFlag string, allFlag, 
 		if target != "" {
 			msg := "--all rejects a positional target."
 			output.Errorf(msg, "Use: gtms link --all --from-adapter old --adapter new")
-			return output.AsDisplayed(fmt.Errorf(msg))
+			return output.AsDisplayed(errors.New(msg))
 		}
 		if fromAdapterFlag == "" {
 			msg := "--from-adapter is required with --all."
 			output.Errorf(msg, "Example: gtms link --all --from-adapter old --adapter new")
-			return output.AsDisplayed(fmt.Errorf(msg))
+			return output.AsDisplayed(errors.New(msg))
 		}
 		if recursive {
 			msg := "-r is redundant with --all (--all already covers the entire project)."
 			output.Errorf(msg, "Use: gtms link --all --from-adapter old --adapter new")
-			return output.AsDisplayed(fmt.Errorf(msg))
+			return output.AsDisplayed(errors.New(msg))
 		}
 	}
 
@@ -804,7 +814,7 @@ func validateRepointFlags(target, adapterFlag, fromAdapterFlag string, allFlag, 
 	if !allFlag && target == "" {
 		msg := "A test case ID or folder is required for repoint, or use --all."
 		output.Errorf(msg, "Example: gtms link tc-x --adapter new")
-		return output.AsDisplayed(fmt.Errorf(msg))
+		return output.AsDisplayed(errors.New(msg))
 	}
 
 	return nil
@@ -853,7 +863,7 @@ func runRepointFolder(root string, snap *testcase.Snapshot, folder string, recur
 		if errors.Is(aerr, testcase.ErrFolderNotFound) {
 			msg := folderNotFoundMessage("", folder)
 			output.Errorf(msg, "Check the folder name and try again.")
-			return output.AsDisplayed(fmt.Errorf(msg))
+			return output.AsDisplayed(errors.New(msg))
 		}
 		output.Errorf(aerr.Error(), "")
 		return output.AsDisplayed(aerr)

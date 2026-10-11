@@ -49,7 +49,7 @@ func InvokeTier2(ctx context.Context, ac *AdapterContext, scriptPath string) (*I
 		"GTMS_TC_TITLE="+ac.TCTitle,
 		"GTMS_TC_REQUIREMENT="+ac.TCRequirement,
 		"GTMS_TC_PRIORITY="+ac.TCPriority,
-		"GTMS_TC_TYPE="+ac.TCType,
+		"GTMS_TEST_TYPE="+ac.TestType,
 		"GTMS_TEMPLATE_FILE="+ac.TemplateFile,
 		"GTMS_OUTPUT_FILE="+ac.OutputFile,
 		"GTMS_RESULT_TEMPLATE="+ac.ResultTemplate,

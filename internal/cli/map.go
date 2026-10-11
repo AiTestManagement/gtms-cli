@@ -2,6 +2,7 @@ package cli
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"github.com/aitestmanagement/gtms-cli/internal/output"
 	"github.com/aitestmanagement/gtms-cli/internal/reader"
 	targetpkg "github.com/aitestmanagement/gtms-cli/internal/target"
+	"github.com/aitestmanagement/gtms-cli/internal/testcase"
 )
 
 func newMapCmd() *cobra.Command {
@@ -67,13 +69,19 @@ the summary.
 					return output.AsDisplayed(err)
 				}
 				if res.Kind == targetpkg.KindTCID {
+					// ENH-205: one snapshot for the scoped-owner check and the read, so
+					// a qualified `map <folder>/<tc-id>` enumerates once (ADR-024 5b).
+					snap, serr := testcase.NewSnapshot(root)
+					if serr != nil {
+						return serr
+					}
 					// BUG-059 (REV-113): a folder-qualified TC must resolve scoped.
-					if err := requireScopedSpec(root, res); err != nil {
+					if err := requireScopedSpecIn(snap, root, res); err != nil {
 						output.Errorf(err.Error(), "")
 						return output.AsDisplayed(err)
 					}
 					// TC ID -> detail view (flat lookup on the bare ID, no scope)
-					return runMap(os.Stdout, root, nil, detail, res.TCID, jsonOut, defaultFw, strict)
+					return runMapSingleTC(os.Stdout, snap, root, res.TCID, jsonOut, defaultFw, strict)
 				}
 				// Folder scope for overview
 				scope, serr := buildScopeFromArg(root, res.Target, recursive)
@@ -81,11 +89,11 @@ the summary.
 					output.Errorf(serr.Error(), "")
 					return output.AsDisplayed(serr)
 				}
-				return runMap(os.Stdout, root, scope, detail, "", jsonOut, defaultFw, strict)
+				return runMap(os.Stdout, root, scope, detail, jsonOut, defaultFw, strict)
 			}
 
 			// No arg → full recursive scan (scope=nil)
-			return runMap(os.Stdout, root, nil, detail, "", jsonOut, defaultFw, strict)
+			return runMap(os.Stdout, root, nil, detail, jsonOut, defaultFw, strict)
 		},
 	}
 
@@ -101,20 +109,18 @@ the summary.
 // ENH-082: strictFramework is true when the user supplied --framework explicitly,
 // causing per-TC entries to render em-dashes for TCs without a matching wiring
 // record instead of falling back to a different framework.
-func runMap(w io.Writer, projectRoot string, scope *reader.ScopeInfo, detail bool, detailID string, jsonOut bool, defaultFramework string, strictFramework bool) error {
-	report, err := reader.Map(projectRoot, scope, defaultFramework, strictFramework)
+func runMap(w io.Writer, projectRoot string, scope *reader.ScopeInfo, detail bool, jsonOut bool, defaultFramework string, strictFramework bool) error {
+	report, diags, err := reader.MapWithDiagnostics(projectRoot, scope, defaultFramework, strictFramework)
 	if err != nil {
 		return err
 	}
 
 	// JSON mode: always output valid JSON, even if empty.
-	// BUG-081: when a TC ID was supplied, honour it on the JSON path too --
-	// mirror the text-mode group-preserving semantic from writeMapSingleTC.
 	if jsonOut {
-		if detailID != "" {
-			return writeMapSingleTCJSON(w, report, detailID)
+		if err := writeMapJSON(w, report); err != nil {
+			return failWithIdentityDiagnostics(diags, err)
 		}
-		return writeMapJSON(w, report)
+		return finishWithIdentityDiagnostics(diags)
 	}
 
 	// Print scope feedback BEFORE the empty-state check
@@ -127,26 +133,64 @@ func runMap(w io.Writer, projectRoot string, scope *reader.ScopeInfo, detail boo
 		fmt.Fprintln(w)
 	}
 
-	// Empty project check (non-JSON modes only)
+	// Empty project check (non-JSON modes only). ADR-024 5b (e) point 7: an
+	// all-affected result is not rendered as an empty state.
 	if len(report.Groups) == 0 && len(report.Unlinked) == 0 {
+		if diags.Affected() {
+			return finishWithIdentityDiagnostics(diags)
+		}
 		fmt.Fprintln(w, "No test cases found.")
 		fmt.Fprintln(w)
 		output.Dimln(w, "Next: gtms create <folder> --reference <doc>  \u2014 create your first test cases")
-		return nil
-	}
-
-	// Single test case detail view
-	if detailID != "" {
-		return writeMapSingleTC(w, report, detailID)
+		return finishWithIdentityDiagnostics(diags)
 	}
 
 	// Detail view (all)
 	if detail {
-		return writeMapDetailAll(w, report)
+		if err := writeMapDetailAll(w, report); err != nil {
+			return failWithIdentityDiagnostics(diags, err)
+		}
+		return finishWithIdentityDiagnostics(diags)
 	}
 
 	// Default slug view
-	return writeMapDefault(w, report)
+	if err := writeMapDefault(w, report); err != nil {
+		return failWithIdentityDiagnostics(diags, err)
+	}
+	return finishWithIdentityDiagnostics(diags)
+}
+
+// runMapSingleTC implements `map <tc-id>`: refuse an unprovable target, else print
+// the target's requirement group under policy (e) (ADR-024 5b "Single-TC forms").
+// It runs against the snapshot the caller already built, so a qualified target
+// enumerates once.
+func runMapSingleTC(w io.Writer, snap *testcase.Snapshot, projectRoot, detailID string, jsonOut bool, defaultFramework string, strictFramework bool) error {
+	report, targetErr, diags, err := reader.MapTargetDiagnosticsWithSnapshot(snap, projectRoot, detailID, defaultFramework, strictFramework)
+	if err != nil {
+		return err
+	}
+	if targetErr != nil {
+		if errors.Is(targetErr, reader.ErrMapTargetNotFound) {
+			msg := fmt.Sprintf("Test case %s not found.", detailID)
+			output.Errorf(msg, "")
+			return output.AsDisplayed(errors.New(msg))
+		}
+		// Ambiguous / Unprovable / display-field: empty stdout, diagnostic, exit 1.
+		output.Errorf(targetErr.Error(), "")
+		return output.AsDisplayed(targetErr)
+	}
+	// REV-184 round 7: a failed output write still emits the identity
+	// diagnostics, and keeps the write error and the non-zero exit.
+	if jsonOut {
+		if err := writeMapSingleTCJSON(w, report, detailID); err != nil {
+			return failWithIdentityDiagnostics(diags, err)
+		}
+		return finishWithIdentityDiagnostics(diags)
+	}
+	if err := writeMapSingleTC(w, report, detailID); err != nil {
+		return failWithIdentityDiagnostics(diags, err)
+	}
+	return finishWithIdentityDiagnostics(diags)
 }
 
 // writeMapJSON outputs the MapReport as indented JSON.

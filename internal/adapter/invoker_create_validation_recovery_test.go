@@ -25,6 +25,9 @@ import (
 const createBadSpecAndMalformedContractScript = `#!/bin/sh
 cat > "${GTMS_OUTPUT_DIR}/tc-aaaaaaaa-bad-spec.md" <<'SPEC'
 ---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-deadbeef
 title: bad spec
 ---

@@ -11,11 +11,16 @@ import (
 // admitted, so a plain README.md made delete, reset, automate, execute and
 // link --refresh all fail closed on the whole folder.
 func TestSnapshot_OrdinaryDocumentationIsNotAnOwnershipCandidate(t *testing.T) {
-	for _, name := range []string{"README.md", "NOTES.md", "index.md"} {
+	documents := map[string]string{
+		"README.md": "---\ntype: Reference\n---\n\n# Notes\n",
+		"NOTES.md":  "# Notes\n\nHow this folder works.\n",
+		"guide.md":  "---\ntitle: Author guide\n---\n\nNo testcase identity.\n",
+	}
+	for name, body := range documents {
 		t.Run(name, func(t *testing.T) {
 			root, cases := casesDirFor(t)
 			writeSpecID(t, cases, "feat/tc-11111111-login.md", "tc-11111111")
-			writeRaw(t, cases, "feat/"+name, "# Notes\n\nHow this folder works.\n")
+			writeRaw(t, cases, "feat/"+name, body)
 
 			snap := mustSnapshot(t, root)
 
@@ -84,7 +89,7 @@ func TestSnapshot_SpecShapedFileWithoutIDIsStillUnprovable(t *testing.T) {
 // "is this structurally a spec", not "is this named tc-*".
 func TestSnapshot_NonSpecNameDeclaringIDKeyIsAdmitted(t *testing.T) {
 	root, cases := casesDirFor(t)
-	writeRaw(t, cases, "feat/README.md", "---\ntest_case_id: \"\"\ntitle: \"t\"\n---\nbody\n")
+	writeRaw(t, cases, "feat/README.md", "---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: \"\"\ntitle: \"t\"\n---\nbody\n")
 
 	snap := mustSnapshot(t, root)
 	_, unprovable := snap.SelectFolder("gtms/test/cases/feat", false)

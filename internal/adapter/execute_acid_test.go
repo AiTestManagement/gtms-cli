@@ -6,13 +6,13 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 	"github.com/aitestmanagement/gtms-cli/internal/config"
 	"github.com/aitestmanagement/gtms-cli/internal/pipeline"
 	"github.com/aitestmanagement/gtms-cli/internal/result"
 	"github.com/aitestmanagement/gtms-cli/internal/task"
 	"github.com/aitestmanagement/gtms-cli/internal/wiring"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // setupExecuteTestProject creates a minimal project structure for execute acid tests.
@@ -40,6 +40,9 @@ func setupExecuteTestProject(t *testing.T) (string, *config.Config) {
 	// Create a test case file that automate/execute reference
 	testCasePath := filepath.Join(root, "gtms/test/cases", "tc-acid-checkout.md")
 	testCaseContent := `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-acid
 title: Acid Test Checkout Flow
 requirement: JIRA-100
@@ -342,7 +345,7 @@ func TestExecuteAcidTest_SameCodePath(t *testing.T) {
 	resolved1 := &ResolvedAdapter{
 		Command: "execute", Name: "sync-test",
 		Config: &config.AdapterConfig{Mode: "sync", Command: `echo "PASS"`},
-		Tier: 1, Mode: "sync",
+		Tier:   1, Mode: "sync",
 	}
 	res1, err := InvokeWithRoot(context.Background(), root, cfg, resolved1, "tc-acid", withOwner(t, root, "tc-acid", flags))
 	require.NoError(t, err)
@@ -382,7 +385,7 @@ func TestExecuteAcidTest_ContextFields(t *testing.T) {
 	resolved := &ResolvedAdapter{
 		Command: "execute", Name: "ctx-test",
 		Config: &config.AdapterConfig{Mode: "sync", Command: `echo "spec={artefact_file} tc={testcase}"`},
-		Tier: 1, Mode: "sync",
+		Tier:   1, Mode: "sync",
 	}
 
 	res, err := InvokeWithRoot(context.Background(), root, cfg, resolved, target, withOwner(t, root, target, flags))
@@ -678,7 +681,7 @@ func TestBUG029_Tier2ExecutePersistsArtefactHash(t *testing.T) {
 	// Create test case
 	require.NoError(t, os.WriteFile(
 		filepath.Join(root, "gtms/test/cases", "tc-bug029.md"),
-		[]byte("---\ntest_case_id: tc-bug029\ntitle: BUG-029 hash test\n---\n\n## Steps\n1. Test\n"), 0644,
+		[]byte("---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: tc-bug029\ntitle: BUG-029 hash test\n---\n\n## Steps\n1. Test\n"), 0644,
 	))
 
 	// Create spec file with known content
@@ -798,7 +801,7 @@ func TestBUG083_InvokerRestoresTargetAfterTier2Overwrite(t *testing.T) {
 
 	require.NoError(t, os.WriteFile(
 		filepath.Join(root, "gtms/test/cases", "tc-bug083.md"),
-		[]byte("---\ntest_case_id: tc-bug083\ntitle: BUG-083 target restore test\n---\n\n## Steps\n1. Test\n"), 0644,
+		[]byte("---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: tc-bug083\ntitle: BUG-083 target restore test\n---\n\n## Steps\n1. Test\n"), 0644,
 	))
 
 	specContent := []byte("#!/usr/bin/env bats\n@test \"example\" { true; }\n")

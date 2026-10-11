@@ -30,7 +30,7 @@ func addEscapeFolderWithTCChild(t *testing.T, root string) {
 	child := filepath.Join(external, "tc-scope")
 	require.NoError(t, os.MkdirAll(child, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(child, "tc-abc12345-external.md"),
-		[]byte("---\ntest_case_id: tc-abc12345\ntitle: External collider\n---\n"), 0o644))
+		[]byte("---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: tc-abc12345\ntitle: External collider\n---\n"), 0o644))
 	if err := os.Symlink(external, filepath.Join(root, "gtms/test/cases/escape")); err != nil {
 		t.Skipf("symlink unsupported in this environment: %v", err)
 	}

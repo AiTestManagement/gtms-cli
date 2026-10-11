@@ -304,11 +304,11 @@ func TestTestcaseHashPattern_Valid(t *testing.T) {
 }
 
 func TestTestcaseHashPattern_Invalid(t *testing.T) {
-	assert.False(t, testcaseHashPattern.MatchString("abc"))                  // too short
-	assert.False(t, testcaseHashPattern.MatchString("ABCDEF0123456789"))     // uppercase
-	assert.False(t, testcaseHashPattern.MatchString("abcdef01234567890"))    // too long (17)
-	assert.False(t, testcaseHashPattern.MatchString("abcdef012345678"))      // too short (15)
-	assert.False(t, testcaseHashPattern.MatchString("ghijkl0123456789"))     // non-hex
+	assert.False(t, testcaseHashPattern.MatchString("abc"))               // too short
+	assert.False(t, testcaseHashPattern.MatchString("ABCDEF0123456789"))  // uppercase
+	assert.False(t, testcaseHashPattern.MatchString("abcdef01234567890")) // too long (17)
+	assert.False(t, testcaseHashPattern.MatchString("abcdef012345678"))   // too short (15)
+	assert.False(t, testcaseHashPattern.MatchString("ghijkl0123456789"))  // non-hex
 }
 
 // --- populateManualExecuteFields tests (ENH-133 review-fix) ---
@@ -317,7 +317,7 @@ func TestTestcaseHashPattern_Invalid(t *testing.T) {
 // review-fix regression test for ENH-133: when the expected manual result
 // file is absent on disk, the deferred error message must name `gtms prime`
 // and `--framework manual` so the user has an actionable next step. This is
-// the ONLY missing-artefact path the manual framework must take — the
+// the ONLY missing-artefact path the manual framework must take -- the
 // generic pre-check in cli/execute.go must no longer fire and shadow this
 // hint.
 //
@@ -330,7 +330,7 @@ func TestPopulateManualExecuteFields_MissingResultFile_DirectsToPrime(t *testing
 	target := "tc-deadbeef"
 	framework := "manual"
 
-	// No gtms/manual/records/<tc>--manual.result.yaml on disk — that's
+	// No gtms/manual/records/<tc>--manual.result.yaml on disk -- that's
 	// the trigger for the deferred error.
 
 	ctx := &AdapterContext{}
@@ -384,7 +384,7 @@ func TestInvoke_ManualDeferredError_PersistsToFailed(t *testing.T) {
 	target := "tc-deadbeef"
 
 	// CON-023 / ENH-145: populateManualExecuteFields reads directly from
-	// gtms/manual/records/<tc>--manual.result.yaml — the legacy automation
+	// gtms/manual/records/<tc>--manual.result.yaml -- the legacy automation
 	// record is no longer consulted. Omitting the manual result file is
 	// the trigger for ManualExecuteError.
 
@@ -445,7 +445,7 @@ func TestInvoke_ManualDeferredError_PersistsToFailed(t *testing.T) {
 // Config: &AdapterConfig{Framework: ""}}. The CLI defers the generic
 // artefact pre-check because IsManualFramework returns true. Pre-fix the
 // invoker used `ResolveFramework() == "manual"`, which falls through to the
-// adapter-name fallback "manual-execute" — not "manual" — and therefore
+// adapter-name fallback "manual-execute" -- not "manual" -- and therefore
 // skipped populateManualExecuteFields. The Tier 2 manual-execute script
 // would then run with no GTMS_RESULT_TEMPLATE / GTMS_RESULT_VALUE / etc.
 // and fail late with a cryptic missing-env-var error instead of the
@@ -454,7 +454,7 @@ func TestInvoke_ManualDeferredError_PersistsToFailed(t *testing.T) {
 // Assertion: with no automation record on disk, populateManualExecuteFields
 // sets ctx.ManualExecuteError to the actionable hint. A non-nil
 // ManualExecuteError is sufficient evidence that the manual-fields path
-// was entered — the manual_test.go suite above already covers what
+// was entered -- the manual_test.go suite above already covers what
 // populateManualExecuteFields does once it's called.
 func TestBuildAdapterContext_ManualExecute_AdapterNameOnly_PopulatesManualFields(t *testing.T) {
 	root := t.TempDir()
@@ -469,7 +469,7 @@ func TestBuildAdapterContext_ManualExecute_AdapterNameOnly_PopulatesManualFields
 		Mode:    "sync",
 	}
 
-	ac := buildAdapterContext(root, "task-test001", resolved, "tc-cafef00d", CommandFlags{}, "feature/test", cfg, root, "/tmp/result.yaml", "")
+	ac := buildAdapterContext(root, "task-test001", resolved, "tc-cafef00d", CommandFlags{}, "feature/test", cfg, root, "/tmp/result.yaml", "", ValidatedTestCaseOwner{})
 
 	require.NotNil(t, ac, "buildAdapterContext must not return nil")
 	require.Error(t, ac.ManualExecuteError,
@@ -495,7 +495,7 @@ func TestBuildAdapterContext_NonManualExecute_DoesNotPopulateManualFields(t *tes
 		Mode:    "sync",
 	}
 
-	ac := buildAdapterContext(root, "task-test002", resolved, "tc-cafef00d", CommandFlags{}, "feature/test", cfg, root, "/tmp/result.yaml", "")
+	ac := buildAdapterContext(root, "task-test002", resolved, "tc-cafef00d", CommandFlags{}, "feature/test", cfg, root, "/tmp/result.yaml", "", ValidatedTestCaseOwner{})
 
 	require.NotNil(t, ac)
 	assert.NoError(t, ac.ManualExecuteError,
@@ -503,4 +503,3 @@ func TestBuildAdapterContext_NonManualExecute_DoesNotPopulateManualFields(t *tes
 	assert.Empty(t, ac.ResultTemplate, "manual-only context fields must remain empty for non-manual adapters")
 	assert.Empty(t, ac.ResultValue)
 }
-

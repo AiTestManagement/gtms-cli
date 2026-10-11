@@ -91,7 +91,7 @@ Adapter execution:
 				contextContent = string(data)
 			}
 
-			// ENH-125: resolve executed_by once at command entry (flag → env → git user.name).
+			// ENH-125: resolve executed_by once at command entry (flag -> env -> git user.name).
 			executedBy := pipeline.ResolveExecutedBy(ctx, root, executedByFlag)
 
 			// BUG-121: Validate --framework flag if provided (mirrors execute.go:113).
@@ -99,7 +99,7 @@ Adapter execution:
 			if frameworkFlag != "" && !config.ValidateFramework(frameworkFlag) {
 				msg := fmt.Sprintf("Invalid framework '%s'. Framework must contain only lowercase letters, digits, and hyphens.", frameworkFlag)
 				output.Errorf(msg, "Example: --framework playwright")
-				return output.AsDisplayed(fmt.Errorf(msg))
+				return output.AsDisplayed(errors.New(msg))
 			}
 
 			// No argument = run all test cases from root (recursive implied)
@@ -132,7 +132,7 @@ Adapter execution:
 				}
 				msg := fmt.Sprintf("Invalid test case ID format: '%s'.", sanitizeForError(res.Target))
 				output.Errorf(msg, "Use format like tc-a1b2c3d4.")
-				return output.AsDisplayed(fmt.Errorf(msg))
+				return output.AsDisplayed(errors.New(msg))
 			}
 
 			// --- Single TC mode (existing behavior) ---
@@ -147,7 +147,7 @@ Adapter execution:
 				if errors.Is(err, testcase.ErrOwnerNotFound) {
 					msg := fmt.Sprintf("Test case '%s' not found in gtms/test/cases/", res.Target)
 					output.Errorf(msg, "Create the test case first with 'gtms create'.")
-					return output.AsDisplayed(fmt.Errorf(msg))
+					return output.AsDisplayed(errors.New(msg))
 				}
 				output.Errorf(err.Error(), hint)
 				return output.AsDisplayed(err)
@@ -162,7 +162,7 @@ Adapter execution:
 			if violations := adapter.ValidateTestCaseOwner(root, owner); len(violations) > 0 {
 				summary := adapter.FormatValidationErrors(violations)
 				output.Errorf(summary, "Fix the test case frontmatter and try again.")
-				return output.AsDisplayed(fmt.Errorf(summary))
+				return output.AsDisplayed(errors.New(summary))
 			}
 
 			// Validate: no duplicate active task for this target
@@ -174,7 +174,7 @@ Adapter execution:
 				msg := fmt.Sprintf("An automate task for %s already exists: gtms/tasks/%s/%s-automate-%s.md",
 					target, existing.Status, existing.ID, existing.Target)
 				output.Errorf(msg, "Wait for the existing task to complete or remove it.")
-				return output.AsDisplayed(fmt.Errorf(msg))
+				return output.AsDisplayed(errors.New(msg))
 			}
 
 			// Resolve adapter
@@ -203,7 +203,7 @@ Adapter execution:
 
 			// BUG-171 / REV-125: when the built-in automate path will fail its
 			// pre-run prerequisites (unsupported framework, or supported but no
-			// configured runner), the invocation fails fast with a `✗`
+			// configured runner), the invocation fails fast with an error
 			// diagnostic. Suppress the progress spinner in that case so its
 			// static non-TTY line does not precede the headline on stderr. This
 			// reuses the SAME adapter-layer predicate as the bulk preflight -- it
@@ -446,7 +446,7 @@ func runBulkAutomate(cmd *cobra.Command, root string, folder string, adapterFlag
 
 	if failed > 0 {
 		msg := fmt.Sprintf("%d of %d test cases failed", failed, total)
-		return output.AsDisplayed(fmt.Errorf(msg))
+		return output.AsDisplayed(errors.New(msg))
 	}
 
 	return nil
@@ -455,7 +455,7 @@ func runBulkAutomate(cmd *cobra.Command, root string, folder string, adapterFlag
 // shouldSkipAutomate checks whether a TC should be skipped in bulk automate mode.
 // Returns a skip reason string, or empty if the TC should be processed.
 //
-// CON-023 / ENH-145: presence of a wiring record means this TC × framework
+// CON-023 / ENH-145: presence of a wiring record means this TC x framework
 // is already automated. The legacy automation-record lookup is retired --
 // after the cutover, wiring is the only source of automation identity.
 func shouldSkipAutomate(root, tcID, framework string) string {
@@ -488,7 +488,7 @@ func validateAutomateFolderStructure(root string) error {
 		if _, err := os.Stat(path); os.IsNotExist(err) {
 			msg := fmt.Sprintf("Required directory '%s' not found.", dir)
 			output.Errorf(msg, fmt.Sprintf("Create the GTMS folder structure: %s/, %s/", paths.TestCases, paths.Automation))
-			return output.AsDisplayed(fmt.Errorf(msg))
+			return output.AsDisplayed(errors.New(msg))
 		}
 	}
 	return nil
@@ -510,7 +510,7 @@ func truncateReason(reason string, maxLen int) string {
 }
 
 // renderMissingExecuteAdapter prints BUG-171's command-specific automate
-// guidance in the repo `✗ {what} / {what-to-do}` format. The capitalized
+// guidance in the repo error format. The capitalized
 // headline is built from the typed error's Framework field (never echoing the
 // raw lowercase adapter message), and the hint names BOTH valid recoveries for
 // an already-initialised project -- configure an adapters.execute runner, or

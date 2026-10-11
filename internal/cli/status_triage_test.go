@@ -35,7 +35,7 @@ func writeCliTriage(t *testing.T, root, tc, fw, value, snapResult string) {
 func writeCliSpec(t *testing.T, root, folder, tc string) {
 	t.Helper()
 	writeTestFile(t, root, filepath.Join("gtms/test/cases", folder, tc+".md"),
-		"---\ntest_case_id: "+tc+"\ntitle: "+tc+"\nrequirement: ENH-202\n---\n# body\n")
+		"---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: "+tc+"\ntitle: "+tc+"\nrequirement: ENH-202\n---\n# body\n")
 }
 
 // TestStatus_RootTriageFilterRefused pins tc-cd5d4d75 step 9: an unscoped root
@@ -149,7 +149,7 @@ func TestStatus_DetailTriageBlockHuman(t *testing.T) {
 	require.NoError(t, err)
 
 	var buf bytes.Buffer
-	require.NoError(t, runStatusDetail(&buf, root, "tc-11111111", false, "bats", true, true, "", values))
+	require.NoError(t, runStatusDetail(&buf, statusTestSnap(t, root), root, "tc-11111111", false, "bats", true, true, "", values))
 	unchanged := buf.String()
 	assert.Contains(t, unchanged, "TRIAGE:     environment")
 	assert.Contains(t, unchanged, "Summary:  creds expired")
@@ -159,7 +159,7 @@ func TestStatus_DetailTriageBlockHuman(t *testing.T) {
 	assert.NotContains(t, unchanged, "Shared environment problem", "human detail shows the key, never the label")
 
 	buf.Reset()
-	require.NoError(t, runStatusDetail(&buf, root, "tc-22222222", false, "bats", true, true, "", values))
+	require.NoError(t, runStatusDetail(&buf, statusTestSnap(t, root), root, "tc-22222222", false, "bats", true, true, "", values))
 	changed := buf.String()
 	assert.Contains(t, changed, "TRIAGE:     app-wrong "+output.IconWarning)
 	assert.Contains(t, changed, "Snapshot: fail; latest result: pass")
@@ -167,7 +167,7 @@ func TestStatus_DetailTriageBlockHuman(t *testing.T) {
 	assert.NotContains(t, changed, "Summary:")
 
 	buf.Reset()
-	require.NoError(t, runStatusDetail(&buf, root, "tc-33333333", false, "bats", true, true, "", values))
+	require.NoError(t, runStatusDetail(&buf, statusTestSnap(t, root), root, "tc-33333333", false, "bats", true, true, "", values))
 	unavail := buf.String()
 	assert.Contains(t, unavail, "Snapshot: fail; latest result: unavailable")
 	assert.NotContains(t, unavail, output.IconWarning)
@@ -197,4 +197,28 @@ func TestGaps_HumanTriageColumnsAndHeading(t *testing.T) {
 	require.NoError(t, runGaps(&buf, root, scope, false, "", false))
 	detailed := buf.String()
 	assert.Contains(t, detailed, "Currently failing: 2 (1 triaged, 1 untriaged)")
+}
+
+// TestStatus_TriageFilterAllAffected_NoEmptyMatchClaim pins REV-184 CODEX-002:
+// when every in-scope test case is an affected identity, `status <folder>
+// --triage <value>` must not claim "No test cases match" -- no reliable match
+// decision was possible (ADR-024 5b (e) point 7). Only the identity diagnostics
+// and exit 1 carry the verdict.
+func TestStatus_TriageFilterAllAffected_NoEmptyMatchClaim(t *testing.T) {
+	root := t.TempDir()
+	writeCliSpec(t, root, "checkout", "tc-11111111")
+	writeCliSpec(t, root, "search", "tc-11111111") // duplicate id: Ambiguous
+	writeCliTriage(t, root, "tc-11111111", "bats", "environment", "fail")
+	restore := withGapsGlobals(t, root, &config.Config{})
+	defer restore()
+
+	cmd := newStatusCmd()
+	require.NoError(t, cmd.Flags().Set("triage", "environment"))
+	var err error
+	out := captureStdout(t, func() { err = cmd.RunE(cmd, []string{"checkout"}) })
+
+	require.Error(t, err, "an affected identity must exit non-zero")
+	assert.True(t, output.IsDisplayed(err))
+	assert.NotContains(t, out, "No test cases match", "an all-affected result is not an empty match")
+	assert.NotContains(t, out, "tc-11111111")
 }

@@ -296,6 +296,9 @@ func createTestCase(t *testing.T, root, id, title string) {
 func createTestCaseInDir(t *testing.T, dir, id, title string) {
 	t.Helper()
 	content := fmt.Sprintf(`---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: %s
 title: %s
 requirement: ""

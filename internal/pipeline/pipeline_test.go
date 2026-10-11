@@ -37,7 +37,7 @@ func TestBuildAutomationRecord(t *testing.T) {
 		Adapter:   "local-claude",
 		Mode:      "sync",
 		Status:    "complete",
-		Result:  "pass",
+		Result:    "pass",
 		Artefact:  "gtms/automation/specs/tc-007-checkout-guest.spec.ts",
 		Attempts:  2,
 		Summary:   "Spec file generated after 2 attempts",
@@ -83,7 +83,7 @@ func TestBuildAutomationRecord_CycleIncrement(t *testing.T) {
 		Target:   "tc-007",
 		Adapter:  "local-claude",
 		Status:   "complete",
-		Result:  "pass",
+		Result:   "pass",
 		Artefact: "gtms/automation/specs/tc-007.spec.ts",
 		Attempts: 1,
 	}
@@ -125,7 +125,7 @@ func TestBuildAutomationRecord_CorruptedExistingRecordErrors(t *testing.T) {
 		Command:  "automate",
 		Target:   "tc-007",
 		Status:   "complete",
-		Result:  "pass",
+		Result:   "pass",
 		Artefact: "gtms/automation/specs/tc-007.spec.ts",
 		Attempts: 1,
 	}
@@ -231,7 +231,7 @@ func TestUpdateExecutionResult(t *testing.T) {
 		Target:    "tc-007",
 		Adapter:   "local-runner",
 		Status:    "complete",
-		Result:  "pass",
+		Result:    "pass",
 		Artefact:  "results/junit/tc-007.xml",
 		Completed: "2026-04-16T14:32:11Z",
 	}
@@ -491,7 +491,7 @@ func TestUpdateExecutionResult_ArtefactHash(t *testing.T) {
 		Target:       "tc-029",
 		Adapter:      "bats-runner",
 		Status:       "complete",
-		Result:  "pass",
+		Result:       "pass",
 		ArtefactHash: "newhash123456789",
 	}
 
@@ -536,7 +536,7 @@ func TestUpdateExecutionResult_EmptyHashPreservesExisting(t *testing.T) {
 		Target:       "tc-030",
 		Adapter:      "bats-runner",
 		Status:       "complete",
-		Result:  "pass",
+		Result:       "pass",
 		ArtefactHash: "", // empty — should NOT clear existing hash
 	}
 
@@ -583,7 +583,7 @@ func TestUpdateExecutionResult_SummaryOverwrite(t *testing.T) {
 		Target:    "tc-bug070a",
 		Adapter:   "bats-runner",
 		Status:    "complete",
-		Result:  "pass",
+		Result:    "pass",
 		Summary:   "2 passed, 1 skipped",
 		Completed: "2026-05-06T10:00:00Z",
 	}
@@ -629,7 +629,7 @@ func TestUpdateExecutionResult_EmptySummaryClearsStale(t *testing.T) {
 		Target:    "tc-bug070b",
 		Adapter:   "bats-runner",
 		Status:    "complete",
-		Result:  "pass",
+		Result:    "pass",
 		Summary:   "", // empty — must clear stale summary
 		Completed: "2026-05-06T10:00:00Z",
 	}
@@ -727,7 +727,7 @@ func TestUpdateExecutionResult_ShortSummaryUnchanged(t *testing.T) {
 		Target:    "tc-bug075b",
 		Adapter:   "bats-runner",
 		Status:    "complete",
-		Result:  "pass",
+		Result:    "pass",
 		Summary:   shortSummary,
 		Completed: "2026-05-07T10:00:00Z",
 	}
@@ -806,7 +806,7 @@ func TestBuildAutomationRecord_TwoFrameworks(t *testing.T) {
 		Target:   "tc-007",
 		Adapter:  "claude-bats",
 		Status:   "complete",
-		Result:  "pass",
+		Result:   "pass",
 		Artefact: "specs/tc-007.bats",
 		Attempts: 1,
 	}
@@ -1102,7 +1102,7 @@ func TestBuildAutomationRecord_TruncatesOversizeLogAndSpills(t *testing.T) {
 		Target:   "tc-automate01",
 		Adapter:  "local-claude",
 		Status:   "complete",
-		Result:  "pass",
+		Result:   "pass",
 		Artefact: "test/acceptance/tc-automate01.bats",
 		Attempts: 1,
 		Log:      bigLog,
@@ -1147,7 +1147,7 @@ func TestBuildAutomationRecord_ShortLogNoSpill(t *testing.T) {
 		Target:   "tc-automate02",
 		Adapter:  "local-claude",
 		Status:   "complete",
-		Result:  "pass",
+		Result:   "pass",
 		Artefact: "test/acceptance/tc-automate02.bats",
 		Attempts: 1,
 		Log:      shortLog,
@@ -1380,7 +1380,7 @@ func TestUpdateExecutionResult_WritesResultsFile(t *testing.T) {
 		Target:    "tc-b064001",
 		Adapter:   "bats-runner",
 		Status:    "complete",
-		Result:  "pass",
+		Result:    "pass",
 		Artefact:  "test/acceptance/b064/tc-b064001.bats",
 		Completed: "2026-05-04T10:00:05Z",
 		Summary:   "All tests passed",
@@ -1684,7 +1684,7 @@ func TestBuildAutomationRecord_WritesTestCaseHash(t *testing.T) {
 	require.NoError(t, os.MkdirAll(casesDir, 0755))
 	require.NoError(t, os.WriteFile(
 		filepath.Join(casesDir, "tc-hash01-test.md"),
-		[]byte("---\ntest_case_id: tc-hash01\ntitle: hash test\n---\nSome spec content\n"), 0644))
+		[]byte("---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: tc-hash01\ntitle: hash test\n---\nSome spec content\n"), 0644))
 
 	tf := &task.TaskFile{
 		ID:        "task-hash01",

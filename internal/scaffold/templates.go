@@ -114,11 +114,13 @@ func configForPreset(name, repo, preset string) string {
 //
 // Placeholders: ${TESTCASE_ID}, ${TITLE}, ${REQUIREMENT}, ${CREATED}
 const TestcaseTemplateMD = `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: ${TESTCASE_ID}
 title: "${TITLE}"
 requirement: ${REQUIREMENT}
 priority: Medium
-type: Functional
 created: ${CREATED}
 ---
 
@@ -234,7 +236,7 @@ Reference: {reference}
 - Each test case is a separate file block using <gtms-file name="<id>-<short-slug>.md">...</gtms-file> tags (e.g. <gtms-file name="tc-a3f72b10-login-valid.md">)
 - Each file block contains a complete test case with YAML frontmatter
 - Frontmatter test_case_id must match the ID used in the filename (e.g. tc-a3f72b10)
-- Required frontmatter fields: test_case_id, title, requirement (use the reference value), priority, type, created
+- Required frontmatter fields in this order: gtms_schema (exactly "test-case/v2"), type (exactly Test Case Spec), test_type (default Functional), test_case_id, title, requirement (use the reference value), priority, created
 - You may include a brief summary before the first <gtms-file> tag
 - If {tc_name} is non-empty, generate exactly one test case. Use the first ID from {tc_ids} and name the file <first-id>-{tc_name}.md (e.g. <gtms-file name="tc-a3f72b10-user-can-login.md">). Set the title: frontmatter field to a human-readable form of the name. Do not generate additional test cases.
 - If {tc_name} is empty, generate one test case per distinct behavior using the IDs from {tc_ids} in order with AI-chosen slugs
@@ -284,19 +286,24 @@ keys you can add as a TC matures from skeleton to fully-authored spec.
 
 ` + "```yaml" + `
 ---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-<8-char-hex-lowercase>
 title: "<slug if [name] was passed, empty otherwise>"
 requirement: <reference value -- present only when --reference was passed>
 priority: Medium
-type: Functional
 created: YYYY-MM-DD
 ---
 ` + "```" + `
 
 This is the contract the skeleton create adapter emits and the pipeline reads.
 ` + "`test_case_id`" + ` is the join key for every downstream stage; do not change it.
-` + "`priority`" + ` and ` + "`type`" + ` are stamped with safe defaults so the dashboard always
+` + "`priority`" + ` and ` + "`test_type`" + ` are stamped with safe defaults so the dashboard always
 has something to sort and filter by; edit them as the TC matures.
+
+` + "`test_type`" + ` is required, must be non-empty, and accepts an open vocabulary of category values.
+` + "`Functional`" + ` is the default when a producer has no category input; it is a default, not the complete list of allowed values.
 
 ### Recommended additions when authoring a richer spec
 
@@ -308,12 +315,10 @@ this header line gives reviewers a one-glance summary; rewrite the stamped
 title: "<Action> should <expected outcome> when <condition>"
 ` + "```" + `
 
-` + "`priority`" + ` and ` + "`type`" + ` accept the following ranges; the skeleton defaults are
-safe starting points:
+` + "`priority`" + ` accepts the following range; the skeleton default is a safe starting point:
 
 ` + "```yaml" + `
 priority: High | Medium | Low
-type: Functional | Performance | Security | Usability | Integration
 ` + "```" + `
 
 These additions are optional. Nothing in the pipeline requires them beyond the
@@ -644,21 +649,23 @@ else
   if [ -n "$GTMS_TEMPLATE_FILE" ]; then
     echo "warning: create template not found: $GTMS_TEMPLATE_FILE -- using built-in default" >&2
   fi
-  # Fallback: inline heredoc (day-one shape). REF_LINE emits a properly-quoted
-  # YAML scalar when --reference is set, or a bare key when empty -- matching
+  # Fallback: inline heredoc (day-one shape). REF_VALUE emits a properly-quoted
+  # YAML scalar when --reference is set, or an empty value when empty -- matching
   # the substitution semantics of the template-read path above.
   if [ -n "$GTMS_REFERENCE" ]; then
-    REF_LINE="requirement: \"$(yaml_escape "$GTMS_REFERENCE")\""
+    REF_VALUE="\"$(yaml_escape "$GTMS_REFERENCE")\""
   else
-    REF_LINE="requirement: "
+    REF_VALUE=""
   fi
 cat > "$OUTFILE" <<TCEOF
 ---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: ${ID}
 title: "${NAME_VALUE}"
-${REF_LINE}
+requirement: ${REF_VALUE}
 priority: Medium
-type: Functional
 created: $(date +%Y-%m-%d)
 ---
 
@@ -804,21 +811,23 @@ else
   if [ -n "$GTMS_TEMPLATE_FILE" ]; then
     echo "warning: create template not found: $GTMS_TEMPLATE_FILE -- using built-in default" >&2
   fi
-  # Fallback: inline heredoc (day-one shape). REF_LINE emits a properly-quoted
-  # YAML scalar when --reference is set, or a bare key when empty -- matching
+  # Fallback: inline heredoc (day-one shape). REF_VALUE emits a properly-quoted
+  # YAML scalar when --reference is set, or an empty value when empty -- matching
   # the substitution semantics of the template-read path above.
   if [ -n "$GTMS_REFERENCE" ]; then
-    REF_LINE="requirement: \"$(yaml_escape "$GTMS_REFERENCE")\""
+    REF_VALUE="\"$(yaml_escape "$GTMS_REFERENCE")\""
   else
-    REF_LINE="requirement: "
+    REF_VALUE=""
   fi
 cat > "$OUTFILE" <<TCEOF
 ---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: ${ID}
 title: "${NAME_VALUE}"
-${REF_LINE}
+requirement: ${REF_VALUE}
 priority: Medium
-type: Functional
 created: $(date +%Y-%m-%d)
 ---
 
@@ -940,11 +949,13 @@ EOF
 if [ -n "$ID1" ]; then
 cat > "$GTMS_OUTPUT_DIR/${ID1}-login-valid-credentials.md" <<TCEOF
 ---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: ${ID1}
 title: "Valid login succeeds with correct credentials"
 requirement: _demo
 priority: High
-type: Functional
 created: $(date +%Y-%m-%d)
 ---
 
@@ -982,11 +993,13 @@ fi
 if [ -n "$ID2" ]; then
 cat > "$GTMS_OUTPUT_DIR/${ID2}-login-invalid-password.md" <<TCEOF
 ---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: ${ID2}
 title: "Invalid password is rejected with error message"
 requirement: _demo
 priority: High
-type: Functional
 created: $(date +%Y-%m-%d)
 ---
 
@@ -1024,11 +1037,13 @@ fi
 if [ -n "$ID3" ]; then
 cat > "$GTMS_OUTPUT_DIR/${ID3}-login-empty-fields.md" <<TCEOF
 ---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: ${ID3}
 title: "Empty fields show validation errors"
 requirement: _demo
 priority: Medium
-type: Functional
 created: $(date +%Y-%m-%d)
 ---
 
@@ -1525,7 +1540,7 @@ result:
 title: "${TC_TITLE}"
 requirement: "${TC_REQUIREMENT}"
 priority: "${TC_PRIORITY}"
-type: "${TC_TYPE}"
+test_type: "${TEST_TYPE}"
 branch: ${BRANCH}
 
 # -- Steps (optional) -----------------------------------------------------
@@ -1583,9 +1598,9 @@ const manualResultSchema = `{
       "type": "string",
       "description": "Optional metadata: test case priority snapshot at prime time"
     },
-    "type": {
+    "test_type": {
       "type": "string",
-      "description": "Optional metadata: test case type snapshot at prime time"
+      "description": "Optional metadata: test case category snapshot at prime time"
     },
     "branch": {
       "type": "string",
@@ -1656,7 +1671,7 @@ const manualPrimeScript = `#!/bin/sh
 # Receives: GTMS_TESTCASE, GTMS_TESTCASE_HASH, GTMS_TEMPLATE_FILE,
 #           GTMS_OUTPUT_FILE, GTMS_BRANCH, GTMS_RESULT_FILE, GTMS_TASK_ID,
 #           GTMS_FORCE, GTMS_TC_TITLE, GTMS_TC_REQUIREMENT,
-#           GTMS_TC_PRIORITY, GTMS_TC_TYPE
+#           GTMS_TC_PRIORITY, GTMS_TEST_TYPE
 
 set -e
 
@@ -1711,7 +1726,7 @@ BRANCH_E=$(escape_sed "$GTMS_BRANCH")
 TC_TITLE_E=$(escape_sed "$(yaml_escape "$GTMS_TC_TITLE")")
 TC_REQUIREMENT_E=$(escape_sed "$(yaml_escape "$GTMS_TC_REQUIREMENT")")
 TC_PRIORITY_E=$(escape_sed "$(yaml_escape "$GTMS_TC_PRIORITY")")
-TC_TYPE_E=$(escape_sed "$(yaml_escape "$GTMS_TC_TYPE")")
+TEST_TYPE_E=$(escape_sed "$(yaml_escape "$GTMS_TEST_TYPE")")
 
 # ENH-161: Check template exists; fall back to inline heredoc if missing.
 if [ -f "$GTMS_TEMPLATE_FILE" ]; then
@@ -1722,7 +1737,7 @@ if [ -f "$GTMS_TEMPLATE_FILE" ]; then
     -e "s|\${TC_TITLE}|${TC_TITLE_E}|g" \
     -e "s|\${TC_REQUIREMENT}|${TC_REQUIREMENT_E}|g" \
     -e "s|\${TC_PRIORITY}|${TC_PRIORITY_E}|g" \
-    -e "s|\${TC_TYPE}|${TC_TYPE_E}|g" \
+    -e "s|\${TEST_TYPE}|${TEST_TYPE_E}|g" \
     "$GTMS_TEMPLATE_FILE" > "$GTMS_OUTPUT_FILE"
 else
   echo "warning: prime template not found: $GTMS_TEMPLATE_FILE -- using built-in default" >&2
@@ -1743,7 +1758,7 @@ result:
 title: "$(yaml_escape "$GTMS_TC_TITLE")"
 requirement: "$(yaml_escape "$GTMS_TC_REQUIREMENT")"
 priority: "$(yaml_escape "$GTMS_TC_PRIORITY")"
-type: "$(yaml_escape "$GTMS_TC_TYPE")"
+test_type: "$(yaml_escape "$GTMS_TEST_TYPE")"
 branch: ${GTMS_BRANCH}
 
 # -- Steps (optional) -----------------------------------------------------
@@ -1780,7 +1795,7 @@ const agentPrimeScript = `#!/bin/sh
 # Receives: GTMS_TESTCASE, GTMS_TESTCASE_HASH, GTMS_TEMPLATE_FILE,
 #           GTMS_OUTPUT_FILE, GTMS_BRANCH, GTMS_RESULT_FILE, GTMS_TASK_ID,
 #           GTMS_FORCE, GTMS_TC_TITLE, GTMS_TC_REQUIREMENT,
-#           GTMS_TC_PRIORITY, GTMS_TC_TYPE
+#           GTMS_TC_PRIORITY, GTMS_TEST_TYPE
 
 set -e
 
@@ -1830,7 +1845,7 @@ BRANCH_E=$(escape_sed "$GTMS_BRANCH")
 TC_TITLE_E=$(escape_sed "$(yaml_escape "$GTMS_TC_TITLE")")
 TC_REQUIREMENT_E=$(escape_sed "$(yaml_escape "$GTMS_TC_REQUIREMENT")")
 TC_PRIORITY_E=$(escape_sed "$(yaml_escape "$GTMS_TC_PRIORITY")")
-TC_TYPE_E=$(escape_sed "$(yaml_escape "$GTMS_TC_TYPE")")
+TEST_TYPE_E=$(escape_sed "$(yaml_escape "$GTMS_TEST_TYPE")")
 
 # ENH-161: Check template exists; fall back to inline heredoc if missing.
 if [ -f "$GTMS_TEMPLATE_FILE" ]; then
@@ -1841,7 +1856,7 @@ if [ -f "$GTMS_TEMPLATE_FILE" ]; then
     -e "s|\${TC_TITLE}|${TC_TITLE_E}|g" \
     -e "s|\${TC_REQUIREMENT}|${TC_REQUIREMENT_E}|g" \
     -e "s|\${TC_PRIORITY}|${TC_PRIORITY_E}|g" \
-    -e "s|\${TC_TYPE}|${TC_TYPE_E}|g" \
+    -e "s|\${TEST_TYPE}|${TEST_TYPE_E}|g" \
     "$GTMS_TEMPLATE_FILE" > "$GTMS_OUTPUT_FILE"
 else
   echo "warning: prime template not found: $GTMS_TEMPLATE_FILE -- using built-in default" >&2
@@ -1862,7 +1877,7 @@ result:
 title: "$(yaml_escape "$GTMS_TC_TITLE")"
 requirement: "$(yaml_escape "$GTMS_TC_REQUIREMENT")"
 priority: "$(yaml_escape "$GTMS_TC_PRIORITY")"
-type: "$(yaml_escape "$GTMS_TC_TYPE")"
+test_type: "$(yaml_escape "$GTMS_TEST_TYPE")"
 branch: ${GTMS_BRANCH}
 
 # -- Steps (optional) -----------------------------------------------------

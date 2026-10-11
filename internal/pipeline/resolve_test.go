@@ -397,45 +397,6 @@ func TestHashFile_ErrorOnMissing(t *testing.T) {
 	require.Error(t, err)
 }
 
-// --- ENH-117: ResolveTestCaseSpec tests ---
-
-func TestResolveTestCaseSpec_TopLevel(t *testing.T) {
-	root := t.TempDir()
-	casesDir := filepath.Join(root, "gtms", "test", "cases")
-	require.NoError(t, os.MkdirAll(casesDir, 0755))
-	require.NoError(t, os.WriteFile(
-		filepath.Join(casesDir, "tc-aaa11111-some-test.md"),
-		[]byte("---\ntest_case_id: tc-aaa11111\ntitle: test\n---\n"), 0644))
-
-	path, err := ResolveTestCaseSpec(root, "tc-aaa11111")
-	require.NoError(t, err)
-	assert.Equal(t, "gtms/test/cases/tc-aaa11111-some-test.md", path)
-}
-
-func TestResolveTestCaseSpec_Subfolder(t *testing.T) {
-	root := t.TempDir()
-	subDir := filepath.Join(root, "gtms", "test", "cases", "my-feature")
-	require.NoError(t, os.MkdirAll(subDir, 0755))
-	require.NoError(t, os.WriteFile(
-		filepath.Join(subDir, "tc-bbb22222-another-test.md"),
-		[]byte("---\ntest_case_id: tc-bbb22222\ntitle: test\n---\n"), 0644))
-
-	path, err := ResolveTestCaseSpec(root, "tc-bbb22222")
-	require.NoError(t, err)
-	assert.Equal(t, "gtms/test/cases/my-feature/tc-bbb22222-another-test.md", path)
-}
-
-func TestResolveTestCaseSpec_NotFound(t *testing.T) {
-	root := t.TempDir()
-	casesDir := filepath.Join(root, "gtms", "test", "cases")
-	require.NoError(t, os.MkdirAll(casesDir, 0755))
-
-	_, err := ResolveTestCaseSpec(root, "tc-nonexist")
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "tc-nonexist")
-	assert.Contains(t, err.Error(), "not found")
-}
-
 func skipIfShort(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping in short mode")

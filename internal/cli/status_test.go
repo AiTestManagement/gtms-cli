@@ -8,12 +8,23 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 	"github.com/aitestmanagement/gtms-cli/internal/config"
 	"github.com/aitestmanagement/gtms-cli/internal/output"
 	"github.com/aitestmanagement/gtms-cli/internal/reader"
+	"github.com/aitestmanagement/gtms-cli/internal/testcase"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
+
+// statusTestSnap builds a snapshot for the status <tc-id> detail tests. ENH-205
+// routed runStatusDetail through a caller-built snapshot so a qualified target
+// enumerates once.
+func statusTestSnap(t *testing.T, root string) *testcase.Snapshot {
+	t.Helper()
+	snap, err := testcase.NewSnapshot(root)
+	require.NoError(t, err)
+	return snap
+}
 
 // setupStatusFixture creates a minimal fixture project for status CLI tests.
 func setupStatusFixture(t *testing.T) string {
@@ -21,12 +32,18 @@ func setupStatusFixture(t *testing.T) string {
 	root := t.TempDir()
 
 	writeTestFile(t, root, filepath.Join("gtms/test/cases", "tc-aaa1111-login-happy.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-aaa1111
 title: Login Happy Path
 requirement: REQ-A
 ---
 `)
 	writeTestFile(t, root, filepath.Join("gtms/test/cases", "tc-bbb1111-checkout-flow.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-bbb1111
 title: Checkout Flow
 requirement: REQ-B
@@ -114,7 +131,7 @@ func TestRunStatusDetail_JSON(t *testing.T) {
 	root := setupStatusFixture(t)
 	var buf bytes.Buffer
 
-	err := runStatusDetail(&buf, root, "tc-aaa1111", true, "", false, false, "", nil)
+	err := runStatusDetail(&buf, statusTestSnap(t, root), root, "tc-aaa1111", true, "", false, false, "", nil)
 	require.NoError(t, err)
 
 	out := buf.String()
@@ -139,7 +156,7 @@ func TestRunStatusDetail_ShowsSlugInHeader(t *testing.T) {
 	root := setupStatusFixture(t)
 	var buf bytes.Buffer
 
-	err := runStatusDetail(&buf, root, "tc-aaa1111", false, "", false, false, "", nil)
+	err := runStatusDetail(&buf, statusTestSnap(t, root), root, "tc-aaa1111", false, "", false, false, "", nil)
 	require.NoError(t, err)
 
 	out := buf.String()
@@ -152,7 +169,7 @@ func TestRunStatusDetail_JSON_NotFound(t *testing.T) {
 	root := setupStatusFixture(t)
 	var buf bytes.Buffer
 
-	err := runStatusDetail(&buf, root, "tc-nonexistent", true, "", false, false, "", nil)
+	err := runStatusDetail(&buf, statusTestSnap(t, root), root, "tc-nonexistent", true, "", false, false, "", nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not found")
 }
@@ -209,6 +226,9 @@ func TestRunStatusOverview_NoKeyInJSON(t *testing.T) {
 func TestBUG017_FailedExecuteShowsXInTable(t *testing.T) {
 	root := t.TempDir()
 	writeTestFile(t, root, filepath.Join("gtms/test/cases", "tc-aaa1111-checkout.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-aaa1111
 title: Checkout Test
 requirement: REQ-A
@@ -245,6 +265,9 @@ branch: main
 func TestBUG017_FailedExecuteInJSON(t *testing.T) {
 	root := t.TempDir()
 	writeTestFile(t, root, filepath.Join("gtms/test/cases", "tc-aaa1111-checkout.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-aaa1111
 title: Checkout Test
 requirement: REQ-A
@@ -294,6 +317,9 @@ branch: main
 func TestBUG017_FailedExecuteDetailView(t *testing.T) {
 	root := t.TempDir()
 	writeTestFile(t, root, filepath.Join("gtms/test/cases", "tc-aaa1111-checkout.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-aaa1111
 title: Checkout Test
 requirement: REQ-A
@@ -318,7 +344,7 @@ branch: main
 `)
 
 	var buf bytes.Buffer
-	err := runStatusDetail(&buf, root, "tc-aaa1111", false, "", false, false, "", nil)
+	err := runStatusDetail(&buf, statusTestSnap(t, root), root, "tc-aaa1111", false, "", false, false, "", nil)
 	require.NoError(t, err)
 
 	out := buf.String()
@@ -399,12 +425,18 @@ func setupFolderSummaryFixture(t *testing.T) string {
 
 	// Folder "login" — 2 TCs, 1 automated with pass
 	writeTestFile(t, root, filepath.Join("gtms/test/cases", "login", "tc-aaa1111-login-happy.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-aaa1111
 title: Login Happy Path
 requirement: REQ-A
 ---
 `)
 	writeTestFile(t, root, filepath.Join("gtms/test/cases", "login", "tc-aaa2222-login-error.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-aaa2222
 title: Login Error
 requirement: REQ-A
@@ -419,6 +451,9 @@ requirement: REQ-A
 
 	// Folder "checkout" — 1 TC, no automation
 	writeTestFile(t, root, filepath.Join("gtms/test/cases", "checkout", "tc-bbb1111-checkout.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-bbb1111
 title: Checkout Flow
 requirement: REQ-B
@@ -456,12 +491,18 @@ func TestRunStatusFolderSummary_DraftAnnotation(t *testing.T) {
 	root := t.TempDir()
 
 	writeTestFile(t, root, filepath.Join("gtms/test/cases", "feature", "tc-aaa1111-draft.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-aaa1111
 title: Draft Test
 status: draft
 ---
 `)
 	writeTestFile(t, root, filepath.Join("gtms/test/cases", "feature", "tc-aaa2222-ready.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-aaa2222
 title: Ready Test
 ---
@@ -479,18 +520,27 @@ func TestRunStatusFolderSummary_DraftAnnotationPlural(t *testing.T) {
 	root := t.TempDir()
 
 	writeTestFile(t, root, filepath.Join("gtms/test/cases", "feature", "tc-aaa1111-draft1.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-aaa1111
 title: Draft Test 1
 status: draft
 ---
 `)
 	writeTestFile(t, root, filepath.Join("gtms/test/cases", "feature", "tc-aaa2222-draft2.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-aaa2222
 title: Draft Test 2
 status: draft
 ---
 `)
 	writeTestFile(t, root, filepath.Join("gtms/test/cases", "feature", "tc-aaa3333-ready.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-aaa3333
 title: Ready Test
 ---
@@ -591,6 +641,9 @@ func TestRunStatusOverview_ManualInAutomateColumn(t *testing.T) {
 	root := t.TempDir()
 
 	writeTestFile(t, root, filepath.Join("gtms/test/cases", "tc-aaa1111-manual.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-aaa1111
 title: Manual Test
 ---
@@ -610,6 +663,9 @@ func TestRunStatusOverview_ManualInJSON(t *testing.T) {
 	root := t.TempDir()
 
 	writeTestFile(t, root, filepath.Join("gtms/test/cases", "tc-aaa1111-manual.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-aaa1111
 title: Manual Test
 ---
@@ -640,11 +696,17 @@ func TestRunStatusFolderSummary_ManualExcludedFromAutomated(t *testing.T) {
 
 	// 2 TCs: one manual, one automated
 	writeTestFile(t, root, filepath.Join("gtms/test/cases", "feature", "tc-aaa1111-manual.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-aaa1111
 title: Manual Test
 ---
 `)
 	writeTestFile(t, root, filepath.Join("gtms/test/cases", "feature", "tc-bbb2222-auto.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-bbb2222
 title: Automated Test
 ---
@@ -746,7 +808,7 @@ func TestRunStatusDetail_FrameworkOnExecuteLine(t *testing.T) {
 	root := setupStatusFixture(t)
 	var buf bytes.Buffer
 
-	err := runStatusDetail(&buf, root, "tc-aaa1111", false, "", false, false, "", nil)
+	err := runStatusDetail(&buf, statusTestSnap(t, root), root, "tc-aaa1111", false, "", false, false, "", nil)
 	require.NoError(t, err)
 
 	out := buf.String()
@@ -758,7 +820,7 @@ func TestRunStatusDetail_NoFrameworkWhenNoResult(t *testing.T) {
 	var buf bytes.Buffer
 
 	// tc-bbb1111 has no automation record, so no result and no framework
-	err := runStatusDetail(&buf, root, "tc-bbb1111", false, "", false, false, "", nil)
+	err := runStatusDetail(&buf, statusTestSnap(t, root), root, "tc-bbb1111", false, "", false, false, "", nil)
 	require.NoError(t, err)
 
 	out := buf.String()
@@ -776,6 +838,9 @@ func TestBUG085_StatusDetailDoesNotDoubleRenderExecuteTimestamp(t *testing.T) {
 	root := t.TempDir()
 
 	writeTestFile(t, root, filepath.Join("gtms/test/cases", "tc-bug085-sample.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-bug085
 title: BUG-085 fixture
 requirement: REQ-X
@@ -791,7 +856,7 @@ requirement: REQ-X
 	})
 
 	var buf bytes.Buffer
-	err := runStatusDetail(&buf, root, "tc-bug085", false, "", false, false, "", nil)
+	err := runStatusDetail(&buf, statusTestSnap(t, root), root, "tc-bug085", false, "", false, false, "", nil)
 	require.NoError(t, err)
 	out := buf.String()
 
@@ -906,6 +971,9 @@ func TestRunStatusFolderSummary_SkipColumnHeaderPresent(t *testing.T) {
 	// output, so any case of the word "skip" in the header or key satisfies it.
 	root := t.TempDir()
 	writeTestFile(t, root, filepath.Join("gtms/test/cases", "feature", "tc-aaa1111-pass.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-aaa1111
 title: Pass
 ---
@@ -925,16 +993,25 @@ func TestRunStatusFolderSummary_SkipCountRenderedAsDigit(t *testing.T) {
 	// the foldera row.
 	root := t.TempDir()
 	writeTestFile(t, root, filepath.Join("gtms/test/cases", "foldera", "tc-10101010-skipped.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-10101010
 title: Skipped one
 ---
 `)
 	writeTestFile(t, root, filepath.Join("gtms/test/cases", "foldera", "tc-20202020-skipped.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-20202020
 title: Skipped two
 ---
 `)
 	writeTestFile(t, root, filepath.Join("gtms/test/cases", "foldera", "tc-30303030-pass.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-30303030
 title: Passing
 ---
@@ -1008,6 +1085,9 @@ func TestRunStatusFolderSummary_CreateColumnAlwaysCheck(t *testing.T) {
 	// a TC existing in gtms/test/cases/ IS the creation.
 	root := t.TempDir()
 	writeTestFile(t, root, filepath.Join("gtms/test/cases", "feature", "tc-aaa1111-fresh.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-aaa1111
 title: Fresh test case
 ---
@@ -1027,12 +1107,18 @@ func TestRunStatusFolderSummary_TCColumnHasDraftAnnotation(t *testing.T) {
 	// ENH-066's draft annotation moves to the TC column under ENH-089.
 	root := t.TempDir()
 	writeTestFile(t, root, filepath.Join("gtms/test/cases", "feature", "tc-aaa1111-draft.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-aaa1111
 title: Draft Test
 status: draft
 ---
 `)
 	writeTestFile(t, root, filepath.Join("gtms/test/cases", "feature", "tc-aaa2222-ready.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-aaa2222
 title: Ready Test
 ---
@@ -1049,6 +1135,9 @@ title: Ready Test
 func TestRunStatusFolderSummary_FailureRendersXMark(t *testing.T) {
 	root := t.TempDir()
 	writeTestFile(t, root, filepath.Join("gtms/test/cases", "checkout", "tc-aaa1111-checkout.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-aaa1111
 title: Checkout
 ---
@@ -1067,6 +1156,9 @@ title: Checkout
 func TestRunStatusFolderSummary_InFlightRendersFilledCircle(t *testing.T) {
 	root := t.TempDir()
 	writeTestFile(t, root, filepath.Join("gtms/test/cases", "feature", "tc-aaa1111-test.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-aaa1111
 title: Test
 ---
@@ -1096,11 +1188,17 @@ func TestRunStatusFolderSummary_JSONHasNewFields(t *testing.T) {
 	// Backward-compatible additive change to JSON.
 	root := t.TempDir()
 	writeTestFile(t, root, filepath.Join("gtms/test/cases", "feature", "tc-aaa1111-pass.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-aaa1111
 title: Pass
 ---
 `)
 	writeTestFile(t, root, filepath.Join("gtms/test/cases", "feature", "tc-aaa2222-fail.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-aaa2222
 title: Fail
 ---
@@ -1145,6 +1243,9 @@ func setupLogDetailFixture(t *testing.T, lastResult, logBody, logSpill string) s
 	root := t.TempDir()
 
 	writeTestFile(t, root, filepath.Join("gtms/test/cases", "tc-logui01-failure.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-logui01
 title: Failing thing
 requirement: ENH-077
@@ -1191,7 +1292,7 @@ func TestRunStatusDetail_ShowsLogBlockOnFail(t *testing.T) {
 		"not ok 1 - expected 1 got 0\n# in tc-logui01.bats line 12\n", "")
 
 	var buf bytes.Buffer
-	require.NoError(t, runStatusDetail(&buf, root, "tc-logui01", false, "", false, false, "", nil))
+	require.NoError(t, runStatusDetail(&buf, statusTestSnap(t, root), root, "tc-logui01", false, "", false, false, "", nil))
 	out := buf.String()
 
 	assert.Contains(t, out, "Notes:", "detail view must render Notes: header on fail")
@@ -1204,7 +1305,7 @@ func TestRunStatusDetail_ShowsLogBlockOnError(t *testing.T) {
 	root := setupLogDetailFixture(t, "error", "pwsh: command not found\n", "")
 
 	var buf bytes.Buffer
-	require.NoError(t, runStatusDetail(&buf, root, "tc-logui01", false, "", false, false, "", nil))
+	require.NoError(t, runStatusDetail(&buf, statusTestSnap(t, root), root, "tc-logui01", false, "", false, false, "", nil))
 	out := buf.String()
 
 	assert.Contains(t, out, "Notes:", "detail view must render Notes: header on error")
@@ -1217,7 +1318,7 @@ func TestRunStatusDetail_HidesLogBlockOnPass(t *testing.T) {
 	root := setupLogDetailFixture(t, "pass", "stale failure text\n", "")
 
 	var buf bytes.Buffer
-	require.NoError(t, runStatusDetail(&buf, root, "tc-logui01", false, "", false, false, "", nil))
+	require.NoError(t, runStatusDetail(&buf, statusTestSnap(t, root), root, "tc-logui01", false, "", false, false, "", nil))
 	out := buf.String()
 
 	assert.NotContains(t, out, "Notes:",
@@ -1229,7 +1330,7 @@ func TestRunStatusDetail_HidesLogBlockWhenLogEmpty(t *testing.T) {
 	root := setupLogDetailFixture(t, "fail", "", "")
 
 	var buf bytes.Buffer
-	require.NoError(t, runStatusDetail(&buf, root, "tc-logui01", false, "", false, false, "", nil))
+	require.NoError(t, runStatusDetail(&buf, statusTestSnap(t, root), root, "tc-logui01", false, "", false, false, "", nil))
 	out := buf.String()
 
 	assert.NotContains(t, out, "Notes:",
@@ -1242,7 +1343,7 @@ func TestRunStatusDetail_TruncatedLogHeaderShowsSpillPath(t *testing.T) {
 		".gtms/logs/task-huge01.log")
 
 	var buf bytes.Buffer
-	require.NoError(t, runStatusDetail(&buf, root, "tc-logui01", false, "", false, false, "", nil))
+	require.NoError(t, runStatusDetail(&buf, statusTestSnap(t, root), root, "tc-logui01", false, "", false, false, "", nil))
 	out := buf.String()
 
 	assert.Contains(t, out, "Notes:  (truncated to 64 KB",
@@ -1255,7 +1356,7 @@ func TestRunStatusDetail_JSONIncludesLogFieldsOnFail(t *testing.T) {
 	root := setupLogDetailFixture(t, "fail", "not ok 1 - oops\n", ".gtms/logs/task-x.log")
 
 	var buf bytes.Buffer
-	require.NoError(t, runStatusDetail(&buf, root, "tc-logui01", true, "", false, false, "", nil))
+	require.NoError(t, runStatusDetail(&buf, statusTestSnap(t, root), root, "tc-logui01", true, "", false, false, "", nil))
 
 	var detail reader.PipelineDetailEntry
 	require.NoError(t, json.Unmarshal(buf.Bytes(), &detail))
@@ -1267,7 +1368,7 @@ func TestRunStatusDetail_JSONOmitsEmptyLogFields(t *testing.T) {
 	root := setupLogDetailFixture(t, "fail", "", "")
 
 	var buf bytes.Buffer
-	require.NoError(t, runStatusDetail(&buf, root, "tc-logui01", true, "", false, false, "", nil))
+	require.NoError(t, runStatusDetail(&buf, statusTestSnap(t, root), root, "tc-logui01", true, "", false, false, "", nil))
 
 	// Raw JSON should not contain "log":"" or "log_spill":"" because the
 	// fields have omitempty tags.
@@ -1297,6 +1398,9 @@ func TestRunStatusOverview_SkippedRendering(t *testing.T) {
 	root := t.TempDir()
 
 	writeTestFile(t, root, filepath.Join("gtms/test/cases", "tc-skip01-test.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-skip01
 title: Skipped Test
 ---
@@ -1319,6 +1423,9 @@ func TestRunStatusOverview_SkippedInJSON(t *testing.T) {
 	root := t.TempDir()
 
 	writeTestFile(t, root, filepath.Join("gtms/test/cases", "tc-skip01-test.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-skip01
 title: Skipped Test
 ---
@@ -1683,6 +1790,9 @@ func TestBUG082_CLIStatusNoFramework_PesterOnlyCountsAsAutomated(t *testing.T) {
 	root := t.TempDir()
 
 	writeTestFile(t, root, filepath.Join("gtms/test/cases", "pester-only", "tc-aaa1111-pester.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-aaa1111
 title: Pester Test
 ---
@@ -1718,6 +1828,9 @@ func TestBUG082_CLIStatusNoFramework_JSON_PesterOnlyCountsAsAutomated(t *testing
 	root := t.TempDir()
 
 	writeTestFile(t, root, filepath.Join("gtms/test/cases", "pester-only", "tc-aaa1111-pester.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-aaa1111
 title: Pester Test
 ---
@@ -1756,6 +1869,9 @@ func TestBUG082_CLIGapsNoFramework_PesterOnlyCountsAsAutomated(t *testing.T) {
 	root := t.TempDir()
 
 	writeTestFile(t, root, filepath.Join("gtms/test/cases", "pester-only", "tc-aaa1111-pester.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-aaa1111
 title: Pester Test
 ---

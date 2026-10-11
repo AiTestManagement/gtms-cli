@@ -33,6 +33,7 @@ import (
 
 	"github.com/aitestmanagement/gtms-cli/internal/pipeline"
 	"github.com/aitestmanagement/gtms-cli/internal/result"
+	"github.com/aitestmanagement/gtms-cli/internal/testcase"
 	"github.com/aitestmanagement/gtms-cli/internal/wiring"
 )
 
@@ -104,9 +105,8 @@ func seedLegacyRecord(t *testing.T, root string, r legacyRecord) {
 
 	// Real hashes where possible so the wiring lands in TierCurrent and
 	// drift/missing-artefact gap categories stay quiet for these tests.
-	tcSpecPath, _ := pipeline.ResolveTestCaseSpec(root, r.TC)
-	if tcSpecPath != "" && r.TestCaseHash == "" {
-		if h, err := pipeline.HashFile(filepath.Join(root, filepath.FromSlash(tcSpecPath))); err == nil {
+	if owner, oerr := testcase.ResolveOwner(root, r.TC); oerr == nil && r.TestCaseHash == "" {
+		if h, err := pipeline.HashFile(owner.SpecAbs()); err == nil {
 			r.TestCaseHash = h
 		}
 	}

@@ -8,14 +8,21 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 	"github.com/aitestmanagement/gtms-cli/internal/config"
 	"github.com/aitestmanagement/gtms-cli/internal/result"
 	"github.com/aitestmanagement/gtms-cli/internal/task"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // --- Pure unit tests (no shell, no skipIfShort) ---
+
+func strictV2CreateFixture(content string) string {
+	if !strings.HasPrefix(content, "---\n") || strings.Contains(content, "\ngtms_schema:") {
+		return content
+	}
+	return strings.Replace(content, "---\n", "---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\n", 1)
+}
 
 func TestValidateCreateSpecs_HappyPath(t *testing.T) {
 	dir := t.TempDir()
@@ -25,7 +32,7 @@ func TestValidateCreateSpecs_HappyPath(t *testing.T) {
 	for _, id := range batchIDs {
 		content := "---\ntest_case_id: " + id + "\ntitle: test\n---\n# Test\n"
 		filename := id + "-some-slug.md"
-		require.NoError(t, os.WriteFile(filepath.Join(dir, filename), []byte(content), 0644))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, filename), []byte(strictV2CreateFixture(content)), 0644))
 	}
 
 	valResult, err := ValidateCreateSpecs(dir, batchIDs, nil, nil)
@@ -34,13 +41,90 @@ func TestValidateCreateSpecs_HappyPath(t *testing.T) {
 	assert.Empty(t, valResult.Degraded, "well-formed specs should produce no degraded entries")
 }
 
+func TestSchemaDiagnosticsSanitizeAuthoredControlBytes(t *testing.T) {
+	dir := t.TempDir()
+	doc := strictV2CreateFixture("---\ntest_case_id: tc-aaaaaaaa\n\"bad\\x1b\\nkey\": first\n\"bad\\x1b\\nkey\": second\n---\n")
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "tc-aaaaaaaa-case.md"), []byte(doc), 0o644))
+
+	result, err := ValidateCreateSpecs(dir, []string{"tc-aaaaaaaa"}, nil, nil)
+	require.NoError(t, err)
+	require.Len(t, result.Violations, 1)
+	assert.Contains(t, result.Violations[0].Reason, "duplicate YAML key: key 'bad??key'")
+	assertNoDiagnosticControlBytes(t, result.Violations[0].Reason)
+
+	carried := (&CarriedOwnerError{
+		Command: "execute",
+		Target:  "tc-aaaaaaaa",
+		Reason: "the owning spec changed -- " + FormatValidationErrors([]SpecValidationError{{
+			File:   "bad\x1bfile.md",
+			Reason: "authored bad\x1breason",
+		}}),
+	}).Error()
+	assert.Contains(t, carried, "\n    bad?file.md: authored bad?reason")
+	for _, b := range []byte(carried) {
+		assert.Truef(t, b >= 0x20 || b == '\n', "unexpected control byte 0x%02x: %q", b, carried)
+	}
+}
+
+func assertNoDiagnosticControlBytes(t *testing.T, value string) {
+	t.Helper()
+	for _, b := range []byte(value) {
+		assert.Truef(t, b >= 0x20 && b != 0x7f, "diagnostic contains control byte 0x%02x: %q", b, value)
+	}
+}
+
+func TestValidateCreateSpecs_ReservedCompanionsIgnored(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"index.md", "log.md"} {
+		path := filepath.Join(dir, name)
+		require.NoError(t, os.WriteFile(path, []byte("---\ntest_case_id: [broken\n"), 0o644))
+	}
+	canonical := "tc-aaaaaaaa-created.md"
+	require.NoError(t, os.WriteFile(filepath.Join(dir, canonical), []byte(strictV2CreateFixture(
+		"---\ntest_case_id: tc-bbbbbbbb\n---\n")), 0o644))
+
+	owned := map[string]struct{}{
+		"index.md": {},
+		"log.md":   {},
+		canonical:  {},
+	}
+	result, err := ValidateCreateSpecs(dir, []string{"tc-aaaaaaaa"}, nil, owned)
+	require.NoError(t, err)
+	// The tc- gate would also exclude these names. The reserved predicate is
+	// intentionally defence in depth because every scanner must apply it first.
+	for _, name := range []string{"index.md", "log.md"} {
+		for _, violation := range result.Violations {
+			assert.NotEqual(t, name, violation.File, "reserved companion entered violations")
+		}
+		for _, degraded := range result.Degraded {
+			assert.NotEqual(t, name, degraded.File, "reserved companion entered degraded results")
+		}
+	}
+	require.Len(t, result.Violations, 2)
+	for _, violation := range result.Violations {
+		assert.Equal(t, canonical, violation.File)
+	}
+	assert.Empty(t, result.Degraded)
+}
+
+func TestValidateCreateSpecs_ReservedCheckPrecedesGate(t *testing.T) {
+	src, err := os.ReadFile("validate_create.go")
+	require.NoError(t, err)
+
+	reservedIndex := strings.Index(string(src), "testcase.IsReservedCompanion(base)")
+	gateIndex := strings.Index(string(src), "gatePattern.MatchString(base)")
+	require.NotEqual(t, -1, reservedIndex, "reserved companion check must exist")
+	require.NotEqual(t, -1, gateIndex, "filename gate must exist")
+	require.Less(t, reservedIndex, gateIndex, "reserved companion check must precede filename gate")
+}
+
 func TestValidateCreateSpecs_MismatchedID(t *testing.T) {
 	dir := t.TempDir()
 	batchIDs := []string{"tc-aaaaaaaa", "tc-bbbbbbbb"}
 
 	// Filename says tc-aaaaaaaa, frontmatter says tc-bbbbbbbb
 	content := "---\ntest_case_id: tc-bbbbbbbb\ntitle: test\n---\n# Test\n"
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "tc-aaaaaaaa-slug.md"), []byte(content), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "tc-aaaaaaaa-slug.md"), []byte(strictV2CreateFixture(content)), 0644))
 
 	valResult, err := ValidateCreateSpecs(dir, batchIDs, nil, nil)
 	require.NoError(t, err)
@@ -52,21 +136,20 @@ func TestValidateCreateSpecs_MismatchedID(t *testing.T) {
 }
 
 func TestValidateCreateSpecs_MissingTestCaseID(t *testing.T) {
-	// BUG-106: missing test_case_id degrades to filename-only listing
-	// instead of producing a hard violation.
+	// ENH-219: supplied v2 candidates without identity are typed violations.
 	dir := t.TempDir()
 	batchIDs := []string{"tc-aaaaaaaa"}
 
 	// Frontmatter has no test_case_id field
 	content := "---\ntitle: test\npriority: high\n---\n# Test\n"
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "tc-aaaaaaaa-slug.md"), []byte(content), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "tc-aaaaaaaa-slug.md"), []byte(strictV2CreateFixture(content)), 0644))
 
 	valResult, err := ValidateCreateSpecs(dir, batchIDs, nil, nil)
 	require.NoError(t, err)
-	assert.Empty(t, valResult.Violations, "missing test_case_id should not produce a hard violation (BUG-106)")
-	require.Len(t, valResult.Degraded, 1)
-	assert.Equal(t, "tc-aaaaaaaa-slug.md", valResult.Degraded[0].File)
-	assert.Contains(t, valResult.Degraded[0].Reason, "missing required field 'test_case_id'")
+	require.Len(t, valResult.Violations, 1)
+	assert.Equal(t, "tc-aaaaaaaa-slug.md", valResult.Violations[0].File)
+	assert.Equal(t, "frontmatter is missing required field 'test_case_id'", valResult.Violations[0].Reason)
+	assert.Empty(t, valResult.Degraded)
 }
 
 func TestValidateCreateSpecs_DuplicateID(t *testing.T) {
@@ -76,10 +159,10 @@ func TestValidateCreateSpecs_DuplicateID(t *testing.T) {
 	// Two files both claiming tc-aaaaaaaa in frontmatter
 	// (first file has matching filename, second has different filename but same frontmatter ID)
 	content1 := "---\ntest_case_id: tc-aaaaaaaa\ntitle: test1\n---\n# Test 1\n"
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "tc-aaaaaaaa-first.md"), []byte(content1), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "tc-aaaaaaaa-first.md"), []byte(strictV2CreateFixture(content1)), 0644))
 
 	content2 := "---\ntest_case_id: tc-aaaaaaaa\ntitle: test2\n---\n# Test 2\n"
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "tc-bbbbbbbb-second.md"), []byte(content2), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "tc-bbbbbbbb-second.md"), []byte(strictV2CreateFixture(content2)), 0644))
 
 	valResult, err := ValidateCreateSpecs(dir, batchIDs, nil, nil)
 	require.NoError(t, err)
@@ -103,7 +186,7 @@ func TestValidateCreateSpecs_InventedID(t *testing.T) {
 	// File uses an ID not in the batch
 	inventedID := "tc-deadbeef"
 	content := "---\ntest_case_id: " + inventedID + "\ntitle: test\n---\n# Test\n"
-	require.NoError(t, os.WriteFile(filepath.Join(dir, inventedID+"-slug.md"), []byte(content), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, inventedID+"-slug.md"), []byte(strictV2CreateFixture(content)), 0644))
 
 	valResult, err := ValidateCreateSpecs(dir, batchIDs, nil, nil)
 	require.NoError(t, err)
@@ -129,7 +212,7 @@ func TestValidateCreateSpecs_EmptyDir(t *testing.T) {
 	assert.Empty(t, valResult.Degraded, "empty directory should produce no degraded entries")
 }
 
-func TestValidateCreateSpecs_NonMdFilesIgnored(t *testing.T) {
+func TestValidateCreateSpecs_CompanionsNotCounted(t *testing.T) {
 	dir := t.TempDir()
 	batchIDs := []string{"tc-aaaaaaaa"}
 
@@ -150,7 +233,7 @@ func TestValidateCreateSpecs_LeavesBadFilesOnDisk(t *testing.T) {
 	// Write a mismatched spec
 	badFile := filepath.Join(dir, "tc-aaaaaaaa-slug.md")
 	content := "---\ntest_case_id: tc-bbbbbbbb\ntitle: test\n---\n# Test\n"
-	require.NoError(t, os.WriteFile(badFile, []byte(content), 0644))
+	require.NoError(t, os.WriteFile(badFile, []byte(strictV2CreateFixture(content)), 0644))
 
 	valResult, err := ValidateCreateSpecs(dir, batchIDs, nil, nil)
 	require.NoError(t, err)
@@ -162,24 +245,22 @@ func TestValidateCreateSpecs_LeavesBadFilesOnDisk(t *testing.T) {
 }
 
 func TestValidateCreateSpecs_MultipleErrors(t *testing.T) {
-	// BUG-106: missing test_case_id now degrades instead of hard-failing.
-	// File 1 (mismatched ID) is a violation. File 2 (missing test_case_id)
-	// is a degraded entry. The combined total across both lists is >= 2.
+	// ENH-219: both identity mismatch and missing identity are violations.
 	dir := t.TempDir()
 	batchIDs := []string{"tc-aaaaaaaa", "tc-bbbbbbbb"}
 
 	// File 1: mismatched ID -> violation
 	content1 := "---\ntest_case_id: tc-bbbbbbbb\ntitle: test1\n---\n# Test 1\n"
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "tc-aaaaaaaa-first.md"), []byte(content1), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "tc-aaaaaaaa-first.md"), []byte(strictV2CreateFixture(content1)), 0644))
 
-	// File 2: missing test_case_id -> degraded (BUG-106)
+	// File 2: missing test_case_id -> violation
 	content2 := "---\ntitle: test2\n---\n# Test 2\n"
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "tc-bbbbbbbb-second.md"), []byte(content2), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "tc-bbbbbbbb-second.md"), []byte(strictV2CreateFixture(content2)), 0644))
 
 	valResult, err := ValidateCreateSpecs(dir, batchIDs, nil, nil)
 	require.NoError(t, err)
-	assert.GreaterOrEqual(t, len(valResult.Violations), 1, "should report violation for mismatched ID")
-	assert.Len(t, valResult.Degraded, 1, "should report degraded entry for missing test_case_id")
+	assert.GreaterOrEqual(t, len(valResult.Violations), 2, "should report both supplied-file violations")
+	assert.Empty(t, valResult.Degraded)
 }
 
 func TestValidateCreateSpecs_NonExistentDir(t *testing.T) {
@@ -206,14 +287,14 @@ func TestValidateCreateSpecs_IgnoresNestedFiles(t *testing.T) {
 
 	// Top-level file: well-formed, in the batch -- should validate cleanly.
 	topContent := "---\ntest_case_id: tc-aaaaaaaa\ntitle: top\n---\n# Top\n"
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "tc-aaaaaaaa-top.md"), []byte(topContent), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "tc-aaaaaaaa-top.md"), []byte(strictV2CreateFixture(topContent)), 0644))
 
 	// Nested file: frontmatter ID mismatches filename AND is not in the batch.
 	// If the validator descended, this would produce two violations.
 	subDir := filepath.Join(dir, "sub-a")
 	require.NoError(t, os.MkdirAll(subDir, 0755))
 	nestedContent := "---\ntest_case_id: tc-22222222\ntitle: nested drift\n---\n# Nested\n"
-	require.NoError(t, os.WriteFile(filepath.Join(subDir, "tc-11111111-nested-drift.md"), []byte(nestedContent), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(subDir, "tc-11111111-nested-drift.md"), []byte(strictV2CreateFixture(nestedContent)), 0644))
 
 	valResult, err := ValidateCreateSpecs(dir, batchIDs, nil, nil)
 	require.NoError(t, err)
@@ -269,6 +350,9 @@ func TestBUG038_CreateValidatorRejectsIDMismatch(t *testing.T) {
 	// We can't know the batch IDs ahead of time (they're generated at invocation),
 	// so we write a frontmatter ID that is clearly wrong regardless of batch.
 	cmdTemplate := `sh -c 'echo "---
+gtms_schema: \"test-case/v2\"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-deadbeef
 title: bad spec
 ---
@@ -350,12 +434,12 @@ func TestValidateCreateSpecs_SkipsPreExistingFiles(t *testing.T) {
 	// Pre-existing file from a prior invocation (not in current batch)
 	preContent := "---\ntest_case_id: tc-aaaaaaaa\ntitle: old test\n---\n# Old Test\n"
 	preFile := "tc-aaaaaaaa-old-slug.md"
-	require.NoError(t, os.WriteFile(filepath.Join(dir, preFile), []byte(preContent), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, preFile), []byte(strictV2CreateFixture(preContent)), 0644))
 
 	// New file from current invocation (in current batch)
 	newContent := "---\ntest_case_id: tc-bbbbbbbb\ntitle: new test\n---\n# New Test\n"
 	newFile := "tc-bbbbbbbb-new-slug.md"
-	require.NoError(t, os.WriteFile(filepath.Join(dir, newFile), []byte(newContent), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, newFile), []byte(strictV2CreateFixture(newContent)), 0644))
 
 	// Only tc-bbbbbbbb is in the current batch
 	batchIDs := []string{"tc-bbbbbbbb"}
@@ -376,12 +460,12 @@ func TestValidateCreateSpecs_StillCatchesNewFileViolations(t *testing.T) {
 	// Pre-existing valid file (will be skipped)
 	preContent := "---\ntest_case_id: tc-aaaaaaaa\ntitle: old test\n---\n# Old Test\n"
 	preFile := "tc-aaaaaaaa-old-slug.md"
-	require.NoError(t, os.WriteFile(filepath.Join(dir, preFile), []byte(preContent), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, preFile), []byte(strictV2CreateFixture(preContent)), 0644))
 
 	// New file with mismatched frontmatter ID (should be caught)
 	newContent := "---\ntest_case_id: tc-deadbeef\ntitle: bad test\n---\n# Bad Test\n"
 	newFile := "tc-bbbbbbbb-bad-slug.md"
-	require.NoError(t, os.WriteFile(filepath.Join(dir, newFile), []byte(newContent), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, newFile), []byte(strictV2CreateFixture(newContent)), 0644))
 
 	batchIDs := []string{"tc-bbbbbbbb"}
 	preExisting := map[string]struct{}{
@@ -403,7 +487,7 @@ func TestValidateCreateSpecs_NilPreExistingValidatesAll(t *testing.T) {
 
 	// A file not in the batch -- when preExisting is nil, it should be validated (and fail)
 	content := "---\ntest_case_id: tc-aaaaaaaa\ntitle: test\n---\n# Test\n"
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "tc-aaaaaaaa-slug.md"), []byte(content), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "tc-aaaaaaaa-slug.md"), []byte(strictV2CreateFixture(content)), 0644))
 
 	// Batch does NOT include tc-aaaaaaaa
 	batchIDs := []string{"tc-bbbbbbbb"}
@@ -432,7 +516,7 @@ func TestBUG040_IterativeCreateSucceeds(t *testing.T) {
 	// Simulate a pre-existing spec file from a prior invocation.
 	// This file has an ID NOT in the current batch -- the exact scenario BUG-040 describes.
 	preContent := "---\ntest_case_id: tc-11111111\ntitle: prior invocation spec\n---\n# Prior\n"
-	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "tc-11111111-prior-spec.md"), []byte(preContent), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "tc-11111111-prior-spec.md"), []byte(strictV2CreateFixture(preContent)), 0644))
 
 	// Adapter that writes no new spec files (just echoes). The validator should
 	// see the pre-existing file in the snapshot and skip it, resulting in success.
@@ -464,7 +548,7 @@ func TestValidateCreateSpecs_BareID_HappyPath(t *testing.T) {
 	batchIDs := []string{"tc-aaaaaaaa", "tc-bbbbbbbb"}
 
 	content := "---\ntest_case_id: tc-aaaaaaaa\ntitle: bare file test\n---\n# Test\n"
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "tc-aaaaaaaa.md"), []byte(content), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "tc-aaaaaaaa.md"), []byte(strictV2CreateFixture(content)), 0644))
 
 	valResult, err := ValidateCreateSpecs(dir, batchIDs, nil, nil)
 	require.NoError(t, err)
@@ -473,20 +557,19 @@ func TestValidateCreateSpecs_BareID_HappyPath(t *testing.T) {
 }
 
 func TestValidateCreateSpecs_BareID_MissingTestCaseID(t *testing.T) {
-	// BUG-106: bare tc-{8hex}.md with missing test_case_id degrades
-	// to filename-only listing instead of hard-failing.
+	// ENH-219: bare tc-{8hex}.md with missing test_case_id is rejected.
 	dir := t.TempDir()
 	batchIDs := []string{"tc-aaaaaaaa"}
 
 	content := "---\ntitle: no id field\npriority: high\n---\n# Test\n"
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "tc-aaaaaaaa.md"), []byte(content), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "tc-aaaaaaaa.md"), []byte(strictV2CreateFixture(content)), 0644))
 
 	valResult, err := ValidateCreateSpecs(dir, batchIDs, nil, nil)
 	require.NoError(t, err)
-	assert.Empty(t, valResult.Violations, "missing test_case_id on bare file should not hard-fail (BUG-106)")
-	require.Len(t, valResult.Degraded, 1)
-	assert.Equal(t, "tc-aaaaaaaa.md", valResult.Degraded[0].File)
-	assert.Contains(t, valResult.Degraded[0].Reason, "missing required field 'test_case_id'")
+	require.Len(t, valResult.Violations, 1)
+	assert.Equal(t, "tc-aaaaaaaa.md", valResult.Violations[0].File)
+	assert.Equal(t, "frontmatter is missing required field 'test_case_id'", valResult.Violations[0].Reason)
+	assert.Empty(t, valResult.Degraded)
 }
 
 func TestValidateCreateSpecs_BareID_MalformedTestCaseID(t *testing.T) {
@@ -496,7 +579,7 @@ func TestValidateCreateSpecs_BareID_MalformedTestCaseID(t *testing.T) {
 	batchIDs := []string{"tc-aaaaaaaa"}
 
 	content := "---\ntest_case_id: not-a-valid-id\ntitle: bad format\n---\n# Test\n"
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "tc-aaaaaaaa.md"), []byte(content), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "tc-aaaaaaaa.md"), []byte(strictV2CreateFixture(content)), 0644))
 
 	valResult, err := ValidateCreateSpecs(dir, batchIDs, nil, nil)
 	require.NoError(t, err)
@@ -511,7 +594,7 @@ func TestValidateCreateSpecs_BareID_MismatchedID(t *testing.T) {
 	batchIDs := []string{"tc-aaaaaaaa", "tc-bbbbbbbb"}
 
 	content := "---\ntest_case_id: tc-bbbbbbbb\ntitle: mismatched\n---\n# Test\n"
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "tc-aaaaaaaa.md"), []byte(content), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "tc-aaaaaaaa.md"), []byte(strictV2CreateFixture(content)), 0644))
 
 	valResult, err := ValidateCreateSpecs(dir, batchIDs, nil, nil)
 	require.NoError(t, err)
@@ -536,7 +619,7 @@ func TestValidateCreateSpecs_BareID_NotInBatch(t *testing.T) {
 	batchIDs := []string{"tc-bbbbbbbb"} // tc-aaaaaaaa is NOT in the batch
 
 	content := "---\ntest_case_id: tc-aaaaaaaa\ntitle: out of batch\n---\n# Test\n"
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "tc-aaaaaaaa.md"), []byte(content), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "tc-aaaaaaaa.md"), []byte(strictV2CreateFixture(content)), 0644))
 
 	valResult, err := ValidateCreateSpecs(dir, batchIDs, nil, nil)
 	require.NoError(t, err)
@@ -561,11 +644,11 @@ func TestValidateCreateSpecs_BareAndSlugged_DuplicateID(t *testing.T) {
 
 	// Bare file claims tc-aaaaaaaa
 	bare := "---\ntest_case_id: tc-aaaaaaaa\ntitle: bare\n---\n# Bare\n"
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "tc-aaaaaaaa.md"), []byte(bare), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "tc-aaaaaaaa.md"), []byte(strictV2CreateFixture(bare)), 0644))
 
 	// Slugged file also claims tc-aaaaaaaa (via frontmatter)
 	slugged := "---\ntest_case_id: tc-aaaaaaaa\ntitle: slugged\n---\n# Slugged\n"
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "tc-aaaaaaaa-some-slug.md"), []byte(slugged), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "tc-aaaaaaaa-some-slug.md"), []byte(strictV2CreateFixture(slugged)), 0644))
 
 	valResult, err := ValidateCreateSpecs(dir, batchIDs, nil, nil)
 	require.NoError(t, err)
@@ -581,14 +664,14 @@ func TestValidateCreateSpecs_BareAndSlugged_DuplicateID(t *testing.T) {
 	assert.Contains(t, dupViolation.Reason, "tc-aaaaaaaa")
 }
 
-func TestValidateCreateSpecs_MalformedShape(t *testing.T) {
+func TestValidateCreateSpecs_GateMatchingMalformedFilename(t *testing.T) {
 	// AC 6: malformed filename matching tc-{8hex} but neither bare nor slugged form
 	// (e.g. tc-aaaaaaaafoo.md) fails with a prescriptive shape error.
 	dir := t.TempDir()
 	batchIDs := []string{"tc-aaaaaaaa"}
 
 	content := "---\ntest_case_id: tc-aaaaaaaa\ntitle: malformed\n---\n# Test\n"
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "tc-aaaaaaaafoo.md"), []byte(content), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "tc-aaaaaaaafoo.md"), []byte(strictV2CreateFixture(content)), 0644))
 
 	valResult, err := ValidateCreateSpecs(dir, batchIDs, nil, nil)
 	require.NoError(t, err)
@@ -606,7 +689,7 @@ func TestValidateCreateSpecs_BareID_PreExistingSkipped(t *testing.T) {
 
 	// Bare file from a prior invocation -- not in current batch, but preExisting
 	content := "---\ntest_case_id: tc-aaaaaaaa\ntitle: old bare\n---\n# Old\n"
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "tc-aaaaaaaa.md"), []byte(content), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "tc-aaaaaaaa.md"), []byte(strictV2CreateFixture(content)), 0644))
 
 	preExisting := map[string]struct{}{
 		"tc-aaaaaaaa.md": {},
@@ -623,7 +706,7 @@ func TestValidateCreateSpecs_MalformedShape_PreExistingSkipped(t *testing.T) {
 	batchIDs := []string{"tc-bbbbbbbb"}
 
 	content := "---\ntest_case_id: tc-aaaaaaaa\ntitle: malformed old\n---\n# Old\n"
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "tc-aaaaaaaafoo.md"), []byte(content), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "tc-aaaaaaaafoo.md"), []byte(strictV2CreateFixture(content)), 0644))
 
 	preExisting := map[string]struct{}{
 		"tc-aaaaaaaafoo.md": {},
@@ -634,74 +717,55 @@ func TestValidateCreateSpecs_MalformedShape_PreExistingSkipped(t *testing.T) {
 	assert.Empty(t, valResult.Violations, "pre-existing malformed file should be silently skipped")
 }
 
-// --- BUG-106: degraded listing policy tests ---
+// --- BUG-106 supply paths under ENH-219 strict validation ---
 
-func TestValidateCreateSpecs_BUG106_MissingFrontmatter_Degrades(t *testing.T) {
-	// BUG-106: a bare file with NO YAML frontmatter at all degrades to
-	// filename-only listing instead of hard-failing. This is the core
-	// policy pin for tc-bf911180.
+func TestValidateCreateSpecs_BUG106_MissingFrontmatterRejects(t *testing.T) {
 	dir := t.TempDir()
 	batchIDs := []string{"tc-aaaaaaaa"}
 
 	// File has no --- delimiters, just body content.
 	content := "# Missing frontmatter fixture\n\nThis file intentionally has no YAML frontmatter.\n"
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "tc-aaaaaaaa.md"), []byte(content), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "tc-aaaaaaaa.md"), []byte(strictV2CreateFixture(content)), 0644))
 
 	valResult, err := ValidateCreateSpecs(dir, batchIDs, nil, nil)
 	require.NoError(t, err)
-	assert.Empty(t, valResult.Violations, "missing frontmatter should not produce a hard violation")
-	require.Len(t, valResult.Degraded, 1)
-	assert.Equal(t, "tc-aaaaaaaa.md", valResult.Degraded[0].File)
+	require.Len(t, valResult.Violations, 1)
+	assert.Equal(t, "no frontmatter block: expected a leading YAML frontmatter block", valResult.Violations[0].Reason)
+	assert.Empty(t, valResult.Degraded)
 }
 
-func TestValidateCreateSpecs_BUG106_MalformedYAML_Degrades(t *testing.T) {
-	// BUG-106: a bare file with malformed YAML frontmatter degrades to
-	// filename-only listing instead of hard-failing. This is the core
-	// policy pin for tc-e678f58f.
-	//
-	// The frontmatter library may partially parse malformed YAML. When it
-	// can extract something but test_case_id is empty or garbled, the file
-	// degrades via the "missing test_case_id" path. When it fails entirely,
-	// the file degrades via the "could not parse frontmatter" path. Either
-	// way, the result is Degraded (not Violations).
+func TestValidateCreateSpecs_BUG106_MalformedYAMLRejects(t *testing.T) {
 	dir := t.TempDir()
 	batchIDs := []string{"tc-aaaaaaaa"}
 
 	// Malformed YAML: unterminated quote, no closing --- fence.
-	// The frontmatter library may partially parse this, yielding an empty
-	// test_case_id. Either degradation path (parse error or missing ID) is
-	// acceptable -- the key assertion is that no hard violation is produced.
 	content := "---\ntest_case_id: tc-aaaaaaaa\ntitle: \"open quote with colon: parser should fail\nrequirement: BUG-106\n\nbody has no closing fence\n"
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "tc-aaaaaaaa.md"), []byte(content), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "tc-aaaaaaaa.md"), []byte(strictV2CreateFixture(content)), 0644))
 
 	valResult, err := ValidateCreateSpecs(dir, batchIDs, nil, nil)
 	require.NoError(t, err)
-	assert.Empty(t, valResult.Violations, "malformed YAML should not produce a hard violation")
-	require.Len(t, valResult.Degraded, 1)
-	assert.Equal(t, "tc-aaaaaaaa.md", valResult.Degraded[0].File)
+	require.Len(t, valResult.Violations, 1)
+	assert.Contains(t, valResult.Violations[0].Reason, "could not parse frontmatter:")
+	assert.Empty(t, valResult.Degraded)
 }
 
-func TestValidateCreateSpecs_BUG106_MixedValidAndDegraded(t *testing.T) {
-	// BUG-106: when one file is valid and another has missing frontmatter,
-	// the valid sibling should pass strict checks while the missing-frontmatter
-	// sibling degrades. No hard violations should appear for the degraded file.
-	// This is the policy pin for tc-a5159593.
+func TestValidateCreateSpecs_BUG106_MixedValidAndInvalid(t *testing.T) {
 	dir := t.TempDir()
 	batchIDs := []string{"tc-aaaaaaaa", "tc-bbbbbbbb"}
 
 	// Valid file
 	validContent := "---\ntest_case_id: tc-aaaaaaaa\ntitle: Valid sibling title\n---\n# Valid\n"
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "tc-aaaaaaaa.md"), []byte(validContent), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "tc-aaaaaaaa.md"), []byte(strictV2CreateFixture(validContent)), 0644))
 
-	// File with no frontmatter at all -- degrades to filename-only.
+	// File with no frontmatter at all -- rejected without hiding the valid sibling.
 	noFrontmatterContent := "# No frontmatter\n\nThis file has no YAML header.\n"
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "tc-bbbbbbbb.md"), []byte(noFrontmatterContent), 0644))
 
 	valResult, err := ValidateCreateSpecs(dir, batchIDs, nil, nil)
 	require.NoError(t, err)
-	assert.Empty(t, valResult.Violations, "mixed batch should produce no hard violations")
-	require.Len(t, valResult.Degraded, 1, "only the no-frontmatter file should degrade")
-	assert.Equal(t, "tc-bbbbbbbb.md", valResult.Degraded[0].File)
+	require.Len(t, valResult.Violations, 1)
+	assert.Equal(t, "tc-bbbbbbbb.md", valResult.Violations[0].File)
+	assert.Empty(t, valResult.Degraded)
 }
 
 func TestValidateCreateSpecs_BUG106_ParseableIDOutsideBatch_HardFails(t *testing.T) {
@@ -712,7 +776,7 @@ func TestValidateCreateSpecs_BUG106_ParseableIDOutsideBatch_HardFails(t *testing
 	batchIDs := []string{"tc-bbbbbbbb"} // tc-99999999 is NOT in the batch
 
 	content := "---\ntest_case_id: tc-99999999\ntitle: Out of batch fixture\n---\n# Test\n"
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "tc-99999999.md"), []byte(content), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "tc-99999999.md"), []byte(strictV2CreateFixture(content)), 0644))
 
 	valResult, err := ValidateCreateSpecs(dir, batchIDs, nil, nil)
 	require.NoError(t, err)
@@ -721,20 +785,18 @@ func TestValidateCreateSpecs_BUG106_ParseableIDOutsideBatch_HardFails(t *testing
 	assert.Contains(t, valResult.Violations[0].Reason, "not in the pre-generated batch")
 }
 
-func TestValidateCreateSpecs_BUG106_SluggedMissingTestCaseID_Degrades(t *testing.T) {
-	// BUG-106: the degradation policy applies uniformly to both bare and
-	// slugged files. A slugged file with missing test_case_id degrades.
+func TestValidateCreateSpecs_BUG106_SluggedMissingTestCaseIDRejects(t *testing.T) {
 	dir := t.TempDir()
 	batchIDs := []string{"tc-aaaaaaaa"}
 
 	content := "---\ntitle: no id field\npriority: high\n---\n# Test\n"
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "tc-aaaaaaaa-some-slug.md"), []byte(content), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "tc-aaaaaaaa-some-slug.md"), []byte(strictV2CreateFixture(content)), 0644))
 
 	valResult, err := ValidateCreateSpecs(dir, batchIDs, nil, nil)
 	require.NoError(t, err)
-	assert.Empty(t, valResult.Violations, "missing test_case_id on slugged file should not hard-fail (BUG-106)")
-	require.Len(t, valResult.Degraded, 1)
-	assert.Equal(t, "tc-aaaaaaaa-some-slug.md", valResult.Degraded[0].File)
+	require.Len(t, valResult.Violations, 1)
+	assert.Equal(t, "tc-aaaaaaaa-some-slug.md", valResult.Violations[0].File)
+	assert.Empty(t, valResult.Degraded)
 }
 
 // --- BUG-110: ownedFiles scoping tests ---
@@ -748,13 +810,13 @@ func TestValidateCreateSpecs_OwnedFiles_OnlyValidatesOwned(t *testing.T) {
 
 	// File owned by this invocation -- in batchA, should validate cleanly.
 	ownedContent := "---\ntest_case_id: tc-aaaaaaaa\ntitle: owned\n---\n# Owned\n"
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "tc-aaaaaaaa-owned.md"), []byte(ownedContent), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "tc-aaaaaaaa-owned.md"), []byte(strictV2CreateFixture(ownedContent)), 0644))
 
 	// Sibling file from another invocation -- NOT in batchA. Without
 	// ownedFiles, this would produce a "not in the pre-generated batch"
 	// violation. With ownedFiles, it must be silently skipped.
 	siblingContent := "---\ntest_case_id: tc-bbbbbbbb\ntitle: sibling\n---\n# Sibling\n"
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "tc-bbbbbbbb-sibling.md"), []byte(siblingContent), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "tc-bbbbbbbb-sibling.md"), []byte(strictV2CreateFixture(siblingContent)), 0644))
 
 	ownedFiles := map[string]struct{}{
 		"tc-aaaaaaaa-owned.md": {},
@@ -775,7 +837,7 @@ func TestValidateCreateSpecs_OwnedFiles_StillCatchesOwnedViolations(t *testing.T
 
 	// Owned file with mismatched frontmatter ID -- should produce violation.
 	badContent := "---\ntest_case_id: tc-deadbeef\ntitle: bad\n---\n# Bad\n"
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "tc-aaaaaaaa-bad.md"), []byte(badContent), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "tc-aaaaaaaa-bad.md"), []byte(strictV2CreateFixture(badContent)), 0644))
 
 	ownedFiles := map[string]struct{}{
 		"tc-aaaaaaaa-bad.md": {},
@@ -795,7 +857,7 @@ func TestValidateCreateSpecs_OwnedFiles_NilFallsBackToDirScan(t *testing.T) {
 
 	// File NOT in batchA -- should produce a violation when ownedFiles is nil.
 	content := "---\ntest_case_id: tc-bbbbbbbb\ntitle: out of batch\n---\n# Test\n"
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "tc-bbbbbbbb-slug.md"), []byte(content), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "tc-bbbbbbbb-slug.md"), []byte(strictV2CreateFixture(content)), 0644))
 
 	valResult, err := ValidateCreateSpecs(dir, batchA, nil, nil)
 	require.NoError(t, err)
@@ -815,11 +877,11 @@ func TestValidateCreateSpecs_ConcurrentSimulation(t *testing.T) {
 
 	// Invocation A's file
 	contentA := "---\ntest_case_id: tc-aaaaaaaa\ntitle: invocation A\n---\n# A\n"
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "tc-aaaaaaaa-inv-a.md"), []byte(contentA), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "tc-aaaaaaaa-inv-a.md"), []byte(strictV2CreateFixture(contentA)), 0644))
 
 	// Invocation B's file
 	contentB := "---\ntest_case_id: tc-bbbbbbbb\ntitle: invocation B\n---\n# B\n"
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "tc-bbbbbbbb-inv-b.md"), []byte(contentB), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "tc-bbbbbbbb-inv-b.md"), []byte(strictV2CreateFixture(contentB)), 0644))
 
 	ownedA := map[string]struct{}{
 		"tc-aaaaaaaa-inv-a.md": {},
@@ -853,7 +915,7 @@ func TestValidateCreateSpecs_OwnedFiles_PreExistingTakesPrecedence(t *testing.T)
 
 	content := "---\ntest_case_id: tc-aaaaaaaa\ntitle: test\n---\n# Test\n"
 	filename := "tc-aaaaaaaa-slug.md"
-	require.NoError(t, os.WriteFile(filepath.Join(dir, filename), []byte(content), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, filename), []byte(strictV2CreateFixture(content)), 0644))
 
 	preExisting := map[string]struct{}{
 		filename: {},
@@ -865,4 +927,45 @@ func TestValidateCreateSpecs_OwnedFiles_PreExistingTakesPrecedence(t *testing.T)
 	valResult, err := ValidateCreateSpecs(dir, batchA, preExisting, ownedFiles)
 	require.NoError(t, err)
 	assert.Empty(t, valResult.Violations, "preExisting should take precedence over ownedFiles")
+}
+
+func TestValidateCreateSpecs_V2RejectionMatrix(t *testing.T) {
+	valid := "---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: tc-aaaaaaaa\ntitle: Matrix\n---\n"
+	tests := []struct {
+		name   string
+		doc    string
+		reason string
+	}{
+		{name: "unversioned", doc: "---\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: tc-aaaaaaaa\n---\n", reason: "missing schema discriminator: key 'gtms_schema' is absent"},
+		{name: "future schema", doc: strings.Replace(valid, `test-case/v2`, `test-case/v999`, 1), reason: "unsupported schema version: key 'gtms_schema' has value 'test-case/v999'; expected 'test-case/v2'"},
+		{name: "hybrid", doc: strings.Replace(valid, "type: Test Case Spec", "type: Functional", 1), reason: "wrong concept type: key 'type' has value 'Functional'; expected 'Test Case Spec'"},
+		{name: "non-exact concept", doc: strings.Replace(valid, "type: Test Case Spec", "type: test case spec", 1), reason: "wrong concept type: key 'type' has value 'test case spec'; expected 'Test Case Spec'"},
+		{name: "missing test type", doc: strings.Replace(valid, "test_type: Functional\n", "", 1), reason: "missing or empty test category: key 'test_type' has value absent; expected a non-empty scalar string"},
+		{name: "non-scalar test type", doc: strings.Replace(valid, "test_type: Functional", "test_type: [Functional]", 1), reason: "malformed YAML: key 'test_type' has sequence value; expected a non-empty scalar string"},
+		{name: "empty test type", doc: strings.Replace(valid, "test_type: Functional", `test_type: ""`, 1), reason: "missing or empty test category: key 'test_type' has empty string value; expected a non-empty scalar string"},
+		{name: "whitespace test type", doc: strings.Replace(valid, "test_type: Functional", `test_type: "  "`, 1), reason: "missing or empty test category: key 'test_type' has whitespace-only value; expected a non-empty scalar string"},
+		{name: "filename identity mismatch", doc: strings.Replace(valid, "tc-aaaaaaaa", "tc-bbbbbbbb", 1), reason: "frontmatter test_case_id 'tc-bbbbbbbb' does not match filename ID 'tc-aaaaaaaa'"},
+		{name: "no block", doc: "# body only\n", reason: "no frontmatter block: expected a leading YAML frontmatter block"},
+		{name: "malformed yaml", doc: "---\ngtms_schema: \"test-case/v2\"\ntitle: [unterminated\n", reason: "could not parse frontmatter:"},
+		{name: "missing identity", doc: strings.Replace(valid, "test_case_id: tc-aaaaaaaa\n", "", 1), reason: "frontmatter is missing required field 'test_case_id'"},
+	}
+
+	for _, tt := range tests {
+		for _, supply := range []string{"reported basenames", "scoped fallback"} {
+			t.Run(tt.name+"/"+supply, func(t *testing.T) {
+				dir := t.TempDir()
+				const filename = "tc-aaaaaaaa-matrix.md"
+				require.NoError(t, os.WriteFile(filepath.Join(dir, filename), []byte(tt.doc), 0o644))
+				var owned map[string]struct{}
+				if supply == "reported basenames" {
+					owned = map[string]struct{}{filename: {}}
+				}
+				result, err := ValidateCreateSpecs(dir, []string{"tc-aaaaaaaa"}, nil, owned)
+				require.NoError(t, err)
+				require.NotEmpty(t, result.Violations)
+				assert.Contains(t, result.Violations[0].Reason, tt.reason)
+				assert.Empty(t, result.Degraded)
+			})
+		}
+	}
 }

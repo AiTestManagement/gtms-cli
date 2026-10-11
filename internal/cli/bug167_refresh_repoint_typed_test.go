@@ -155,7 +155,7 @@ func TestRefreshRepoint_ExistingTCShapedFolder_RoutesToFolder(t *testing.T) {
 	// A real folder named "tc-shaped11" holding a member TC with stale wiring.
 	memberSpec := filepath.Join(root, "gtms/test/cases/tc-shaped11/tc-99999999-member.md")
 	require.NoError(t, os.MkdirAll(filepath.Dir(memberSpec), 0o755))
-	require.NoError(t, os.WriteFile(memberSpec, []byte("---\ntest_case_id: tc-99999999\ntitle: member\n---\n"), 0o644))
+	require.NoError(t, os.WriteFile(memberSpec, []byte("---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: tc-99999999\ntitle: member\n---\n"), 0o644))
 	memberArt := filepath.Join(root, "test/acceptance/tc-shaped11/member.bats")
 	require.NoError(t, os.MkdirAll(filepath.Dir(memberArt), 0o755))
 	require.NoError(t, os.WriteFile(memberArt, []byte("@test \"m\" { true; }\n"), 0o644))

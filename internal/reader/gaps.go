@@ -1,10 +1,10 @@
 package reader
 
 import (
-	"fmt"
 	"sort"
 
 	"github.com/aitestmanagement/gtms-cli/internal/layout"
+	"github.com/aitestmanagement/gtms-cli/internal/testcase"
 )
 
 // Gaps returns all coverage gaps. Categories surfaced post-CON-023 / ENH-146:
@@ -32,14 +32,34 @@ import (
 // (CurrentlyFailing / ExecutionErrors / RuntimeSkipped / Stale* / MissingArtefact).
 // NoAutomation classification is unchanged (driven by hasNonManualRecord).
 func Gaps(projectRoot string, scope *ScopeInfo, defaultFramework string, strictFramework bool) (*GapReport, error) {
-	testCases, err := scanTestCases(projectRoot, scope)
+	report, diags, err := GapsWithDiagnostics(projectRoot, scope, defaultFramework, strictFramework)
 	if err != nil {
-		return nil, fmt.Errorf("scanning test cases: %w", err)
+		return nil, err
+	}
+	if ierr := incompleteReadErr(diags); ierr != nil {
+		return nil, ierr
+	}
+	return report, nil
+}
+
+// GapsWithDiagnostics is the ENH-205 gaps operation on the snapshot. It resolves
+// identity from ONE snapshot per operation and returns the gap report over the
+// proven, unique, decodable owners plus the identity diagnostics for policy (e): a
+// duplicated or unprovable test case appears in no category and no total, is named
+// on stderr, and the command exits 1 (tc-3c5ae939).
+func GapsWithDiagnostics(projectRoot string, scope *ScopeInfo, defaultFramework string, strictFramework bool) (*GapReport, IdentityDiagnostics, error) {
+	snap, err := testcase.NewSnapshot(projectRoot)
+	if err != nil {
+		return nil, IdentityDiagnostics{}, err
+	}
+	testCases, diags, err := resolveScopedSpecs(snap, projectRoot, scope)
+	if err != nil {
+		return nil, IdentityDiagnostics{}, err
 	}
 
 	autoRecords, err := scanAutomationRecords(projectRoot)
 	if err != nil {
-		return nil, fmt.Errorf("scanning automation records: %w", err)
+		return nil, IdentityDiagnostics{}, err
 	}
 
 	report := &GapReport{
@@ -188,8 +208,10 @@ func Gaps(projectRoot string, scope *ScopeInfo, defaultFramework string, strictF
 			if strictFramework && defaultFramework != "" && w.Framework != defaultFramework {
 				continue
 			}
-			c := ClassifyWiring(projectRoot, w)
-			// ClassifyWiring suppresses StaleArtefactHash whenever the artefact
+			// ENH-205: classify against the proven owner's spec (tc.SourceFile from
+			// the snapshot) rather than resolving the spec by filename walk per record.
+			c := classifyWiringForSpec(projectRoot, tc.SourceFile, w)
+			// classifyWiringForSpec suppresses StaleArtefactHash whenever the artefact
 			// is missing — the hash cannot be computed and we never claim
 			// artefact drift in that state.
 			if c.MissingArtefact {
@@ -225,7 +247,7 @@ func Gaps(projectRoot string, scope *ScopeInfo, defaultFramework string, strictF
 	}
 	activeTriage, atErr := activeTriageByTC(projectRoot, failingIDs)
 	if atErr != nil {
-		return nil, atErr
+		return nil, IdentityDiagnostics{}, atErr
 	}
 	for _, e := range report.CurrentlyFailing {
 		byFramework := activeTriage[e.ID]
@@ -262,7 +284,7 @@ func Gaps(projectRoot string, scope *ScopeInfo, defaultFramework string, strictF
 	sortGapEntries(report.MissingArtefact)
 	sortGapEntries(report.DriftDetected)
 
-	return report, nil
+	return report, diags, nil
 }
 
 // hasFrameworkRecord returns true if the slice contains at least one automation record
@@ -309,14 +331,32 @@ func (r *GapReport) TotalGaps() int {
 // counts come exclusively from wiring records overlaid with terminal result
 // contracts.
 func GapsFolderSummary(projectRoot string, defaultFramework string) ([]GapsFolderSummaryEntry, error) {
-	testCases, err := scanTestCases(projectRoot, nil)
+	entries, diags, err := GapsFolderSummaryWithDiagnostics(projectRoot, defaultFramework)
 	if err != nil {
-		return nil, fmt.Errorf("scanning test cases: %w", err)
+		return nil, err
+	}
+	if ierr := incompleteReadErr(diags); ierr != nil {
+		return nil, ierr
+	}
+	return entries, nil
+}
+
+// GapsFolderSummaryWithDiagnostics is the ENH-205 gaps folder summary on the
+// snapshot: one snapshot per operation, affected identities left out of every
+// per-folder count, named on stderr, exit 1 (tc-63407e55).
+func GapsFolderSummaryWithDiagnostics(projectRoot string, defaultFramework string) ([]GapsFolderSummaryEntry, IdentityDiagnostics, error) {
+	snap, err := testcase.NewSnapshot(projectRoot)
+	if err != nil {
+		return nil, IdentityDiagnostics{}, err
+	}
+	testCases, diags, err := resolveScopedSpecs(snap, projectRoot, nil)
+	if err != nil {
+		return nil, IdentityDiagnostics{}, err
 	}
 
 	autoRecords, err := scanAutomationRecords(projectRoot)
 	if err != nil {
-		return nil, fmt.Errorf("scanning automation records: %w", err)
+		return nil, IdentityDiagnostics{}, err
 	}
 
 	// ENH-202: shared triage-record enumeration (active only) for the folder-wide
@@ -326,7 +366,7 @@ func GapsFolderSummary(projectRoot string, defaultFramework string) ([]GapsFolde
 	// validated, including one whose test case no longer exists.
 	activeTriage, err := activeTriageByTC(projectRoot, nil)
 	if err != nil {
-		return nil, err
+		return nil, IdentityDiagnostics{}, err
 	}
 
 	tcDir := layout.TestCasesDir(projectRoot)
@@ -449,7 +489,9 @@ func GapsFolderSummary(projectRoot string, defaultFramework string) ([]GapsFolde
 			case "skipped":
 				sawSkipped = true
 			}
-			if isStaleTestCaseHash(projectRoot, ar) {
+			// ENH-205: hash against the proven owner (tc.SourceFile) from the
+			// snapshot rather than resolving the spec by filename walk per record.
+			if isStaleTestCaseHashForSpec(tc.SourceFile, ar) {
 				sawStaleTC = true
 			}
 		}
@@ -492,5 +534,5 @@ func GapsFolderSummary(projectRoot string, defaultFramework string) ([]GapsFolde
 		return entries[i].Folder < entries[j].Folder
 	})
 
-	return entries, nil
+	return entries, diags, nil
 }

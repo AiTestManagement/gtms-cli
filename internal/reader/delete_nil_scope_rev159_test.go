@@ -27,7 +27,7 @@ func seedDeleteProject(t *testing.T) string {
 		t.Fatalf("mkdir: %v", err)
 	}
 	spec := filepath.Join(cases, "tc-abcd1234-login.md")
-	if err := os.WriteFile(spec, []byte("---\ntest_case_id: tc-abcd1234\ntitle: \"t\"\n---\n\nbody\n"), 0o644); err != nil {
+	if err := os.WriteFile(spec, []byte("---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: tc-abcd1234\ntitle: \"t\"\n---\n\nbody\n"), 0o644); err != nil {
 		t.Fatalf("write spec: %v", err)
 	}
 	return root

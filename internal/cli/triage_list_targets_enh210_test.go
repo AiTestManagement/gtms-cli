@@ -43,7 +43,7 @@ func seedTC99999999(t *testing.T, root string) {
 	t.Helper()
 	writeTriageProjectFile(t, root, "gtms.config", "project:\n  name: x\n  repo: x\n")
 	writeTriageProjectFile(t, root, "gtms/test/cases/search/tc-99999999.md",
-		"---\ntest_case_id: tc-99999999\ntitle: t\n---\nbody\n")
+		"---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: tc-99999999\ntitle: t\n---\nbody\n")
 	writeTriageProjectFile(t, root, "gtms/triage/tc-99999999--bats.triage.yaml",
 		"version: 1\ntest_case_id: tc-99999999\nframework: bats\nstatus: active\nvalue: environment\nclassified_at: 2026-09-01T09:00:00Z\nsnapshot:\n  task: t\n  result: fail\n")
 }

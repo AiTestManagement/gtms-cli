@@ -25,6 +25,9 @@ import (
 func TestMapPhase3D_CLIJSON_WiredEntryShape(t *testing.T) {
 	root := t.TempDir()
 	writeTestFile(t, root, filepath.Join("gtms/test/cases", "tc-aaa1111-wired.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-aaa1111
 title: Wired TC
 requirement: REQ-A
@@ -36,7 +39,7 @@ requirement: REQ-A
 	})
 
 	var buf bytes.Buffer
-	require.NoError(t, runMap(&buf, root, nil, false, "", true, "", false))
+	require.NoError(t, runMap(&buf, root, nil, false, true, "", false))
 
 	var report map[string]interface{}
 	require.NoError(t, json.Unmarshal(buf.Bytes(), &report))
@@ -75,6 +78,9 @@ requirement: REQ-A
 func TestMapPhase3D_CLIJSON_NotWiredSerialisesSelectedFrameworkAsNull(t *testing.T) {
 	root := t.TempDir()
 	writeTestFile(t, root, filepath.Join("gtms/test/cases", "tc-bbb1111-bare.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-bbb1111
 title: Bare TC
 requirement: REQ-B
@@ -82,7 +88,7 @@ requirement: REQ-B
 `)
 
 	var buf bytes.Buffer
-	require.NoError(t, runMap(&buf, root, nil, false, "", true, "", false))
+	require.NoError(t, runMap(&buf, root, nil, false, true, "", false))
 
 	var report map[string]interface{}
 	require.NoError(t, json.Unmarshal(buf.Bytes(), &report))
@@ -107,6 +113,9 @@ requirement: REQ-B
 func TestMapPhase3D_CLIJSON_MultiFrameworkWorstOfRule(t *testing.T) {
 	root := t.TempDir()
 	writeTestFile(t, root, filepath.Join("gtms/test/cases", "tc-ccc1111-multifw.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-ccc1111
 title: Multi-framework TC
 requirement: REQ-M
@@ -120,7 +129,7 @@ requirement: REQ-M
 	})
 
 	var buf bytes.Buffer
-	require.NoError(t, runMap(&buf, root, nil, false, "", true, "", false))
+	require.NoError(t, runMap(&buf, root, nil, false, true, "", false))
 
 	var report map[string]interface{}
 	require.NoError(t, json.Unmarshal(buf.Bytes(), &report))
@@ -144,6 +153,9 @@ requirement: REQ-M
 func TestMapPhase3D_CLIText_MultiFrameworkRendersFailIcon(t *testing.T) {
 	root := t.TempDir()
 	writeTestFile(t, root, filepath.Join("gtms/test/cases", "tc-ddd1111-mixed.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-ddd1111
 title: Mixed outcome TC
 requirement: REQ-D
@@ -157,7 +169,7 @@ requirement: REQ-D
 	})
 
 	var buf bytes.Buffer
-	require.NoError(t, runMap(&buf, root, nil, false, "", false, "", false))
+	require.NoError(t, runMap(&buf, root, nil, false, false, "", false))
 
 	out := buf.String()
 	// The fail icon (output.IconError) is "✗" — the EXECUTE column
@@ -172,6 +184,9 @@ requirement: REQ-D
 func TestMapPhase3D_CLIJSON_OrphanResultDoesNotLeak(t *testing.T) {
 	root := t.TempDir()
 	writeTestFile(t, root, filepath.Join("gtms/test/cases", "tc-eee1111-orphan.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-eee1111
 title: Orphan result TC
 requirement: REQ-O
@@ -195,7 +210,7 @@ result: pass
 		[]byte(handoff), 0o644))
 
 	var buf bytes.Buffer
-	require.NoError(t, runMap(&buf, root, nil, false, "", true, "", false))
+	require.NoError(t, runMap(&buf, root, nil, false, true, "", false))
 
 	var report map[string]interface{}
 	require.NoError(t, json.Unmarshal(buf.Bytes(), &report))
@@ -224,6 +239,9 @@ result: pass
 func TestMapPhase3D_CLIText_InProgressTaskOverridesSiblingFailIcon(t *testing.T) {
 	root := t.TempDir()
 	writeTestFile(t, root, filepath.Join("gtms/test/cases", "tc-iii1111-inflight.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-iii1111
 title: In-flight with sibling fail
 requirement: REQ-I
@@ -255,7 +273,7 @@ branch: feature/exec
 `), 0o644))
 
 	var buf bytes.Buffer
-	require.NoError(t, runMap(&buf, root, nil, false, "", false, "", false))
+	require.NoError(t, runMap(&buf, root, nil, false, false, "", false))
 
 	out := buf.String()
 	// IconInProgress = "●". Must be in the EXECUTE column.
@@ -276,6 +294,9 @@ branch: feature/exec
 func TestMapPhase3D_CLIText_TaskErrorOverridesSiblingFailIcon(t *testing.T) {
 	root := t.TempDir()
 	writeTestFile(t, root, filepath.Join("gtms/test/cases", "tc-iii2222-taskerr.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-iii2222
 title: Task error with older sibling fail
 requirement: REQ-I
@@ -305,7 +326,7 @@ branch: feature/exec
 `), 0o644))
 
 	var buf bytes.Buffer
-	require.NoError(t, runMap(&buf, root, nil, false, "", false, "", false))
+	require.NoError(t, runMap(&buf, root, nil, false, false, "", false))
 
 	out := buf.String()
 	// IconWarning = "⚠".
@@ -327,6 +348,9 @@ branch: feature/exec
 func TestMapPhase3D_CLIText_TaskErrorWithNoOverlayRendersWarningIcon(t *testing.T) {
 	root := t.TempDir()
 	writeTestFile(t, root, filepath.Join("gtms/test/cases", "tc-iii3333-noverlay-err.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-iii3333
 title: Task error, no overlay anywhere
 requirement: REQ-I
@@ -354,7 +378,7 @@ branch: feature/exec
 `), 0o644))
 
 	var buf bytes.Buffer
-	require.NoError(t, runMap(&buf, root, nil, false, "", false, "", false))
+	require.NoError(t, runMap(&buf, root, nil, false, false, "", false))
 
 	out := buf.String()
 	// IconWarning = "⚠". Must be in the EXECUTE column.

@@ -75,58 +75,101 @@ func ShowTriage(projectRoot, testCaseID, framework string) (*TriageView, error) 
 // The result JOIN uses ONE canonical bulk terminal-result scan for the whole
 // project (ENH-201 item 7); it must not scan per test case or per record.
 func ListTriage(projectRoot string, scope *ScopeInfo, valueFilter string, includeResolved bool) ([]TriageView, error) {
+	views, diags, err := ListTriageWithDiagnostics(projectRoot, scope, valueFilter, includeResolved)
+	if err != nil {
+		return nil, err
+	}
+	if ierr := incompleteReadErr(diags); ierr != nil {
+		return nil, ierr
+	}
+	return views, nil
+}
+
+// ListTriageWithDiagnostics is the ENH-205 triage listing on the snapshot. It
+// resolves each record's ID and the scope's identities from ONE snapshot per
+// operation, and applies policy (e) point 8:
+//
+//   - A record whose ID resolves Ambiguous or Unprovable is left out (it cannot be
+//     attributed to one test case) and the identity is diagnosed.
+//   - "[spec missing]" now means the snapshot returned NotFound for that ID, so a
+//     renamed owner is no longer reported missing.
+//   - The root listing's scope is the whole tree: an Unprovable candidate tied to no
+//     record is still diagnosed, and the command exits 1.
+//   - A folder listing selects records through the snapshot's in-scope proven owners;
+//     an Ambiguous ID with an owner in scope is excluded and diagnosed.
+func ListTriageWithDiagnostics(projectRoot string, scope *ScopeInfo, valueFilter string, includeResolved bool) ([]TriageView, IdentityDiagnostics, error) {
+	snap, err := testcase.NewSnapshot(projectRoot)
+	if err != nil {
+		return nil, IdentityDiagnostics{}, err
+	}
+
 	var recs []*triage.Record
-	computeSpecMissing := false
+	var resolve triageRecordResolver
+
+	// ONE identity pass per operation: the scope's proven owners and the
+	// diagnostics come from the same resolveScopedSpecs call.
+	specs, diags, err := resolveScopedSpecs(snap, projectRoot, scope)
+	if err != nil {
+		return nil, IdentityDiagnostics{}, err
+	}
 
 	if scope == nil {
-		// Root list: enumerate EVERY record and validate each. Identity comes
-		// from Read, not the filename, so the root list includes records whose
-		// names cannot be split and FAILS on a malformed one rather than dropping
-		// it. Orphans are marked, so SpecMissing is computed.
-		all, err := triage.ListAll(projectRoot)
-		if err != nil {
-			return nil, err
+		// Root list: enumerate EVERY record and validate each. Identity comes from
+		// Read, not the filename. The diagnostics scope is the whole tree, so every
+		// Ambiguous/Unprovable identity in the tree is surfaced -- including an
+		// Unprovable candidate tied to no record.
+		all, aerr := triage.ListAll(projectRoot)
+		if aerr != nil {
+			return nil, IdentityDiagnostics{}, aerr
 		}
 		recs = make([]*triage.Record, 0, len(all))
 		for _, r := range all {
 			rec, rerr := triage.Read(projectRoot, r.Path)
 			if rerr != nil {
-				return nil, rerr
+				return nil, IdentityDiagnostics{}, rerr
 			}
 			recs = append(recs, rec)
 		}
-		computeSpecMissing = true
+		resolve = snapshotTriageResolver(snap)
 	} else {
-		// Folder list: discover the in-scope test-case IDs from the specs, then
-		// attribute records by VALIDATED BODY IDENTITY through scopedTriageRecords
-		// (ENH-210 item 12). The old path shortlisted by filename prefix through
-		// triage.ListForTC and could admit tc-foo--bar's record into tc-foo's
-		// folder; routing through scopedTriageRecords closes that leak and keeps
-		// the fail-closed relevance boundary for prefix-compatible malformed
-		// records in scope. A folder is spec-scoped, so orphans never appear and
+		// Folder list: discover the in-scope PROVEN test-case IDs from the snapshot,
+		// then attribute records by validated body identity. An Ambiguous owner in
+		// scope is excluded from the proven ids (and diagnosed), so its records are
+		// not selected. A folder is spec-scoped, so orphans never appear and
 		// SpecMissing stays false.
-		tcs, err := scanTestCases(projectRoot, scope)
-		if err != nil {
-			return nil, fmt.Errorf("scanning test cases: %w", err)
-		}
-		// NON-NIL even when empty: a nil slice would make scopedTriageRecords read
-		// every record (root behaviour) instead of an empty folder scope.
-		ids := make([]string, 0, len(tcs))
+		//
+		// ADR-024 5b point 8: each record's ID is resolved with section 4a's PER-ID
+		// relevance, exactly as the bare single-TC form resolves it -- the one
+		// exception to the scope-only bulk relevance rule. So a proven in-scope
+		// owner whose ID is Unprovable per-id (an unreadable file elsewhere whose
+		// name matches it) has its records left out AND is diagnosed: never a
+		// silent absence (REV-184 CLAUDE-001).
+		ids := make([]string, 0, len(specs))
 		seen := make(map[string]bool)
-		for _, tc := range tcs {
+		for _, tc := range specs {
 			if seen[tc.ID] {
 				continue
 			}
 			seen[tc.ID] = true
+			if r := snap.Resolve(tc.ID); r.Outcome == testcase.OutcomeUnprovable {
+				diags.addUnprovableResolution(r)
+				continue
+			}
 			ids = append(ids, tc.ID)
 		}
-		recs, err = flattenScopedRecords(projectRoot, ids)
-		if err != nil {
-			return nil, err
+		var rerr error
+		recs, rerr = flattenScopedRecords(projectRoot, ids)
+		if rerr != nil {
+			return nil, IdentityDiagnostics{}, rerr
 		}
+		resolve = folderTriageResolver
 	}
 
-	return buildTriageViews(projectRoot, recs, computeSpecMissing, valueFilter, includeResolved)
+	views, err := buildTriageViews(projectRoot, recs, resolve, valueFilter, includeResolved)
+	if err != nil {
+		return nil, IdentityDiagnostics{}, err
+	}
+	return views, diags, nil
 }
 
 // ListTriageForTC lists every triage record stored for one test case, queried by
@@ -139,14 +182,59 @@ func ListTriage(projectRoot string, scope *ScopeInfo, valueFilter string, includ
 // represent tcID fails the query closed with its path; a malformed record whose
 // filename cannot represent tcID is never opened.
 func ListTriageForTC(projectRoot, tcID, valueFilter string, includeResolved bool) ([]TriageView, error) {
+	snap, err := testcase.NewSnapshot(projectRoot)
+	if err != nil {
+		return nil, err
+	}
+	return ListTriageForTCWithSnapshot(snap, projectRoot, tcID, valueFilter, includeResolved)
+}
+
+// ListTriageForTCWithSnapshot is ListTriageForTC against a snapshot the caller
+// already built, so a qualified or bare `triage --list <tc-id>` runs its ownership
+// check and this listing against ONE snapshot (ADR-024 5b "Qualified targets resolve
+// once"). Spec existence is not a prerequisite for a bare record lookup; the orphan
+// marker comes from the snapshot ("[spec missing]" == NotFound).
+//
+// The single-target ownership rule is enforced HERE, not left to the caller
+// (REV-184 CODEX-004): an ID whose spec is Ambiguous or Unprovable is refused with
+// the typed *testcase.OwnershipError and no views, because a record keyed by that
+// ID cannot be attributed to one test case (ADR-024 5b "Single-TC forms").
+func ListTriageForTCWithSnapshot(snap *testcase.Snapshot, projectRoot, tcID, valueFilter string, includeResolved bool) ([]TriageView, error) {
+	if oerr := snap.RequireOwnership(tcID); oerr != nil {
+		return nil, oerr
+	}
 	recs, err := flattenScopedRecords(projectRoot, []string{tcID})
 	if err != nil {
 		return nil, err
 	}
-	// Spec existence is not a prerequisite for a bare record lookup; compute the
-	// orphan marker so a record whose spec was removed is visibly [spec missing].
-	return buildTriageViews(projectRoot, recs, true, valueFilter, includeResolved)
+	return buildTriageViews(projectRoot, recs, snapshotTriageResolver(snap), valueFilter, includeResolved)
 }
+
+// triageRecordResolver decides, per record test-case ID, whether the record's spec
+// is missing (renders "[spec missing]") and whether the record must be OMITTED
+// because its ID cannot be attributed to one test case (Ambiguous/Unprovable).
+type triageRecordResolver func(tcID string) (specMissing, omit bool)
+
+// snapshotTriageResolver resolves a record's ID through the snapshot: NotFound is
+// spec-missing (listed), Ambiguous/Unprovable is omitted, UniqueOwner is listed and
+// present.
+func snapshotTriageResolver(snap *testcase.Snapshot) triageRecordResolver {
+	return func(tcID string) (bool, bool) {
+		switch snap.Resolve(tcID).Outcome {
+		case testcase.OutcomeNotFound:
+			return true, false
+		case testcase.OutcomeAmbiguous, testcase.OutcomeUnprovable:
+			return false, true
+		default:
+			return false, false
+		}
+	}
+}
+
+// folderTriageResolver is used by a folder list, which selects records only for
+// proven in-scope owners: nothing is spec-missing (spec-scoped) and nothing is
+// omitted here (Ambiguous owners were already excluded from the proven id set).
+func folderTriageResolver(string) (bool, bool) { return false, false }
 
 // flattenScopedRecords enumerates the triage records owned by the given test-case
 // IDs through the body-authoritative scopedTriageRecords boundary and flattens
@@ -172,7 +260,7 @@ func flattenScopedRecords(projectRoot string, ids []string) ([]*triage.Record, e
 // framework) order every list scope shares. It is the single builder behind the
 // root, folder, and test-case-target list routes so their JSON and human shapes
 // cannot diverge.
-func buildTriageViews(projectRoot string, recs []*triage.Record, computeSpecMissing bool, valueFilter string, includeResolved bool) ([]TriageView, error) {
+func buildTriageViews(projectRoot string, recs []*triage.Record, resolve triageRecordResolver, valueFilter string, includeResolved bool) ([]TriageView, error) {
 	wiringByTC, err := wiringScan(projectRoot)
 	if err != nil {
 		return nil, fmt.Errorf("scanning wiring records: %w", err)
@@ -187,12 +275,14 @@ func buildTriageViews(projectRoot string, recs []*triage.Record, computeSpecMiss
 		if valueFilter != "" && rec.Value != valueFilter {
 			continue
 		}
-		v := TriageView{Record: rec, ResultChanged: compareRawResult(rec, overlay)}
-		if computeSpecMissing {
-			// A record is an orphan when no spec for its test case remains
-			// anywhere in the cases tree.
-			v.SpecMissing = testcase.FindSource(projectRoot, rec.TestCaseID) == ""
+		// ENH-205: the snapshot decides orphan-vs-present and whether the record's
+		// ID is attributable to one test case. A record whose ID is Ambiguous or
+		// Unprovable is omitted (its identity is diagnosed by the operation).
+		specMissing, omit := resolve(rec.TestCaseID)
+		if omit {
+			continue
 		}
+		v := TriageView{Record: rec, ResultChanged: compareRawResult(rec, overlay), SpecMissing: specMissing}
 		views = append(views, v)
 	}
 

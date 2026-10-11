@@ -25,7 +25,7 @@ func TestRunDelete_CorruptWiringRefusalUsesTheStandardErrorShape(t *testing.T) {
 	cases := filepath.Join(root, "gtms", "test", "cases", "checkout")
 	require.NoError(t, os.MkdirAll(cases, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(cases, "tc-77777777-owner.md"),
-		[]byte("---\ntest_case_id: tc-77777777\ntitle: owner\n---\n"), 0o644))
+		[]byte("---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: tc-77777777\ntitle: owner\n---\n"), 0o644))
 
 	wdir := filepath.Join(root, "gtms", "automation", "wiring")
 	require.NoError(t, os.MkdirAll(wdir, 0o755))

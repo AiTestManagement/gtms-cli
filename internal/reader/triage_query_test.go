@@ -161,7 +161,7 @@ func TestListTriage_RootIncludesOrphanFolderExcludes(t *testing.T) {
 
 	// tc-11111111 has a spec under checkout/; tc-44444444 has no spec anywhere.
 	writeFile(t, root, filepath.Join("gtms", "test", "cases", "checkout", "tc-11111111.md"),
-		"---\ntest_case_id: tc-11111111\ntitle: t\n---\nbody\n")
+		"---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: tc-11111111\ntitle: t\n---\nbody\n")
 	putTriageRecord(t, root, "tc-11111111", "bats", "environment", "fail", "")
 	putTriageRecord(t, root, "tc-44444444", "bats", "environment", "fail", "")
 
@@ -194,9 +194,9 @@ func TestListTriage_FailClosedScopeIsolation(t *testing.T) {
 
 	// clean folder + valid record; broken folder + malformed record.
 	writeFile(t, root, filepath.Join("gtms", "test", "cases", "clean", "tc-11111111.md"),
-		"---\ntest_case_id: tc-11111111\ntitle: t\n---\nbody\n")
+		"---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: tc-11111111\ntitle: t\n---\nbody\n")
 	writeFile(t, root, filepath.Join("gtms", "test", "cases", "broken", "tc-55555555.md"),
-		"---\ntest_case_id: tc-55555555\ntitle: t\n---\nbody\n")
+		"---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: tc-55555555\ntitle: t\n---\nbody\n")
 	putTriageRecord(t, root, "tc-11111111", "bats", "environment", "fail", "")
 	// Malformed (bad status) written raw so it decodes but fails semantic validation.
 	writeFile(t, root, filepath.Join("gtms", "triage", "tc-55555555--bats.triage.yaml"),

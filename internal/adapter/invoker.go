@@ -1,7 +1,6 @@
 package adapter
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -9,12 +8,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/adrg/frontmatter"
 	"github.com/aitestmanagement/gtms-cli/internal/config"
 	gitpkg "github.com/aitestmanagement/gtms-cli/internal/git"
 	"github.com/aitestmanagement/gtms-cli/internal/id"
 	"github.com/aitestmanagement/gtms-cli/internal/layout"
-	"github.com/aitestmanagement/gtms-cli/internal/pipeline"
 	"github.com/aitestmanagement/gtms-cli/internal/prompt"
 	"github.com/aitestmanagement/gtms-cli/internal/result"
 	"github.com/aitestmanagement/gtms-cli/internal/task"
@@ -134,28 +131,30 @@ func (e *CarriedOwnerError) Error() string {
 // other command reaching this boundary is one of the three action commands whose
 // consumer-matrix row requires a uniquely proven owner before invocation.
 //
-// The third condition -- that the spec still declares the identity -- reuses
-// ValidateTestCaseOwner rather than reading the file again here. One identity
-// implementation is the point (ADR-024 s5); a second copy is how two checks come
-// to disagree. Note that it does NOT re-resolve the bare id: it reads the spec
-// the carried owner already points at.
-func requireCarriedOwner(projectRoot string, resolved *ResolvedAdapter, target string, flags CommandFlags) error {
+// The third condition -- that the exact spec still carries the proved identity,
+// schema state, and category -- reuses ValidateTestCaseOwner rather than reading
+// the file again here. One implementation is the point (ADR-024 s5); a second
+// copy is how two checks come to disagree. Note that it does NOT re-resolve the
+// bare id: it reads the spec the carried owner already points at and carries the
+// fresh normalized metadata and hash forward.
+func requireCarriedOwner(projectRoot string, resolved *ResolvedAdapter, target string, flags CommandFlags) (ValidatedTestCaseOwner, error) {
+	var validated ValidatedTestCaseOwner
 	switch resolved.Command {
 	case "automate", "execute", "prime":
 	default:
-		return nil
+		return validated, nil
 	}
 
 	owner := flags.Owner
 	if owner == nil {
-		return &CarriedOwnerError{
+		return validated, &CarriedOwnerError{
 			Command: resolved.Command,
 			Target:  target,
 			Reason:  "no resolved owner reached the invocation boundary, so nothing proves the test case exists or which spec it is",
 		}
 	}
 	if owner.ID() != target {
-		return &CarriedOwnerError{
+		return validated, &CarriedOwnerError{
 			Command: resolved.Command,
 			Target:  target,
 			OwnerID: owner.ID(),
@@ -163,15 +162,16 @@ func requireCarriedOwner(projectRoot string, resolved *ResolvedAdapter, target s
 				testcase.SanitizeIdentityString(owner.ID()), testcase.SanitizeIdentityString(target)),
 		}
 	}
-	if violations := ValidateTestCaseOwner(projectRoot, owner); len(violations) > 0 {
-		return &CarriedOwnerError{
+	validated, violations := ValidateTestCaseOwnerFresh(projectRoot, owner)
+	if len(violations) > 0 {
+		return validated, &CarriedOwnerError{
 			Command: resolved.Command,
 			Target:  target,
 			OwnerID: owner.ID(),
-			Reason:  "the owning spec no longer declares that identity -- " + FormatValidationErrors(violations),
+			Reason:  "the owning spec no longer declares that identity or schema proof -- " + FormatValidationErrors(violations),
 		}
 	}
-	return nil
+	return validated, nil
 }
 
 // InvokeWithRoot is like Invoke but accepts an explicit project root (useful for testing).
@@ -180,7 +180,8 @@ func InvokeWithRoot(ctx context.Context, projectRoot string, cfg *config.Config,
 	// created or any external code runs. It refuses a nil, mismatched, or stale
 	// owner BEFORE the task id is generated, so a refusal leaves no task file, no
 	// result contract, no wiring and no adapter process behind.
-	if err := requireCarriedOwner(projectRoot, resolved, target, flags); err != nil {
+	validatedOwner, err := requireCarriedOwner(projectRoot, resolved, target, flags)
+	if err != nil {
 		return nil, err
 	}
 
@@ -351,7 +352,7 @@ func InvokeWithRoot(ctx context.Context, projectRoot string, cfg *config.Config,
 	}
 
 	// 8. Build AdapterContext with command-specific fields
-	ac := buildAdapterContext(projectRoot, taskID, resolved, target, flags, branch, cfg, workDir, resultPath, plannedArtefact)
+	ac := buildAdapterContext(projectRoot, taskID, resolved, target, flags, branch, cfg, workDir, resultPath, plannedArtefact, validatedOwner)
 	ac.Guides = guides
 	ac.TestCaseContent = testCaseContent
 	ac.Force = flags.Force
@@ -678,9 +679,10 @@ func InvokeWithRoot(ctx context.Context, projectRoot string, cfg *config.Config,
 // rather than something recomputed here on purpose: that is what makes the value
 // the adapter writes to provably the value the ownership check inspected. Pass
 // "" from any caller that took no reservation.
-func buildAdapterContext(projectRoot, taskID string, resolved *ResolvedAdapter, target string, flags CommandFlags, branch string, cfg *config.Config, workDir, resultPath, plannedArtefact string) *AdapterContext {
+func buildAdapterContext(projectRoot, taskID string, resolved *ResolvedAdapter, target string, flags CommandFlags, branch string, cfg *config.Config, workDir, resultPath, plannedArtefact string, validatedOwner ValidatedTestCaseOwner) *AdapterContext {
 	ctx := &AdapterContext{
 		Owner:          flags.Owner,
+		ValidatedOwner: validatedOwner,
 		TaskID:         taskID,
 		Command:        resolved.Command,
 		Branch:         branch,
@@ -750,36 +752,7 @@ func buildAdapterContext(projectRoot, taskID string, resolved *ResolvedAdapter, 
 		framework := ResolveFramework(resolved, flags.Framework)
 		ctx.Framework = framework // ENH-151: available to BuiltinAutomate
 		if framework == "manual" && tcSource != "" {
-			absTC := filepath.Join(projectRoot, tcSource)
-			if hash, hashErr := pipeline.HashFile(absTC); hashErr == nil {
-				ctx.TestCaseHash = hash
-			}
-			// ENH-161: role-specific template path derived from adapter name.
-			ctx.TemplateFile = ResolveTemplatePath(projectRoot, "prime", resolved.Name)
-			ctx.OutputFile = filepath.Join(layout.ManualRecordsDir(projectRoot), target+"--manual.result.yaml")
-			// Manual-prime writes to gtms/manual/records/, not the BATS/automate
-			// output dir. Point the post-run scanner there so the CLI headline
-			// surfaces the stamped result file path.
-			ctx.OutputDir = layout.ManualRecordsDir(projectRoot)
-			ctx.OutputSubdir = ""
-
-			// ENH-142: Parse TC frontmatter to populate snapshot fields.
-			// Snapshot values are copied to the result file at prime time for
-			// self-contained review. Parse errors are non-fatal (empty fields).
-			if tcData, readErr := os.ReadFile(absTC); readErr == nil {
-				var tcFM struct {
-					Title       string `yaml:"title"`
-					Requirement string `yaml:"requirement"`
-					Priority    string `yaml:"priority"`
-					Type        string `yaml:"type"`
-				}
-				if _, parseErr := frontmatter.Parse(bytes.NewReader(tcData), &tcFM); parseErr == nil {
-					ctx.TCTitle = tcFM.Title
-					ctx.TCRequirement = tcFM.Requirement
-					ctx.TCPriority = tcFM.Priority
-					ctx.TCType = tcFM.Type
-				}
-			}
+			populateBuiltinPrimeFields(ctx, projectRoot, target, resolved.Name, validatedOwner)
 		}
 	case "prime":
 		// ENH-150: prime is now its own command (no longer resolves under "automate").
@@ -799,31 +772,7 @@ func buildAdapterContext(projectRoot, taskID string, resolved *ResolvedAdapter, 
 		// built-ins, these fields drive BuiltinPrime directly.
 		framework := ResolveFramework(resolved, flags.Framework)
 		if framework == "manual" && tcSource != "" {
-			absTC := filepath.Join(projectRoot, tcSource)
-			if hash, hashErr := pipeline.HashFile(absTC); hashErr == nil {
-				ctx.TestCaseHash = hash
-			}
-			// ENH-161: role-specific template path derived from adapter name.
-			ctx.TemplateFile = ResolveTemplatePath(projectRoot, "prime", resolved.Name)
-			ctx.OutputFile = filepath.Join(layout.ManualRecordsDir(projectRoot), target+"--manual.result.yaml")
-			ctx.OutputDir = layout.ManualRecordsDir(projectRoot)
-			ctx.OutputSubdir = ""
-
-			// ENH-142: Parse TC frontmatter to populate snapshot fields.
-			if tcData, readErr := os.ReadFile(absTC); readErr == nil {
-				var tcFM struct {
-					Title       string `yaml:"title"`
-					Requirement string `yaml:"requirement"`
-					Priority    string `yaml:"priority"`
-					Type        string `yaml:"type"`
-				}
-				if _, parseErr := frontmatter.Parse(bytes.NewReader(tcData), &tcFM); parseErr == nil {
-					ctx.TCTitle = tcFM.Title
-					ctx.TCRequirement = tcFM.Requirement
-					ctx.TCPriority = tcFM.Priority
-					ctx.TCType = tcFM.Type
-				}
-			}
+			populateBuiltinPrimeFields(ctx, projectRoot, target, resolved.Name, validatedOwner)
 		}
 	case "execute":
 		ctx.TestCase = target
@@ -866,7 +815,6 @@ func buildAdapterContext(projectRoot, taskID string, resolved *ResolvedAdapter, 
 		}
 		ctx.TestCaseIDs = strings.Join(defIDs, ",")
 	}
-
 	return ctx
 }
 

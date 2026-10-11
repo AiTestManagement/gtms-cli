@@ -2,7 +2,6 @@ package reader
 
 import (
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 
@@ -54,15 +53,16 @@ type Classification struct {
 	ArtefactPresent   bool
 }
 
-// ClassifyWiring computes the currency tier and drift flags for one
-// wiring record against the current content of the TC spec and artefact
-// on disk. ENH-146 §"Picker Pattern (Task 7)" pins both the tier
-// ordering and the rule that a missing artefact never claims an
-// artefact-hash drift.
-func ClassifyWiring(projectRoot string, w *wiring.WiringRecord) Classification {
+// classifyWiringForSpec computes the currency tier and drift flags for one wiring
+// record, given the ABSOLUTE path of the test case's proven spec (or "" when the
+// spec is unavailable). It performs NO identity resolution: the caller has already
+// resolved the owner. ENH-205's migrated read paths call this with the owner's
+// SpecAbs from the operation's single snapshot, so the per-record classification
+// reads the proven owner instead of doing a filename walk per record.
+func classifyWiringForSpec(projectRoot, specAbs string, w *wiring.WiringRecord) Classification {
 	specStale := false
-	if specPath, err := pipeline.ResolveTestCaseSpec(projectRoot, w.TestCase); err == nil {
-		if h, hErr := pipeline.HashFile(filepath.Join(projectRoot, filepath.FromSlash(specPath))); hErr == nil {
+	if specAbs != "" {
+		if h, hErr := pipeline.HashFile(specAbs); hErr == nil {
 			specStale = h != w.TestCaseHash
 		}
 	}

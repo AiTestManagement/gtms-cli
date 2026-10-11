@@ -26,7 +26,7 @@ func seedOwnerForTest(t *testing.T, root, tcID string) *testcase.Owner {
 	dir := filepath.Join(root, "gtms", "test", "cases")
 	require.NoError(t, os.MkdirAll(dir, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, tcID+"-seeded.md"),
-		[]byte("---\ntest_case_id: "+tcID+"\ntitle: seeded\n---\n\nbody\n"), 0o644))
+		[]byte("---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: "+tcID+"\ntitle: seeded\n---\n\nbody\n"), 0o644))
 	owner, err := testcase.ResolveOwner(root, tcID)
 	require.NoError(t, err, "seeding an owner for %s", tcID)
 	return owner
@@ -145,7 +145,7 @@ func TestInvokeWithRoot_SpecChangedAfterResolution_RefusesBeforeCreatingAnyState
 		owner := seedOwnerForTest(t, root, "tc-c1c1c1c1")
 
 		require.NoError(t, os.WriteFile(owner.SpecAbs(),
-			[]byte("---\ntest_case_id: tc-d2d2d2d2\ntitle: rewritten\n---\n"), 0o644))
+			[]byte("---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: tc-d2d2d2d2\ntitle: rewritten\n---\n"), 0o644))
 
 		_, err := InvokeWithRoot(context.Background(), root, cfg, resolved,
 			"tc-c1c1c1c1", CommandFlags{Owner: owner})

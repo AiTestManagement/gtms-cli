@@ -215,7 +215,7 @@ gtms status
 
 1. `gtms init` created the nested pipeline directory at `gtms/` (with `test/cases/`, `automation/`, `execution/`, `tasks/`, and a `.gtms-root` sentinel file inside it) plus a `gtms.config` file at the repo root. Your git managed project is now GTMS-enabled -- the GTMS-owned footprint at your repo root is `gtms/`, `gtms.config`, and `.gtms/` (the last gitignored), plus a `.vscode/` folder for editor support and a few `.gitignore` entries GTMS manages for you.
 
-2. `gtms create` generated a test case skeleton file in `gtms/test/cases/my-feature/`. The skeleton adapter writes a markdown file with YAML frontmatter (`test_case_id`, `title`, `requirement` (filled when `--reference` is passed), `priority`, `type`, and `created`) followed by a seven-section body -- Test Objective, Preconditions, Test Data, Test Steps, Expected Final Outcome, Postconditions, Notes -- using "Expected observation:" wording for each step. You fill in the details yourself. (Configure an AI adapter later and GTMS will generate the content for you.) The accompanying authoring reference lives at `gtms/test/guides/gtms-test-case-authoring-guide.md`.
+2. `gtms create` generated a test case skeleton file in `gtms/test/cases/my-feature/`. The skeleton adapter writes a markdown file with YAML frontmatter -- a three-line format header (`gtms_schema: "test-case/v2"`, `type: Test Case Spec`, and `test_type`, the test category), then `test_case_id`, `title`, `requirement` (filled when `--reference` is passed), `priority`, and `created` -- followed by a seven-section body -- Test Objective, Preconditions, Test Data, Test Steps, Expected Final Outcome, Postconditions, Notes -- using "Expected observation:" wording for each step. You fill in the details yourself. (Configure an AI adapter later and GTMS will generate the content for you.) The accompanying authoring reference lives at `gtms/test/guides/gtms-test-case-authoring-guide.md`.
 
 By default, `gtms init` configures `gtms create` to use the built-in `manual-create` adapter -- it runs as Go code inside the GTMS binary and stamps from the template at `gtms/test/templates/manual-testcase.template.md`. Edit that template to customise the test case shape. A script-tier alternative ships alongside at `gtms/adapters/manual-create-script.sh` as an opt-in customisation surface for adapter behaviour. On Windows, adapter scripts run through Git Bash (which provides `sh`).
 
@@ -847,7 +847,7 @@ GTMS records every run in plain text files in your Git repo. Three commands read
 - **`gtms gaps`.** The coverage view. It lists the gaps that block a clean pipeline: test cases without automation, currently failing tests, execution errors, stale wiring, and more. Reach for it when you want to find what to work on next; reach for `status` when you want to see progress.
 - **`gtms map`.** The requirement-traceability view. It joins test cases back to the requirements they cover, so you can see which requirements have full coverage and which do not. Reach for it when someone asks "is REQ-42 tested?" or when you want to see coverage grouped by requirement rather than by folder.
 
-For arguments, flags, and example output, see the Command Reference entry for each.
+All three show every test case they can read. If a test case ID is duplicated or a test case spec cannot be read, they leave it out, name it on stderr, and exit 1. For arguments, flags, and example output, see the Command Reference entry for each.
 
 
 ## Files And Configuration
@@ -856,7 +856,7 @@ GTMS keeps its state in Markdown and YAML files in your Git repo. Test case spec
 
 The layout has two anchors. `gtms.config` at the repo root marks the project boundary -- GTMS walks up from your current directory to find it, so any GTMS command works from anywhere under that root. Inside `gtms/`, a `.gtms-root` sentinel marks the parent directory. Renaming the parent (`git mv gtms/ testing/`) is transparent because GTMS finds it by the sentinel, not by the name.
 
-The shape this section follows is paths, then formats, then config, then guidance.
+The shape this section follows is paths, then formats, then the full definition of the test case spec format, then config, then guidance.
 
 ### Directory layout
 
@@ -916,7 +916,7 @@ One directory is missing from the tree above because `gtms init` does not create
 
 A GTMS project uses a small vocabulary of file formats:
 
-- **Test case specs** -- Markdown with YAML frontmatter. What to test.
+- **Test case specs** -- Markdown with YAML frontmatter that starts with the `test-case/v2` format header. What to test.
 - **Wiring records** -- YAML linking a test case to an automation script and the adapter that runs it.
 - **Manual result files** -- YAML capturing a one-time result recorded via the prime path (`gtms/manual/records/`).
 - **Execution result files** -- YAML written after each `gtms execute` (`gtms/execution/`). Carries the per-test outcome. The committed audit record of a run -- not what `gtms status` reads for results (that is the handoff results below).
@@ -933,11 +933,19 @@ The subsections below describe each in turn.
 
 - Pre-generates a batch of unique `tc-XXXXXXXX` identifiers and rejects any test case spec whose frontmatter ID is not in the batch.
 - Reads every `.md` guide at the top level of `gtms/test/guides/` (or the adapter's configured `guide-dir`) and hands them to the adapter -- as `{guides}` in a prompt-template adapter's prompt, or as `GTMS_GUIDES` for script adapters -- so the agent writes content that follows your project's authoring conventions.
-- Validates the files it just produced: each ID is well formed, each comes from the batch GTMS handed the adapter, each matches its filename, and no two of those files share an ID. A file whose frontmatter cannot be parsed, or which carries no `test_case_id` at all, is recorded as degraded and listed by filename rather than failing the run. The check covers that one invocation's output -- not the rest of the folder, and not the project.
+- Validates the files it just produced: each carries a valid `test-case/v2` header, each ID is well formed, each comes from the batch GTMS handed the adapter, each matches its filename, and no two of those files share an ID. A file that fails any of these -- including one whose frontmatter cannot be parsed or which carries no `test_case_id` -- fails the run, and GTMS names the file and the reason. The check covers that one invocation's output -- not the rest of the folder, and not the project.
 
 A hand-stamped test case spec lands on disk but has skipped all three. Downstream commands still find it -- they resolve it through its `test_case_id` like any other test case spec. There is no later check that an ID was ever issued by GTMS, so a unique, well-formed hand-stamped ID simply works. What is not caught at write time is a DUPLICATE: stamp an ID that another spec already claims, and nothing complains until the first command that has to act on it refuses, naming both files.
 
-A test case spec is a markdown file with YAML frontmatter, stored under `gtms/test/cases/<folder>/`. Filename convention: `tc-XXXXXXXX-<slug>.md`. The frontmatter carries identity fields (most importantly `test_case_id`), the requirement reference, the priority, the type, and any other fields the project's test case spec template declares. The body holds the test case content (preconditions, steps, expected results).
+A test case spec is a markdown file with YAML frontmatter, stored under `gtms/test/cases/<folder>/`. Filename convention: `tc-XXXXXXXX-<slug>.md`. The body holds the test case content (preconditions, steps, expected results).
+
+The frontmatter opens with a three-line format header, and GTMS reads only test case specs that carry it:
+
+- `gtms_schema: "test-case/v2"` names the format version.
+- `type: Test Case Spec` says what kind of document the file is. It is always exactly `Test Case Spec`.
+- `test_type` holds the test category (`Functional`, `Integration`, `Security`, or your own). The category is an open value, not a fixed list.
+
+After the header come `test_case_id` (the identity), `title`, `requirement`, `priority`, and `created`, plus any other fields the project's test case spec template declares. A test case spec without the header is refused, not guessed at: the command names the file and the line to add. A complete example, the rules for every field, and how to convert test case specs written by an earlier GTMS version are in GTMS test case OKF profile below.
 
 Two identity rules to hold in mind:
 
@@ -947,7 +955,7 @@ Two identity rules to hold in mind:
 **The two checks, kept apart.** They are separate mechanisms and it is worth knowing which one you are relying on:
 
 - **When `gtms create` finishes**, it validates the test case specs the adapter just wrote: each ID came from the batch GTMS handed out, each is well formed, each matches its filename, and no two of those files share an ID. The scope is that one invocation's output. Files already sitting in the folder before the run are not part of it, and nothing scans the rest of the project. This is a contract with the adapter, not a uniqueness guarantee.
-- **When a command is about to act on a test case** -- `automate`, `prime`, `execute`, `delete`, `reset`, `link`, and the single-test-case view `gtms status <tc-id>` -- GTMS works out who owns the ID across the whole project. If two test case specs declare it, wherever they sit, the command stops before doing anything and names them:
+- **When a command is about to act on or show one test case** -- `automate`, `prime`, `execute`, `delete`, `reset`, `link`, and the single-test-case views `gtms status <tc-id>`, `gtms map <tc-id>`, and `gtms triage --list <tc-id>` -- GTMS works out who owns the ID across the whole project. If two test case specs declare it, wherever they sit, the command stops before doing anything and names them:
 
 ```text
 $ gtms delete login/tc-abc12345
@@ -961,7 +969,7 @@ A folder-qualified target such as `login/tc-abc12345` is checked the same way, a
 
 "Not found" means one thing only: no test case spec body claims that ID. It is never how GTMS reports a problem it could not settle. If two test case specs claim the ID, or one that might claim it cannot be read, you get a refusal that says so and names the files -- not a report that the test case is missing.
 
-Two gaps are worth knowing about. Nothing stops you WRITING a duplicate: hand-stamp a test case spec with an ID that already exists, or create one beside an existing test case spec, and no command complains at the time -- you find out at the next command that has to act on it. And the folder-summary and listing views (`gtms map`, `gtms gaps`, and `gtms status <folder>`) still find test case specs by filename, so a duplicated ID can appear there against one of the two without comment. The commands that ACT on a single test case -- `automate`, `prime`, `execute`, and `triage --value` -- all resolve through the body ID and refuse the duplicate.
+One gap is worth knowing about. Nothing stops you WRITING a duplicate: hand-stamp a test case spec with an ID that already exists, or create one beside an existing test case spec, and no command complains at the time -- you find out at the next command that has to act on it. The folder and project views (`gtms status`, `gtms map`, `gtms gaps`, and `gtms triage --list`) find test case specs by the ID inside them too. They show every test case they can read, leave out a duplicated ID or a test case spec they cannot read, name each one on stderr, and exit 1 (see Troubleshooting). The commands that ACT on a single test case -- `automate`, `prime`, `execute`, and `triage --value` -- all resolve through the body ID and refuse the duplicate.
 
 One related rule to know when you type a target: a trailing `/` or `\` always means "folder". `gtms delete tc-abc12345/` targets a folder named `tc-abc12345/`, which probably does not exist -- it does not delete the test case `tc-abc12345`. Drop the trailing separator to address the test case.
 
@@ -969,7 +977,7 @@ One related rule to know when you type a target: a trailing `/` or `\` always me
 
 The `test_case_id` in the frontmatter is the identity. You can move a test case spec between folders or rename the file with normal tools such as `git mv`, and it keeps working as long as that field stays the same.
 
-Keep the `tc-XXXXXXXX-<slug>.md` filename convention where you can -- it is what makes a folder listing readable. It is a convention, not a rule GTMS enforces: `tc-1a2b3c4d-login-happy-path.md` can become `tc-1a2b3c4d-login-primary-flow.md`, or move to another case folder, and `gtms automate`, `gtms prime`, and `gtms execute` all still reach it as `tc-1a2b3c4d`.
+Keep the `tc-XXXXXXXX-<slug>.md` filename convention where you can -- it is what makes a folder listing readable. It is a convention, not a rule GTMS enforces: `tc-1a2b3c4d-login-happy-path.md` can become `tc-1a2b3c4d-login-primary-flow.md`, or move to another case folder, and `gtms automate`, `gtms prime`, and `gtms execute` all still reach it as `tc-1a2b3c4d`. `gtms status`, `gtms map`, `gtms gaps`, and triage lists show it under that ID too.
 
 One consequence to expect if you rename a file so that its filename carries a different `tc-XXXXXXXX` from its frontmatter. The ID in the filename is no longer an address. Targeting it reports the test case as not found, and that is the right answer -- no test case spec body claims it. Read the test case spec's `test_case_id:` and use that instead. The stamped artefact is named for the owning ID, so it can end up repeating the old one as part of its descriptive slug; the wiring record section below explains why that is deliberate.
 
@@ -1027,7 +1035,7 @@ result:
 title: "Login page rejects empty password"
 requirement: "REQ-42"
 priority: "high"
-type: "functional"
+test_type: "functional"
 branch: feature/login
 
 # -- Steps (optional) -----------------------------------------------------
@@ -1042,7 +1050,7 @@ The key fields:
 - `test_case_hash`: 16-character lowercase hex hash of the test case spec at prime time. Lets GTMS flag spec drift between prime and record.
 - `framework`: always `manual` for prime-path results.
 - `result`: the outcome the tester or agent records -- `pass`, `fail`, or `skip`. Empty on a freshly stamped file.
-- `title`, `requirement`, `priority`, `type`, `branch`: metadata snapshots captured at prime time.
+- `title`, `requirement`, `priority`, `test_type`, `branch`: metadata snapshots captured at prime time.
 - `steps` (optional): per-step results. Full schema in `gtms/schemas/manual-result.schema.json`.
 
 The source templates GTMS uses to stamp these files live in `gtms/manual/templates/`. Two ship per project: `manual-result.template.yaml` (read by `manual-prime`) and `agent-result.template.yaml` (read by `agent-prime`). Day-one content is identical; the two files exist so the manual and agent paths can diverge later without you having to touch the adapter. The stamped per-test-case files live in `gtms/manual/records/`.
@@ -1152,6 +1160,193 @@ The key fields:
 - `reference` (optional): the create `--reference` value or the automate source path; recorded on the task only.
 
 Files move between the state subdirectories as the task progresses. The status subcommands (`gtms create status`, `gtms automate status`, `gtms execute status`) read these files.
+
+### GTMS test case OKF profile
+
+A GTMS test case spec follows the `test-case/v2` format. That format is GTMS's profile of the Open Knowledge Format (OKF) v0.2: each test case spec GTMS creates is also a valid OKF concept, so other OKF tools can read it. This section is the full definition of the format and of what GTMS promises about it.
+
+#### Exact schema
+
+A test case spec is a UTF-8 Markdown file: a YAML frontmatter block, then a Markdown body. This is the frontmatter GTMS writes for a new test case:
+
+```yaml
+---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
+test_case_id: tc-12345678
+title: Example
+requirement: REQ-001
+priority: Medium
+created: 2026-09-19
+---
+```
+
+The three header keys follow exact rules:
+
+- **`gtms_schema`.** Required. Its value must be the string `test-case/v2` exactly. GTMS writes it as the first key; only YAML comment lines straight after the opening `---` may come before it. When reading, GTMS accepts it anywhere in the frontmatter, but never works out a missing `gtms_schema` from the other fields.
+- **`type`.** Required. It must be exactly `Test Case Spec`, including case and spaces. It says what kind of document the file is. It is not the test category.
+- **`test_type`.** Required. The test category, as a non-empty string. GTMS checks only that it is not empty or blank, and otherwise keeps it exactly as written. Any category is allowed. `Functional` is what GTMS writes when it has no category to use; it is a default, not a list of allowed values.
+
+The other fields GTMS reads are:
+
+| Field | Required | Kind | Meaning |
+|-------|----------|------|---------|
+| `test_case_id` | Yes | single value | The test case identity, and the key every other record joins on |
+| `title` | No | single value | Human-readable title |
+| `requirement` | No | single value | The requirement this test case covers; absent or empty means unlinked |
+| `priority` | No | single value | GTMS priority |
+| `created` | No | single value | When the test case was created |
+| `tags` | No | list of single values | Your own categorisation |
+| `updated` | No | single value | A timestamp you maintain yourself |
+| `status` | No | single value | Older GTMS lifecycle field, kept for compatibility; not an OKF lifecycle field |
+| `meta` | No | mapping | Free-form annotations; GTMS keeps their contents as they are |
+
+For a new test case, let GTMS allocate the `test_case_id`. The form GTMS allocates is `tc-` followed by eight lowercase hexadecimal characters. An existing ID is valid if it is `tc-` followed by lowercase letters and digits, optionally followed by further groups of lowercase letters and digits, each introduced by one or two hyphens -- for example `tc-77777777--legacy`. Upper-case letters, underscores, dots, spaces, path separators, and shell characters are not valid. When you convert an existing test case spec, keep its valid ID unchanged so the records that point at it still match.
+
+A few rules settle edge cases:
+
+- **Empty values.** These rules apply to `test_case_id` and the optional fields; the three header keys have their own reasons, listed in the next section (an empty `gtms_schema`, for example, is reported as malformed, not missing). A key with no value, `~`, or `null` counts as absent. For a single-value field, an empty string (`""` or `''`) also counts as absent, never as the wrong kind. An empty `requirement` still means unlinked.
+- **Values are kept as written.** A number, `true`/`false`, or a date is a valid single value, and GTMS keeps it exactly as you wrote it.
+- **Lists and mappings.** Each `tags` entry must be a single value; an empty entry is the wrong kind. An empty string is the wrong kind for `tags` and `meta`, but an empty list (`[]`) or empty mapping (`{}`) is valid.
+- **Key order.** GTMS writes `gtms_schema`, `type`, `test_type`, `test_case_id`, `title`, `requirement`, `priority`, `created`, then any other keys as you wrote them. `priority: Medium` and the `created` date are defaults GTMS fills in, not requirements. `name` is not a field GTMS reads; if present, it is kept as an unknown key.
+- **Start of file.** One UTF-8 byte order mark (BOM) is allowed as the very first bytes. After it, the opening `---` must be the first line. Blank lines before it, a second BOM, or any other text before it make the frontmatter malformed. A `---` line may end with spaces, tabs, or a Windows line ending.
+- **Unknown keys.** You can add your own keys, and OKF keys such as `description` or `resource`. GTMS does not reject a test case spec for having them, and anything that rewrites the frontmatter keeps them.
+
+#### What happens when a test case spec does not match
+
+GTMS checks a test case spec in two places, and names the file both times.
+
+**When `gtms create` finishes**, it checks the files the adapter just wrote. A file that fails is reported under a `Task failed` line as `    <file>: <reason>`, and the create task fails. The reasons for a format problem are:
+
+- No frontmatter block:
+  `no frontmatter block: expected a leading YAML frontmatter block`
+- `gtms_schema` missing:
+  `missing schema discriminator: key 'gtms_schema' is absent`
+- `gtms_schema` empty or not a single value:
+  `malformed or empty schema discriminator: key 'gtms_schema' has <kind> value`
+  where `<kind>` is `null`, `empty string`, `sequence`, or `mapping`.
+- `gtms_schema` names another version:
+  `unsupported schema version: key 'gtms_schema' has value '<value>'; expected 'test-case/v2'`
+- `type` wrong or missing:
+  - `wrong concept type: key 'type' has value '<value>'; expected 'Test Case Spec'`
+  - `wrong concept type: key 'type' has value absent; expected 'Test Case Spec'`
+  - `wrong concept type: key 'type' has <kind> value; expected scalar 'Test Case Spec'` where `<kind>` is `sequence` or `mapping`.
+- `test_type` missing or empty:
+  - `missing or empty test category: key 'test_type' has value absent; expected a non-empty scalar string`
+  - `missing or empty test category: key 'test_type' has empty string value; expected a non-empty scalar string`
+  - `missing or empty test category: key 'test_type' has whitespace-only value; expected a non-empty scalar string`
+  - `malformed YAML: key 'test_type' has <kind> value; expected a non-empty scalar string` where `<kind>` is `sequence` or `mapping`.
+- The same key twice:
+  `duplicate YAML key: key '<key>' appears more than once`
+- A field of the wrong kind:
+  `wrong-type retained field: key '<key>' is declared <declared-kind> but has <found-kind> value`
+  where `<declared-kind>` is `scalar`, `sequence of non-null scalars`, or `mapping`, and `<found-kind>` is `scalar`, `sequence`, `mapping`, `null element`, or `empty scalar`.
+
+Those are all the format reasons. `gtms create` also checks each file's ID and filename, and those checks keep their own reasons:
+
+- `could not parse frontmatter: <parser error>`
+- `frontmatter is missing required field 'test_case_id'`
+- `frontmatter test_case_id '<id>' does not match expected format tc-{8hex}`
+- `frontmatter test_case_id '<id>' does not match filename ID '<id>'`
+- `frontmatter test_case_id '<id>' is not in the pre-generated batch`
+- `duplicate test_case_id '<id>' (also used by <file>)`
+- `filename matches tc-{8hex} prefix but is not a valid shape (expected tc-{8hex}.md or tc-{8hex}-slug.md)`
+
+**For a test case spec already in your project**, commands that act on a test case (`prime`, `automate`, `execute`, `link`, `reset`, `delete`, and the single-test-case views such as `gtms status <tc-id>`) refuse when a test case spec they need does not match. The folder and project views (`gtms status`, `gtms gaps`, `gtms map`, and `gtms triage --list`) still show the valid test cases, name each one that does not match on stderr, and exit 1. A bad test case spec affects a command only when it is in that command's folder, its filename names the ID you asked for, or it declares that ID; a bad file elsewhere does not block you. The one exception is `gtms map <tc-id>`: an unreadable test case spec cannot be placed in a requirement group, so map checks for them across the whole project and exits 1 if it finds one, even though the target's group still prints.
+
+The stderr line takes one of two forms. When GTMS can read a valid `test_case_id`:
+
+```text
+✗ ownership of test case ID '<id>' cannot be proved from <path>: <repair>.
+```
+
+When it cannot:
+
+```text
+✗ ownership of a candidate spec under <folder>/ cannot be proved from <path>: <repair>.
+```
+
+The `<repair>` part tells you exactly what to change:
+
+| Problem | Repair |
+|---------|--------|
+| No frontmatter block | `add a leading YAML frontmatter block in <path>, or remove the file` |
+| `gtms_schema` missing (a test case spec from an earlier GTMS version) | `add gtms_schema: "test-case/v2" in <path>, or remove the file` |
+| `gtms_schema` empty, malformed, or another version | `set gtms_schema to "test-case/v2" in <path>, or remove the file` |
+| `type` wrong, including a `type` that still holds the category | `set type to Test Case Spec in <path>, or remove the file` |
+| `test_type` missing or empty | `set test_type to a non-empty category in <path>, or remove the file` |
+| The same key twice | `remove duplicate YAML key '<key>' in <path>, or remove the file` |
+| A field of the wrong kind | `set '<key>' to its declared <declared-kind> in <path>, or remove the file` |
+| No `test_case_id` | `add a test_case_id to <path>, or remove the file` |
+| Frontmatter that cannot be parsed | `repair the malformed YAML frontmatter in <path>, or remove the file` |
+| An invalid `test_case_id` | `correct the invalid test_case_id in <path> so it matches tc-<hex>[--suffix], or remove the file` |
+| A file GTMS cannot read | `restore readability (permissions/encoding) of <path>, or remove the file` |
+
+#### What the format covers
+
+The folder `gtms/test/cases/` is the OKF bundle, and its subfolders only organise it; a subfolder is not itself a test case. GTMS guarantees this format for the `tc-*.md` test case specs it creates.
+
+The `test_case_id` in the frontmatter is the identity; the filename is a convenience. If two test case specs declare the same ID, or a file that may declare an ID cannot be read well enough to tell, the command stops and names what it found rather than picking one. A renamed file that carries a `test_case_id`, or a malformed `tc-*.md` file, still counts in those checks.
+
+At every level under `gtms/test/cases/`, a file named exactly `index.md` or `log.md` is reserved for your own bundle notes. GTMS ignores both: it does not read, check, or repair them, and adding a `test_case_id` to one does not make it a test case. GTMS also does not check or repair a `README.md`, notes, or any other file of yours that is not a test case spec. GTMS does not create or maintain `index.md` or `log.md`.
+
+GTMS makes no promise about OKF conformance for your own files. For the whole `gtms/test/cases/` tree to conform, every other Markdown file there needs its own frontmatter with a non-empty `type`; GTMS does not add or check it.
+
+Wiring records, results, task files, handoffs, adapters, and automation scripts are not part of the bundle.
+
+#### Optional fields
+
+The optional fields in the table above keep their usual GTMS meaning. `status` is an older GTMS field, not an OKF lifecycle field. GTMS writes no OKF provenance, trust, lifecycle, freshness, or attestation field, and does not check those fields if you add them.
+
+GTMS accepts and keeps unknown keys, including OKF keys such as `description` and `resource`. Keeping a key does not mean GTMS checks, interprets, or maintains it.
+
+#### Compatibility
+
+This format targets OKF v0.2. GTMS promises that each test case spec it creates conforms on its own: it has frontmatter that parses and the required non-empty OKF `type`. GTMS does not promise that the whole bundle conforms.
+
+GTMS reads only `test-case/v2` test case specs. The unversioned format written by earlier GTMS versions (v0.3.3 and before) is not read, and there is no compatibility mode. No command converts a test case spec for you: reading, executing, linking, resetting, deleting, priming, automating, and listing all leave the file as it is. There is no `gtms validate --okf` command.
+
+Adapters and templates see the test category under its new name: `GTMS_TEST_TYPE` in an adapter's environment, `${TEST_TYPE}` in the built-in manual result template and the scaffolded prime scripts, and `test_type` in result metadata. The old `GTMS_TC_TYPE`, `${TC_TYPE}`, and a category-valued result `type` are gone.
+
+#### Converting test case specs from an earlier version
+
+Commit or back up the project before you convert it, so you can compare or roll back if anything goes wrong.
+
+Before you upgrade, run `gtms status -r` with your current GTMS version and resolve anything it shows as stale. The last step below refreshes the stored hashes, so it would otherwise quietly accept an unrelated change to an automation script.
+
+To convert one test case spec by hand:
+
+1. Open the file (`gtms/test/cases/<folder>/tc-XXXXXXXX-*.md`). Keep the Markdown body and the existing fields.
+2. Add `gtms_schema: "test-case/v2"` and `type: Test Case Spec` as the first two lines of the frontmatter, straight after the opening `---` (and after any YAML comment lines there).
+3. Change the old category line from `type: <category>` to `test_type: <category>`, keeping the value exactly, and move it straight after the two new lines. If there was no category, add `test_type: Functional` or your own category.
+4. If the file has no `title` but has a `name`, copy the `name` value into a new `title` field. `name` can stay; GTMS keeps it as an unknown key.
+5. Check the rest: one valid `test_case_id`, no key written twice, every field of the kind shown in the table above, and the opening `---` on the first line.
+6. After converting the test case specs in a folder, refresh their wiring records, because editing a test case spec changes its hash. `gtms link --refresh` honours `--dry-run`, so preview first:
+
+   ```bash
+   gtms link --refresh <folder> -r --dry-run   # preview
+   gtms link --refresh <folder> -r
+   ```
+
+To convert many test case specs at once, give an AI coding agent these steps as the rule and ask it to apply them across `gtms/test/cases/`. It is a mechanical edit of the first lines of each file. Review the `git diff` before you commit: only the header lines of each test case spec and the `testcase-hash` lines of the wiring records should change. Then run `gtms status -r` to confirm nothing is refused or stale.
+
+If you need help migrating an existing project, contact us through [www.TestManagement.com](https://www.testmanagement.com).
+
+#### Timestamps
+
+GTMS writes no OKF timestamp field. `created` and `updated` are GTMS fields, not OKF timestamp fields, and GTMS keeps any value in them as written. The built-in and scaffolded create adapters fill `created` with the current date as `YYYY-MM-DD`; that is a default, not a requirement.
+
+OKF itself requires every OKF timestamp field (such as `last_modified`, `usage_window`, `stale_after`, and `generated.at`) to be an ISO 8601 date and time with an explicit time-zone offset. That rule would apply if GTMS ever mapped `created` or `updated` to an OKF timestamp field.
+
+#### Sources
+
+This format targets OKF version 0.2, as published in two upstream repositories:
+
+- [GoogleCloudPlatform/knowledge-catalog](https://github.com/GoogleCloudPlatform/knowledge-catalog), file `okf/SPEC.md`, commit `3fcbb9f828c2f23d109c855ee403c3a4c81f3a96`, retrieved 2026-08-11.
+- [GoogleCloudPlatform/open-knowledge-format](https://github.com/GoogleCloudPlatform/open-knowledge-format), file `SPEC.md`, commit `ad30107c31c06aec8a7d5636e0d1058118604e6f`, committed 2026-08-21.
+
+Where the two differ on timestamps, the later `open-knowledge-format` commit applies.
 
 ### Configuration
 
@@ -1624,6 +1819,28 @@ Flags:
 
 Triage presentation is opt-in. Without `--show-triage` or `--triage`, `gtms status` prints exactly what it printed before triage existed, so anything scripted against its text output is unaffected.
 
+When some test cases cannot be read, a folder, `-r`, or bare `gtms status` still prints every test case it can read. It leaves out a test case whose ID two test case specs declare, and a test case spec it cannot read (no `test_case_id`, malformed frontmatter, an invalid ID, or a missing or wrong format header). Those are left out of the rows and out of every count, named on stderr, and the command exits 1:
+
+```text
+$ gtms status checkout
+Scope: gtms/test/cases/checkout/ (use -r for recursive)
+
+TEST CASE          CREATE  AUTOMATE  EXECUTE  LAST RESULT
+-----------------  ------  --------  -------  -----------
+tc-03451376        ✓       —         —        —
+tc-11111111  good  ✓       —         —        —
+...
+✗ test case ID 'tc-33333333' is ambiguous -- it has 2 project-wide owners:
+    gtms/test/cases/checkout/tc-33333333-a.md
+    gtms/test/cases/search/tc-33333333-b.md
+    Resolve the duplicate IDs before targeting 'tc-33333333'.
+✗ ownership of a candidate spec under gtms/test/cases/checkout/ cannot be proved from gtms/test/cases/checkout/tc-55555555-no-id.md: add a test_case_id to gtms/test/cases/checkout/tc-55555555-no-id.md, or remove the file.
+✗ 2 test cases could not be read; the output above leaves them out
+    Repair the files named above and rerun.
+```
+
+A duplicate counts across the whole project: a folder view reports one of its test cases if a second copy sits in any other folder. A test case spec that cannot be read is reported only by a view that covers its folder. When every test case in scope is affected, the usual "No test cases found." line is not printed, because the folder is not empty. `--json` stays valid JSON either way -- `[]` or an object with zero totals when nothing could be read -- so a script must check the exit code as well as the JSON. `gtms status <tc-id>` on an affected test case prints nothing on stdout, names the problem on stderr, and exits 1. See Troubleshooting for the fixes.
+
 Example output (folder summary, bare `gtms status`):
 
 ```text
@@ -1683,7 +1900,7 @@ $ gtms status --triage environment
     Try 'gtms status -r --triage environment'.
 ```
 
-Give it a folder, a test case ID, or `-r` instead. A filter that matches nothing is a success, not an error -- it exits zero and names the value it looked for:
+Give it a folder, a test case ID, or `-r` instead. A filter that matches nothing is a success, not an error -- it exits zero and names the value it looked for, unless a duplicated or unreadable test case in scope makes the command exit 1 as described above:
 
 ```text
 $ gtms status checkout --triage environment
@@ -1708,6 +1925,8 @@ A `--triage` filter does narrow JSON: it drops non-matching rows and attaches on
 - `-r` / `--recursive` includes test cases from subdirectories. With no folder argument, `-r` replaces the folder-summary table with the full gaps report across all test cases.
 - `--json` emits the same data as JSON: the full gap report when scoped, the folder-summary entries when bare.
 - `--framework <name>` restricts the report to one automation framework.
+
+Duplicated and unreadable test cases are handled the same way as in `gtms status`: the report and every count leave them out, stderr names each one, the command exits 1, and `--json` stays well-formed.
 
 The folder-scoped report prints one section per category, listing the affected test case IDs and titles, so you can see exactly which test cases carry each gap.
 
@@ -1760,6 +1979,8 @@ Flags:
 - `--framework <name>` filters by automation framework.
 
 `map` accepts the same `[test-case-id | folder]` shape as `status`.
+
+Duplicated and unreadable test cases are handled the same way as in `gtms status`: the map and its SUMMARY counts leave them out, stderr names each one, the command exits 1, and `--json` stays well-formed. `gtms map <tc-id>` refuses a target that is duplicated or cannot be read -- nothing on stdout, the reason on stderr, exit 1. When the target is fine, its requirement group prints as usual, but the command still exits 1 if a duplicate appears in that group or an unreadable test case spec exists anywhere in the project.
 
 Example output (folder-scoped, `gtms map login`):
 
@@ -1972,7 +2193,9 @@ The `--list` positional is a folder or a test-case ID, and GTMS decides which th
 
 Stored text is rendered safely. Control characters in a stored summary or defect render as `?` in every human surface; JSON returns the stored text unchanged. Inside the `--list` marker only, GTMS also escapes the defect so it cannot fake or close a marker: every backslash is doubled first, then every `[` and `]` gets a backslash in front of it. `--show` and the status card print the defect as stored. For a stored defect of `JIRA-[42]\x`, `--show` prints `Defect:  JIRA-[42]\x` and the list row ends `[JIRA-\[42\]\\x]`.
 
-A record can outlive its test case. Records are keyed on (test case, framework) and survive when the test case spec is deleted or moved, so the root list marks an orphan `[spec missing]`. A test-case-target list behaves the same way: it finds the record and marks it. A folder or recursive list is scoped by test case spec, so an orphan never appears in one.
+A record can outlive its test case. Records are keyed on (test case, framework) and survive when the test case spec is deleted, so the root list marks an orphan `[spec missing]`. `[spec missing]` means no test case spec in the project declares that ID. A test case spec that was moved or renamed is still found through the `test_case_id` inside it, so its records are not orphans. A test-case-target list of an orphan behaves the same way as the root list: it finds the record, marks it, and exits 0. A folder or recursive list is scoped by test case spec, so an orphan never appears in one.
+
+Duplicated and unreadable test cases are handled the same way as in `gtms status`. A root, folder, or `-r` list prints the records it can attribute, names each problem on stderr, and exits 1. `gtms triage --list <tc-id>` refuses a target that two test case specs declare, or whose test case spec cannot be read: nothing on stdout (not even `[]` under `--json`), the reason on stderr, exit 1.
 
 Lists are ordered by test case ID, then framework, so repeated runs and diffs are stable.
 
@@ -2118,6 +2341,31 @@ Check the same chain in reverse. Likely causes:
 - The execute target was different from the test case identifier you are looking up (folder name versus `tc-XXXXXXXX`).
 - The execute task is still in `gtms/tasks/in-progress/`, which means the adapter has not returned (or, for async adapters, `gtms execute status` has not been run since it finished). Read the corresponding `.gtms/results/<task-id>.handoff.yaml` file; GTMS stamps it `status: in-progress` when it hands off to the adapter, so if it still shows `in-progress` the adapter has not reported back yet.
 - For automate-path runs: the wiring record is missing (no `gtms automate` has run for this test case in the targeted framework). Inspect the wiring directory under `gtms/automation/wiring/` to confirm whether the record exists, and run `gtms list frameworks` to confirm the framework is recognised, then re-run `gtms automate`.
+- The test case's ID is duplicated, or its test case spec cannot be read. The folder view leaves it out and names it on stderr; see the next entry.
+
+### A command prints rows but exits 1, or refuses a test case spec
+
+When `gtms status`, `gtms map`, `gtms gaps`, or `gtms triage --list` prints its normal output but exits 1, the output is incomplete. Some test cases were left out, and stderr names each one:
+
+```text
+✗ test case ID 'tc-33333333' is ambiguous -- it has 2 project-wide owners:
+    gtms/test/cases/checkout/tc-33333333-a.md
+    gtms/test/cases/search/tc-33333333-b.md
+    Resolve the duplicate IDs before targeting 'tc-33333333'.
+✗ ownership of test case ID 'tc-77777777' cannot be proved from gtms/test/cases/legacy/tc-77777777-old.md: add gtms_schema: "test-case/v2" in gtms/test/cases/legacy/tc-77777777-old.md, or remove the file.
+✗ 2 test cases could not be read; the output above leaves them out
+    Repair the files named above and rerun.
+```
+
+Commands that act on one test case (`prime`, `automate`, `execute`, `link`, `reset`, `delete`, and `gtms status <tc-id>`) print the same line for their target and refuse before doing anything.
+
+The fix is always in the test case spec files:
+
+- **A duplicated ID.** Remove the extra copy, or give it a new ID by creating a new test case with `gtms create` and moving its content across.
+- **A missing format header** (`add gtms_schema: "test-case/v2" in <file>`). The file was written by an earlier GTMS version. Convert it as described in GTMS test case OKF profile, under Converting test case specs from an earlier version.
+- **Any other repair line** (`set type to Test Case Spec`, `add a test_case_id`, `repair the malformed YAML frontmatter`, and so on). Make the change the line names; the full list is in the same section.
+
+Then rerun the command. Scripts and CI jobs that run these commands under `set -e`, or that fail on a non-zero exit, stop at this point until the files are repaired. That is deliberate: exit 0 means every test case in scope was read.
 
 ### Resetting to a clean dashboard
 

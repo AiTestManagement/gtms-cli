@@ -21,7 +21,7 @@ func TestParseBodyIdentity_AuthoredIdentityValidatedBeforeNormalisation(t *testi
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root, cases := casesDirFor(t)
-			writeRaw(t, cases, tc.relName, "---\ntest_case_id: "+tc.authored+"\ntitle: \"t\"\n---\nbody\n")
+			writeRaw(t, cases, tc.relName, "---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: "+tc.authored+"\ntitle: \"t\"\n---\nbody\n")
 
 			snap := mustSnapshot(t, root)
 

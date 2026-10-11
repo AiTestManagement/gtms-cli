@@ -33,7 +33,7 @@ func writeDeleteFixture(t *testing.T, root, tcID, folder string) {
 		tcDir = filepath.Join(tcDir, folder)
 	}
 	require.NoError(t, os.MkdirAll(tcDir, 0755))
-	tcContent := "---\ntest_case_id: " + tcID + "\ntitle: Test " + tcID + "\nrequirement: REQ-001\n---\n"
+	tcContent := "---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: " + tcID + "\ntitle: Test " + tcID + "\nrequirement: REQ-001\n---\n"
 	require.NoError(t, os.WriteFile(filepath.Join(tcDir, tcID+"-test.md"), []byte(tcContent), 0644))
 
 	// Test script file (the artefact the wiring record points to)
@@ -230,7 +230,7 @@ func TestDelete_MissingArtifacts(t *testing.T) {
 	// Create only a test case spec — no automation, no scripts, no tasks
 	tcDir := filepath.Join(root, "gtms/test/cases")
 	require.NoError(t, os.MkdirAll(tcDir, 0755))
-	tcContent := "---\ntest_case_id: tc-hhh88880\ntitle: Partial\nrequirement: REQ-001\n---\n"
+	tcContent := "---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: tc-hhh88880\ntitle: Partial\nrequirement: REQ-001\n---\n"
 	require.NoError(t, os.WriteFile(filepath.Join(tcDir, "tc-hhh88880-partial.md"), []byte(tcContent), 0644))
 
 	result, err := DeleteArtifacts(root, nil, "tc-hhh88880", false, false, false)
@@ -264,7 +264,7 @@ func TestDelete_MultipleAutomationRecords(t *testing.T) {
 	tcDir := filepath.Join(root, "gtms/test/cases")
 	require.NoError(t, os.MkdirAll(tcDir, 0755))
 	require.NoError(t, os.WriteFile(filepath.Join(tcDir, tcID+"-multi.md"),
-		[]byte("---\ntest_case_id: "+tcID+"\ntitle: Multi\nrequirement: REQ-001\n---\n"), 0644))
+		[]byte("---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: "+tcID+"\ntitle: Multi\nrequirement: REQ-001\n---\n"), 0644))
 
 	// Create multiple wiring records (bats + playwright) with artefact fields
 	wiringDir := filepath.Join(root, "gtms/automation", "wiring")
@@ -311,7 +311,7 @@ func TestDelete_AllTaskStatuses(t *testing.T) {
 	tcDir := filepath.Join(root, "gtms/test/cases")
 	require.NoError(t, os.MkdirAll(tcDir, 0755))
 	require.NoError(t, os.WriteFile(filepath.Join(tcDir, tcID+"-statuses.md"),
-		[]byte("---\ntest_case_id: "+tcID+"\ntitle: Statuses\nrequirement: REQ-001\n---\n"), 0644))
+		[]byte("---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: "+tcID+"\ntitle: Statuses\nrequirement: REQ-001\n---\n"), 0644))
 
 	// Create task files in all 5 status directories
 	statuses := []string{"pending", "in-progress", "in-review", "complete", "error"}
@@ -340,7 +340,7 @@ func TestDelete_AllTaskTypes(t *testing.T) {
 	tcDir := filepath.Join(root, "gtms/test/cases")
 	require.NoError(t, os.MkdirAll(tcDir, 0755))
 	require.NoError(t, os.WriteFile(filepath.Join(tcDir, tcID+"-types.md"),
-		[]byte("---\ntest_case_id: "+tcID+"\ntitle: Types\nrequirement: REQ-001\n---\n"), 0644))
+		[]byte("---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: "+tcID+"\ntitle: Types\nrequirement: REQ-001\n---\n"), 0644))
 
 	// Create task files for all 3 command types in complete
 	writeTaskFile(t, root, tcID, "complete", "create", "task-00000001")
@@ -375,7 +375,7 @@ func TestDelete_RecordDrivenResultFiles(t *testing.T) {
 	tcDir := filepath.Join(root, "gtms/test/cases")
 	require.NoError(t, os.MkdirAll(tcDir, 0755))
 	require.NoError(t, os.WriteFile(filepath.Join(tcDir, tcID+"-results.md"),
-		[]byte("---\ntest_case_id: "+tcID+"\ntitle: Result files\nrequirement: REQ-001\n---\n"), 0644))
+		[]byte("---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: "+tcID+"\ntitle: Result files\nrequirement: REQ-001\n---\n"), 0644))
 
 	// Create a result file that the manual record's executed_artefact points to
 	resultDir := filepath.Join(root, "results", "junit")
@@ -415,7 +415,7 @@ func TestDelete_NoSlugFilename(t *testing.T) {
 	tcDir := filepath.Join(root, "gtms/test/cases")
 	require.NoError(t, os.MkdirAll(tcDir, 0755))
 	require.NoError(t, os.WriteFile(filepath.Join(tcDir, tcID+".md"),
-		[]byte("---\ntest_case_id: "+tcID+"\ntitle: No Slug\nrequirement: REQ-001\n---\n"), 0644))
+		[]byte("---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: "+tcID+"\ntitle: No Slug\nrequirement: REQ-001\n---\n"), 0644))
 
 	result, err := DeleteArtifacts(root, nil, tcID, false, false, false)
 	require.NoError(t, err)
@@ -431,7 +431,7 @@ func TestDelete_ResultContracts_MultipleCommands(t *testing.T) {
 	tcDir := filepath.Join(root, "gtms/test/cases")
 	require.NoError(t, os.MkdirAll(tcDir, 0755))
 	require.NoError(t, os.WriteFile(filepath.Join(tcDir, tcID+"-multi.md"),
-		[]byte("---\ntest_case_id: "+tcID+"\ntitle: Multi\nrequirement: REQ-001\n---\n"), 0644))
+		[]byte("---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: "+tcID+"\ntitle: Multi\nrequirement: REQ-001\n---\n"), 0644))
 
 	// Create result contracts for 3 different command types, all referencing this TC
 	resultsDir := filepath.Join(root, ".gtms", "results")
@@ -499,7 +499,7 @@ func TestDelete_ResultContracts_MalformedYAML(t *testing.T) {
 	tcDir := filepath.Join(root, "gtms/test/cases")
 	require.NoError(t, os.MkdirAll(tcDir, 0755))
 	require.NoError(t, os.WriteFile(filepath.Join(tcDir, tcID+"-bad.md"),
-		[]byte("---\ntest_case_id: "+tcID+"\ntitle: Bad YAML\nrequirement: REQ-001\n---\n"), 0644))
+		[]byte("---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: "+tcID+"\ntitle: Bad YAML\nrequirement: REQ-001\n---\n"), 0644))
 
 	// Create results dir with a malformed YAML file and a valid one
 	resultsDir := filepath.Join(root, ".gtms", "results")
@@ -541,7 +541,7 @@ func TestDelete_PathSafety_ParentTraversal(t *testing.T) {
 	require.NoError(t, os.MkdirAll(tcDir, 0755))
 	specPath := filepath.Join(tcDir, tcID+"-safe.md")
 	require.NoError(t, os.WriteFile(specPath,
-		[]byte("---\ntest_case_id: "+tcID+"\ntitle: Path safety\nrequirement: REQ-001\n---\n"), 0644))
+		[]byte("---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: "+tcID+"\ntitle: Path safety\nrequirement: REQ-001\n---\n"), 0644))
 
 	// Create wiring record with a ".." artefact path (path traversal attempt).
 	// CON-023 / ENH-145: the unsafe-artefact check fires on the new wiring
@@ -579,7 +579,7 @@ func TestDelete_PathSafety_AbsolutePathOutside(t *testing.T) {
 	require.NoError(t, os.MkdirAll(tcDir, 0755))
 	specPath := filepath.Join(tcDir, tcID+"-abs.md")
 	require.NoError(t, os.WriteFile(specPath,
-		[]byte("---\ntest_case_id: "+tcID+"\ntitle: Abs path\nrequirement: REQ-001\n---\n"), 0644))
+		[]byte("---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: "+tcID+"\ntitle: Abs path\nrequirement: REQ-001\n---\n"), 0644))
 
 	// Build an absolute path that is GUARANTEED to be outside the project root
 	// across platforms: a sibling temp directory.
@@ -628,7 +628,7 @@ func TestDelete_PathSafety_AtomicAbort_MixedSafeUnsafe(t *testing.T) {
 	require.NoError(t, os.MkdirAll(tcDir, 0755))
 	specPath := filepath.Join(tcDir, tcID+"-mixed.md")
 	require.NoError(t, os.WriteFile(specPath,
-		[]byte("---\ntest_case_id: "+tcID+"\ntitle: Mixed\nrequirement: ENH-128\n---\n"), 0644))
+		[]byte("---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: "+tcID+"\ntitle: Mixed\nrequirement: ENH-128\n---\n"), 0644))
 
 	// Safe in-project artefact
 	scriptsDir := filepath.Join(root, "scripts")
@@ -675,7 +675,7 @@ func TestDelete_Deduplication(t *testing.T) {
 	tcDir := filepath.Join(root, "gtms/test/cases")
 	require.NoError(t, os.MkdirAll(tcDir, 0755))
 	require.NoError(t, os.WriteFile(filepath.Join(tcDir, tcID+"-dedup.md"),
-		[]byte("---\ntest_case_id: "+tcID+"\ntitle: Dedup\nrequirement: REQ-001\n---\n"), 0644))
+		[]byte("---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: "+tcID+"\ntitle: Dedup\nrequirement: REQ-001\n---\n"), 0644))
 
 	// Create a single test script
 	require.NoError(t, os.MkdirAll(filepath.Join(root, "test", "acceptance"), 0755))
@@ -712,7 +712,7 @@ func TestDelete_DedupesArtefactAndExecutedArtefactSamePath(t *testing.T) {
 	tcDir := filepath.Join(root, "gtms/test/cases")
 	require.NoError(t, os.MkdirAll(tcDir, 0755))
 	require.NoError(t, os.WriteFile(filepath.Join(tcDir, tcID+"-crossdup.md"),
-		[]byte("---\ntest_case_id: "+tcID+"\ntitle: Cross-field dedup\nrequirement: BUG-073\n---\n"), 0644))
+		[]byte("---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: "+tcID+"\ntitle: Cross-field dedup\nrequirement: BUG-073\n---\n"), 0644))
 
 	// Create a single physical file that both fields will reference
 	scriptsDir := filepath.Join(root, "scripts")
@@ -757,7 +757,7 @@ func TestDelete_MissingArtefactFile(t *testing.T) {
 	tcDir := filepath.Join(root, "gtms/test/cases")
 	require.NoError(t, os.MkdirAll(tcDir, 0755))
 	require.NoError(t, os.WriteFile(filepath.Join(tcDir, tcID+"-missing.md"),
-		[]byte("---\ntest_case_id: "+tcID+"\ntitle: Missing file\nrequirement: REQ-001\n---\n"), 0644))
+		[]byte("---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: "+tcID+"\ntitle: Missing file\nrequirement: REQ-001\n---\n"), 0644))
 
 	// Create wiring record pointing to a non-existent file
 	wiringDir := filepath.Join(root, "gtms/automation", "wiring")
@@ -786,7 +786,7 @@ func TestDelete_NoRecords_CleanState(t *testing.T) {
 	tcDir := filepath.Join(root, "gtms/test/cases")
 	require.NoError(t, os.MkdirAll(tcDir, 0755))
 	require.NoError(t, os.WriteFile(filepath.Join(tcDir, tcID+"-clean.md"),
-		[]byte("---\ntest_case_id: "+tcID+"\ntitle: Clean\nrequirement: REQ-001\n---\n"), 0644))
+		[]byte("---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: "+tcID+"\ntitle: Clean\nrequirement: REQ-001\n---\n"), 0644))
 
 	result, err := DeleteArtifacts(root, nil, tcID, false, false, false)
 	require.NoError(t, err)

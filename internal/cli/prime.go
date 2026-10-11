@@ -90,7 +90,7 @@ Adapter execution:
 			if !isTestCaseID(target) {
 				msg := fmt.Sprintf("Invalid test case ID format: '%s'.", target)
 				output.Errorf(msg, "Use format like tc-a1b2c3d4.")
-				return output.AsDisplayed(fmt.Errorf(msg))
+				return output.AsDisplayed(errors.New(msg))
 			}
 
 			// ADR-024 / BUG-185 (tc-baf7bbd7): prime writes a manual result record
@@ -104,7 +104,7 @@ Adapter execution:
 				if errors.Is(err, testcase.ErrOwnerNotFound) {
 					msg := fmt.Sprintf("Test case '%s' not found in gtms/test/cases/", target)
 					output.Errorf(msg, "Create the test case first with 'gtms create'.")
-					return output.AsDisplayed(fmt.Errorf(msg))
+					return output.AsDisplayed(errors.New(msg))
 				}
 				output.Errorf(err.Error(), "")
 				return output.AsDisplayed(err)
@@ -115,7 +115,7 @@ Adapter execution:
 			if violations := adapter.ValidateTestCaseOwner(root, owner); len(violations) > 0 {
 				summary := adapter.FormatValidationErrors(violations)
 				output.Errorf(summary, "Fix the test case frontmatter and try again.")
-				return output.AsDisplayed(fmt.Errorf(summary))
+				return output.AsDisplayed(errors.New(summary))
 			}
 
 			// BUG-121: Validate --framework flag if provided (mirrors execute.go:113).
@@ -124,7 +124,7 @@ Adapter execution:
 			if frameworkFlag != "" && !config.ValidateFramework(frameworkFlag) {
 				msg := fmt.Sprintf("Invalid framework '%s'. Framework must contain only lowercase letters, digits, and hyphens.", frameworkFlag)
 				output.Errorf(msg, "Example: --framework playwright")
-				return output.AsDisplayed(fmt.Errorf(msg))
+				return output.AsDisplayed(errors.New(msg))
 			}
 
 			// ENH-134: --update-hash on the manual framework preserves execute
@@ -154,7 +154,7 @@ Adapter execution:
 				msg := fmt.Sprintf("A prime task for %s already exists: gtms/tasks/%s/%s-prime-%s.md",
 					target, existing.Status, existing.ID, existing.Target)
 				output.Errorf(msg, "Wait for the existing task to complete or remove it.")
-				return output.AsDisplayed(fmt.Errorf(msg))
+				return output.AsDisplayed(errors.New(msg))
 			}
 
 			// Read context file if provided
@@ -302,7 +302,7 @@ func validatePrimeFolderStructure(root string) error {
 		if _, err := os.Stat(path); os.IsNotExist(err) {
 			msg := fmt.Sprintf("Required directory '%s' not found.", dir)
 			output.Errorf(msg, "Run 'gtms init' to create the project structure.")
-			return output.AsDisplayed(fmt.Errorf(msg))
+			return output.AsDisplayed(errors.New(msg))
 		}
 	}
 	return nil

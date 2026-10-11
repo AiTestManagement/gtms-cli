@@ -135,28 +135,47 @@ func scopedFixtureScope(root string) *reader.ScopeInfo {
 // bulkReadOp is one deferred entry point from 5a's matrix, together with how to
 // invoke it and how many full passes over the out-of-scope decoy folder its
 // correct implementation is entitled to.
+//
+// ENH-205 makes the entitlement STATE-DRIVEN. legitimatePasses is derived from the
+// operation's row in the ADR-024 5b consumer table (the same TSV the static guard
+// reads), not hardcoded:
+//
+//   - A `legacy` scoped read has no reason to open the decoy folder at all: 0.
+//   - A `snapshot` scoped read builds exactly ONE project-wide snapshot, which
+//     reads the whole cases tree -- including the decoys -- once: 1.
+//   - An unscoped roll-up summarises every folder and reads the tree once in
+//     either state: 1.
+//
+// The gate is always "not one pass more than legitimatePasses", so 5a/5b's "at
+// most one project-wide enumeration" is what is asserted, and the O(N^2) scaling
+// gate applies in every state.
 type bulkReadOp struct {
 	name string
 	why  string
-	// legitimatePasses is the number of full decoy-folder passes this operation
-	// correctly performs. Zero for a scoped read, which has no reason to open the
-	// folder at all; one for an unscoped roll-up, which summarises every folder
-	// and therefore reads it once. The gate is always "not one pass more than
-	// this", so 5a's "at most one project-wide enumeration" is what is asserted
-	// in both cases.
-	legitimatePasses int
+	// tableKey is the operation's key in the ADR-024 5b consumer table.
+	tableKey string
+	// rollup is true for the unscoped folder-summary roll-ups, which legitimately
+	// read the whole tree once regardless of state.
+	rollup bool
 	// run invokes the operation and sanity-checks that it actually did the work
 	// the measurement attributes to it. A silently empty result would read as a
 	// clean measurement.
 	run func(t *testing.T, root string, wiringCount int)
 }
 
+// legitimatePasses is the entitled number of full decoy-folder passes. ENH-205 is
+// complete, so every measured operation is on the snapshot: a scoped read builds
+// exactly ONE project-wide snapshot (one pass over the whole tree, decoys included),
+// and an unscoped roll-up reads the tree once too. Either way the entitlement is one
+// pass, and the scaling gate (b) is what proves it stays one as the wiring grows.
+func (op bulkReadOp) legitimatePasses() int { return 1 }
+
 func deferredBulkReadOps() []bulkReadOp {
 	return []bulkReadOp{
 		{
-			name:             "PipelineStatus",
-			why:              "bulk status: the scoped pipeline read behind `gtms status <folder>`",
-			legitimatePasses: 0,
+			name:     "PipelineStatus",
+			why:      "bulk status: the scoped pipeline read behind `gtms status <folder>`",
+			tableKey: "status-scoped",
 			run: func(t *testing.T, root string, _ int) {
 				entries, err := reader.PipelineStatus(root, scopedFixtureScope(root), "", false)
 				if err != nil {
@@ -169,9 +188,9 @@ func deferredBulkReadOps() []bulkReadOp {
 			},
 		},
 		{
-			name:             "Gaps",
-			why:              "gaps: the scoped coverage-gap read, which reaches specs via scanTestCases",
-			legitimatePasses: 0,
+			name:     "Gaps",
+			why:      "gaps: the scoped coverage-gap read, which reaches specs via scanTestCases",
+			tableKey: "gaps",
 			run: func(t *testing.T, root string, _ int) {
 				rep, err := reader.Gaps(root, scopedFixtureScope(root), "", false)
 				if err != nil {
@@ -184,9 +203,9 @@ func deferredBulkReadOps() []bulkReadOp {
 			},
 		},
 		{
-			name:             "Map",
-			why:              "map: the scoped traceability read, which reaches specs via scanTestCases",
-			legitimatePasses: 0,
+			name:     "Map",
+			why:      "map: the scoped traceability read, which reaches specs via scanTestCases",
+			tableKey: "map",
 			run: func(t *testing.T, root string, _ int) {
 				rep, err := reader.Map(root, scopedFixtureScope(root), "", false)
 				if err != nil {
@@ -200,9 +219,9 @@ func deferredBulkReadOps() []bulkReadOp {
 			},
 		},
 		{
-			name:             "ListTriage(scoped)",
-			why:              "triage listing, spec-scoped: IDs come from the specs under the scope",
-			legitimatePasses: 0,
+			name:     "ListTriage(scoped)",
+			why:      "triage listing, spec-scoped: IDs come from the specs under the scope",
+			tableKey: "triage-list",
 			run: func(t *testing.T, root string, wiringCount int) {
 				views, err := reader.ListTriage(root, scopedFixtureScope(root), "", true)
 				if err != nil {
@@ -218,7 +237,7 @@ func deferredBulkReadOps() []bulkReadOp {
 			name: "ListTriage(root)",
 			why: "triage listing, root-scoped: the branch that calls the legacy resolver per record " +
 				"for the orphan marker",
-			legitimatePasses: 0,
+			tableKey: "triage-list",
 			run: func(t *testing.T, root string, wiringCount int) {
 				views, err := reader.ListTriage(root, nil, "", true)
 				if err != nil {
@@ -231,9 +250,10 @@ func deferredBulkReadOps() []bulkReadOp {
 			},
 		},
 		{
-			name:             "PipelineFolderSummary",
-			why:              "bulk status, unscoped: the folder roll-up behind a bare `gtms status`",
-			legitimatePasses: 1,
+			name:     "PipelineFolderSummary",
+			why:      "bulk status, unscoped: the folder roll-up behind a bare `gtms status`",
+			tableKey: "status-summary",
+			rollup:   true,
 			run: func(t *testing.T, root string, _ int) {
 				rows, err := reader.PipelineFolderSummary(root, "")
 				if err != nil {
@@ -246,9 +266,10 @@ func deferredBulkReadOps() []bulkReadOp {
 			},
 		},
 		{
-			name:             "GapsFolderSummary",
-			why:              "gaps, unscoped: the folder roll-up behind a bare `gtms gaps`",
-			legitimatePasses: 1,
+			name:     "GapsFolderSummary",
+			why:      "gaps, unscoped: the folder roll-up behind a bare `gtms gaps`",
+			tableKey: "gaps-summary",
+			rollup:   true,
 			run: func(t *testing.T, root string, _ int) {
 				rows, err := reader.GapsFolderSummary(root, "")
 				if err != nil {
@@ -277,14 +298,14 @@ func buildBulkReadFixture(t *testing.T, wiringCount int, withDecoys bool) (root 
 	for i := 0; i < scopedSpecCount; i++ {
 		id := tcIDAt(i)
 		writeFixtureFile(t, filepath.Join(casesDir, "feat", id+".md"),
-			"---\ntest_case_id: "+id+"\ntitle: scoped "+id+"\n---\n\nbody\n")
+			"---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: "+id+"\ntitle: scoped "+id+"\n---\n\nbody\n")
 	}
 
 	if withDecoys {
 		padding := strings.Repeat("decoy padding line to make a body read expensive\n", decoySpecBytes/48)
 		for i := 0; i < decoySpecCount; i++ {
 			id := tcIDAt(1000 + i)
-			body := "---\ntest_case_id: " + id + "\ntitle: decoy " + id + "\n---\n\n" + padding
+			body := "---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: " + id + "\ntitle: decoy " + id + "\n---\n\n" + padding
 			writeFixtureFile(t, filepath.Join(casesDir, "bulk", id+".md"), body)
 			decoyBytes += int64(len(body))
 		}
@@ -397,12 +418,14 @@ func TestADR024Boundary_BulkReadEnumerationIsBounded(t *testing.T) {
 
 	for _, op := range deferredBulkReadOps() {
 		t.Run(op.name, func(t *testing.T) {
-			// (a) An operation performs AT MOST ONE project-wide enumeration, and a
-			// scoped one performs none. The threshold is not a chosen constant: it
-			// is the cost of one full pass over a folder, times the number of passes
-			// this operation legitimately makes. A scoped folder read has no reason
-			// to open bulk/ at all; an unscoped roll-up reads it exactly once.
-			ceiling := int64(op.legitimatePasses+1) * oneDecoyPass
+			passes := op.legitimatePasses()
+			// (a) An operation performs AT MOST ONE project-wide enumeration. The
+			// threshold is not a chosen constant: it is the cost of one full pass over
+			// a folder, times the number of passes this operation legitimately makes
+			// in its consumer-table state. A `legacy` scoped read has no reason to open
+			// bulk/ at all; a `snapshot` scoped read and an unscoped roll-up read it
+			// exactly once.
+			ceiling := int64(passes+1) * oneDecoyPass
 			for _, m := range []struct {
 				wiring int
 				bytes  int64
@@ -411,15 +434,12 @@ func TestADR024Boundary_BulkReadEnumerationIsBounded(t *testing.T) {
 					t.Errorf("with %d wiring records %s read %d bytes from the out-of-scope cases "+
 						"folder -- %.1f full passes over it, against %d legitimate.\n"+
 						"    %s\n"+
-						"    ADR-024 5a: an operation performs at most one project-wide enumeration, "+
-						"and project-wide snapshot constructions inside a deferred consumer must be "+
-						"ZERO. Reading past this means the read went through project-wide snapshot "+
-						"resolution.\n"+
-						"    Hoisting a single snapshot into a deferred consumer does not satisfy "+
-						"this: the prohibition is on reaching project-wide resolution AT ALL, not "+
-						"per record.",
+						"    ADR-024 5a/5b: an operation performs at most one project-wide enumeration. "+
+						"A `legacy` scoped read must build ZERO snapshots; a `snapshot` operation "+
+						"builds exactly ONE. Reading past this means per-record project-wide "+
+						"resolution -- the O(N^2) regression this assertion exists to catch.",
 						m.wiring, op.name, m.bytes, float64(m.bytes)/float64(oneDecoyPass),
-						op.legitimatePasses, op.why)
+						passes, op.why)
 				}
 			}
 

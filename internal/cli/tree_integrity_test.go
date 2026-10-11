@@ -50,7 +50,7 @@ func TestTreeIntegrity_TestCaseFilenameMatchesFrontmatterID(t *testing.T) {
 			return nil
 		}
 
-		filenameID := extractTestCaseID(name)
+		filenameID := extractTCIDFromFilename(name)
 		if filenameID == "" {
 			return nil
 		}

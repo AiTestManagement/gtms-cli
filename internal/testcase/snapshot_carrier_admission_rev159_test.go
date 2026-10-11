@@ -24,7 +24,7 @@ func TestAdmission_MalformedRenamedSpecStillRefusesItsFolder(t *testing.T) {
 	writeSpecID(t, cases, "feat/tc-11111111-login.md", "tc-11111111")
 	// Renamed (no tc- envelope) AND malformed: the value is an unclosed quote, so
 	// no YAML parser reaches the id. The carrier line is nonetheless right there.
-	writeRaw(t, cases, "feat/login.md", "---\ntest_case_id: \"tc-22222222\ntitle: broken\n---\n\nbody\n")
+	writeRaw(t, cases, "feat/login.md", "---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: \"tc-22222222\ntitle: broken\n---\n\nbody\n")
 
 	snap := mustSnapshot(t, root)
 
@@ -41,6 +41,23 @@ func TestAdmission_MalformedRenamedSpecStillRefusesItsFolder(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "login.md") {
 		t.Fatalf("diagnostic %q does not name the offending file", err.Error())
+	}
+}
+
+func TestAdmission_PreambleMalformedRenamedSpecStillRefusesItsFolder(t *testing.T) {
+	root, cases := casesDirFor(t)
+	writeRaw(t, cases, "feat/login.md", "\n---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: tc-22222222\ntitle: legacy\n---\n")
+
+	snap := mustSnapshot(t, root)
+	_, unprovable := snap.SelectFolder("gtms/test/cases/feat", false)
+	if len(unprovable) != 1 {
+		t.Fatalf("SelectFolder reported %d unprovable candidates, want 1: a renamed spec with a leading blank line must not vanish", len(unprovable))
+	}
+	if unprovable[0].Reason != ReasonMalformed || unprovable[0].SchemaFailure == nil {
+		t.Fatalf("candidate = %#v, want schema-malformed Unprovable", unprovable[0])
+	}
+	if got := UnprovableInScope("gtms/test/cases/feat", unprovable[0]).Error(); !strings.Contains(got, "repair the malformed YAML frontmatter") {
+		t.Fatalf("diagnostic = %q, want malformed-frontmatter repair sentence", got)
 	}
 }
 
@@ -70,7 +87,7 @@ func TestAdmission_DelimiterToleratesCRLFBOMAndTrailingBlanks(t *testing.T) {
 		body string
 	}{
 		{"crlf", "---\r\ntest_case_id: \"tc-44444444\r\n  bad: [\r\n"},
-		{"bom", "\xef\xbb\xbf---\ntest_case_id: \"tc-44444444\n  bad: [\n"},
+		{"bom", "\xef\xbb\xbf---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: \"tc-44444444\n  bad: [\n"},
 		{"trailing_spaces", "---   \ntest_case_id: \"tc-44444444\n  bad: [\n"},
 		{"trailing_tab", "---\t\ntest_case_id: \"tc-44444444\n  bad: [\n"},
 	}
@@ -101,7 +118,7 @@ func TestAdmission_CarrierOutsideTheLeadingRegionDoesNotAdmit(t *testing.T) {
 	}{
 		{
 			"fenced_block_in_readme",
-			"# How specs look\n\n```yaml\n---\ntest_case_id: tc-55555555\n---\n```\n",
+			"# How specs look\n\n```yaml\n---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: tc-55555555\n---\n```\n",
 		},
 		{
 			"after_the_region_closed",

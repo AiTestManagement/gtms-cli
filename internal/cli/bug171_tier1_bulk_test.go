@@ -33,6 +33,9 @@ func TestAutomate_BulkTier1NoFramework_DoesNotPreflightRefuse(t *testing.T) {
 	folder := filepath.Join(root, "gtms/test/cases/iterate")
 	require.NoError(t, os.MkdirAll(folder, 0o755))
 	spec := `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-aaaa1111
 title: First
 ---
@@ -83,6 +86,9 @@ func TestAutomate_BulkUnsupportedFramework_ReportsUnsupportedNotAddRunner(t *tes
 	folder := filepath.Join(root, "gtms/test/cases/unsupported")
 	require.NoError(t, os.MkdirAll(folder, 0o755))
 	spec := `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-44440000
 title: First
 ---

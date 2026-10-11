@@ -21,7 +21,7 @@ func TestRenamedOwner_ReachesAdapterInputValidationAndHashing(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(renamedAbs), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	body := "---\ntest_case_id: tc-a1b2c3d4\ntitle: Renamed owner\n---\n\n## Test Objective\nx\n"
+	body := "---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: tc-a1b2c3d4\ntitle: Renamed owner\n---\n\n## Test Objective\nx\n"
 	if err := os.WriteFile(renamedAbs, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}

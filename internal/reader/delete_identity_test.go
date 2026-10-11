@@ -151,7 +151,7 @@ func TestDelete_Folder_UnprovableSpec_CausalChain(t *testing.T) {
 	// Repair that one record: the SAME operation now succeeds. This is the other
 	// half of the causal chain -- the refusal was caused by this record, not by an
 	// unrelated failure.
-	require.NoError(t, os.WriteFile(specAbs, []byte("---\ntest_case_id: tc-b2c3d4e5\ntitle: fixed\n---\nbody\n"), 0o644))
+	require.NoError(t, os.WriteFile(specAbs, []byte("---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: tc-b2c3d4e5\ntitle: fixed\n---\nbody\n"), 0o644))
 	_, err = DeleteArtifacts(root, scopeForFolder(root, "unprovable", false), "", false, false, true)
 	require.NoError(t, err, "repairing the one unprovable record makes the operation succeed")
 }

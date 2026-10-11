@@ -179,6 +179,9 @@ func TestScanTerminalResults_JoinLadderRungs(t *testing.T) {
 func TestScanTerminalResults_Join_ExplicitFrameworkVerifiedAgainstWiring(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-aaa22222-orphan.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-aaa22222
 title: Explicit framework join TC
 ---
@@ -219,6 +222,9 @@ title: Explicit framework join TC
 func TestScanTerminalResults_Join_AdapterMappingAmbiguousExcluded(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-aaa33333-ambig.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-aaa33333
 title: Ambiguous adapter mapping
 ---
@@ -265,6 +271,9 @@ title: Ambiguous adapter mapping
 func TestPicker_DefaultFrameworkDoesNotOverrideFrameworkPrecedence(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, root, "gtms/test/cases/tc-pp01-mixed.md", `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-pp01
 title: Mixed wiring TC
 ---
@@ -323,6 +332,9 @@ title: Mixed wiring TC
 func TestScanTerminalResults_SameSecondCompletedTiebreaksByMtime(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-tie01-reexec.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-tie01
 title: Same-second completed tiebreaker
 ---
@@ -375,6 +387,9 @@ title: Same-second completed tiebreaker
 func TestPipelineStatus_Join_ManualReadyPreserved(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-aaa44444-manual.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-aaa44444
 title: Manual-only TC
 ---

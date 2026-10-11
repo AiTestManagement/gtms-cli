@@ -13,12 +13,18 @@ func TestPipelineFolderSummary_MultiFolder(t *testing.T) {
 
 	// Folder "login" — 2 TCs, 1 automated + executed
 	writeFile(t, root, filepath.Join("gtms/test/cases", "login", "tc-aaa1111-login-happy.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-aaa1111
 title: Login Happy Path
 requirement: REQ-A
 ---
 `)
 	writeFile(t, root, filepath.Join("gtms/test/cases", "login", "tc-aaa2222-login-error.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-aaa2222
 title: Login Error
 requirement: REQ-A
@@ -47,6 +53,9 @@ completed: "2026-05-19T10:01:00Z"
 
 	// Folder "checkout" — 1 TC, no automation
 	writeFile(t, root, filepath.Join("gtms/test/cases", "checkout", "tc-bbb1111-checkout.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-bbb1111
 title: Checkout Flow
 requirement: REQ-B
@@ -74,18 +83,27 @@ func TestPipelineFolderSummary_DraftCount(t *testing.T) {
 
 	// 3 TCs in "feature": 2 draft, 1 ready
 	writeFile(t, root, filepath.Join("gtms/test/cases", "feature", "tc-aaa1111-draft1.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-aaa1111
 title: Draft One
 status: draft
 ---
 `)
 	writeFile(t, root, filepath.Join("gtms/test/cases", "feature", "tc-aaa2222-draft2.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-aaa2222
 title: Draft Two
 status: Draft
 ---
 `)
 	writeFile(t, root, filepath.Join("gtms/test/cases", "feature", "tc-aaa3333-ready.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-aaa3333
 title: Ready One
 status: ready
@@ -105,6 +123,9 @@ func TestPipelineFolderSummary_NoDraftWhenZero(t *testing.T) {
 	root := t.TempDir()
 
 	writeFile(t, root, filepath.Join("gtms/test/cases", "feature", "tc-aaa1111-ready.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-aaa1111
 title: Ready One
 ---
@@ -130,6 +151,9 @@ func TestPipelineFolderSummary_RootFolder(t *testing.T) {
 
 	// TC directly in gtms/test/cases/ (no subfolder)
 	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-aaa1111-root.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-aaa1111
 title: Root TC
 ---
@@ -146,11 +170,17 @@ func TestGapsFolderSummary_MultiFolders(t *testing.T) {
 
 	// Folder "login" — 2 TCs, 1 automated (no execution), 1 not automated
 	writeFile(t, root, filepath.Join("gtms/test/cases", "login", "tc-aaa1111-login-happy.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-aaa1111
 title: Login Happy Path
 ---
 `)
 	writeFile(t, root, filepath.Join("gtms/test/cases", "login", "tc-aaa2222-login-error.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-aaa2222
 title: Login Error
 ---
@@ -166,6 +196,9 @@ artefact-hash: aabbccddeeff0011
 
 	// Folder "checkout" — 1 TC, automated and failing
 	writeFile(t, root, filepath.Join("gtms/test/cases", "checkout", "tc-bbb1111-checkout.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-bbb1111
 title: Checkout Flow
 ---
@@ -268,11 +301,17 @@ func TestPipelineFolderSummary_ManualExcludedFromAutomated(t *testing.T) {
 
 	// 2 TCs: one with manual record + result, one with bats record + result
 	writeFile(t, root, filepath.Join("gtms/test/cases", "feature", "tc-aaa1111-manual.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-aaa1111
 title: Manual Test
 ---
 `)
 	writeFile(t, root, filepath.Join("gtms/test/cases", "feature", "tc-bbb2222-automated.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-bbb2222
 title: Automated Test
 ---
@@ -308,6 +347,9 @@ func TestGapsFolderSummary_ManualCountsAsNotAutomated(t *testing.T) {
 	root := t.TempDir()
 
 	writeFile(t, root, filepath.Join("gtms/test/cases", "feature", "tc-aaa1111-manual.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-aaa1111
 title: Manual Only Test
 ---
@@ -340,6 +382,9 @@ func TestGaps_ManualOnlyInNoAutomation(t *testing.T) {
 	root := t.TempDir()
 
 	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-aaa1111-manual.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-aaa1111
 title: Manual Only Test
 ---
@@ -367,6 +412,9 @@ func TestGaps_FrameworkQualifiedManualNotInNoAutomation(t *testing.T) {
 	root := t.TempDir()
 
 	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-bbb2222-manual-bats.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-bbb2222
 title: Manually recorded skip against bats framework
 ---
@@ -403,6 +451,9 @@ func TestPipelineFolderSummary_FrameworkFilter(t *testing.T) {
 
 	// TC-A has both bats and pester records (both automated + executed)
 	writeFile(t, root, filepath.Join("gtms/test/cases", "feature", "tc-aaa1111-both.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-aaa1111
 title: Both Frameworks
 ---
@@ -422,6 +473,9 @@ title: Both Frameworks
 
 	// TC-B has only a bats record
 	writeFile(t, root, filepath.Join("gtms/test/cases", "feature", "tc-bbb2222-bats-only.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-bbb2222
 title: Bats Only
 ---
@@ -463,6 +517,9 @@ func TestGapsFolderSummary_FrameworkFilter(t *testing.T) {
 
 	// TC-A has both bats and pester records
 	writeFile(t, root, filepath.Join("gtms/test/cases", "feature", "tc-aaa1111-both.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-aaa1111
 title: Both Frameworks
 ---
@@ -482,6 +539,9 @@ title: Both Frameworks
 
 	// TC-B has only a bats record
 	writeFile(t, root, filepath.Join("gtms/test/cases", "feature", "tc-bbb2222-bats-only.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-bbb2222
 title: Bats Only
 ---
@@ -529,11 +589,17 @@ func TestPipelineFolderSummary_PassingCount(t *testing.T) {
 	root := t.TempDir()
 
 	writeFile(t, root, filepath.Join("gtms/test/cases", "feature", "tc-aaa1111.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-aaa1111
 title: Test One
 ---
 `)
 	writeFile(t, root, filepath.Join("gtms/test/cases", "feature", "tc-aaa2222.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-aaa2222
 title: Test Two
 ---
@@ -564,11 +630,17 @@ func TestPipelineFolderSummary_FailingCount(t *testing.T) {
 	root := t.TempDir()
 
 	writeFile(t, root, filepath.Join("gtms/test/cases", "feature", "tc-aaa1111.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-aaa1111
 title: Test One
 ---
 `)
 	writeFile(t, root, filepath.Join("gtms/test/cases", "feature", "tc-aaa2222.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-aaa2222
 title: Test Two
 ---
@@ -597,6 +669,9 @@ func TestPipelineFolderSummary_ErrorCount(t *testing.T) {
 	root := t.TempDir()
 
 	writeFile(t, root, filepath.Join("gtms/test/cases", "feature", "tc-aaa1111.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-aaa1111
 title: Test One
 ---
@@ -621,11 +696,17 @@ func TestPipelineFolderSummary_InFlightFromTaskFile(t *testing.T) {
 	root := t.TempDir()
 
 	writeFile(t, root, filepath.Join("gtms/test/cases", "feature", "tc-aaa1111.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-aaa1111
 title: Test One
 ---
 `)
 	writeFile(t, root, filepath.Join("gtms/test/cases", "feature", "tc-aaa2222.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-aaa2222
 title: Test Two
 ---
@@ -663,6 +744,9 @@ func TestPipelineFolderSummary_FrameworkFilterScopesOutcomeCounts(t *testing.T) 
 
 	// TC-A has bats result=pass, pester result=fail
 	writeFile(t, root, filepath.Join("gtms/test/cases", "feature", "tc-aaa1111.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-aaa1111
 title: Both Frameworks
 ---
@@ -697,6 +781,9 @@ func TestPipelineFolderSummary_NoOutcomeWhenNoAutomation(t *testing.T) {
 	root := t.TempDir()
 
 	writeFile(t, root, filepath.Join("gtms/test/cases", "feature", "tc-aaa1111.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-aaa1111
 title: Test One
 ---
@@ -720,6 +807,9 @@ func TestBUG082_FolderSummary_NoFrameworkCountsAllWiring(t *testing.T) {
 
 	// Folder "bats-folder" — 1 TC with BATS wiring
 	writeFile(t, root, filepath.Join("gtms/test/cases", "bats-folder", "tc-aaa1111-bats.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-aaa1111
 title: BATS Test
 ---
@@ -732,6 +822,9 @@ title: BATS Test
 
 	// Folder "pester-folder" — 1 TC with Pester wiring only
 	writeFile(t, root, filepath.Join("gtms/test/cases", "pester-folder", "tc-bbb2222-pester.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-bbb2222
 title: Pester Test
 ---
@@ -764,6 +857,9 @@ func TestBUG082_FolderSummary_ExplicitFrameworkStillScopes(t *testing.T) {
 
 	// Folder "mixed" — 1 BATS TC, 1 Pester TC
 	writeFile(t, root, filepath.Join("gtms/test/cases", "mixed", "tc-aaa1111-bats.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-aaa1111
 title: BATS Test
 ---
@@ -775,6 +871,9 @@ title: BATS Test
 	})
 
 	writeFile(t, root, filepath.Join("gtms/test/cases", "mixed", "tc-bbb2222-pester.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-bbb2222
 title: Pester Test
 ---
@@ -807,6 +906,9 @@ func TestBUG082_GapsFolderSummary_NoFrameworkCountsAllWiring(t *testing.T) {
 
 	// 1 BATS-wired TC, 1 Pester-wired TC in same folder
 	writeFile(t, root, filepath.Join("gtms/test/cases", "multi", "tc-aaa1111-bats.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-aaa1111
 title: BATS Test
 ---
@@ -818,6 +920,9 @@ title: BATS Test
 	})
 
 	writeFile(t, root, filepath.Join("gtms/test/cases", "multi", "tc-bbb2222-pester.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-bbb2222
 title: Pester Test
 ---
@@ -842,6 +947,9 @@ func TestBUG082_GapsFolderSummary_ExplicitFrameworkStillScopes(t *testing.T) {
 
 	// 1 BATS-wired TC, 1 Pester-wired TC in same folder
 	writeFile(t, root, filepath.Join("gtms/test/cases", "multi", "tc-aaa1111-bats.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-aaa1111
 title: BATS Test
 ---
@@ -853,6 +961,9 @@ title: BATS Test
 	})
 
 	writeFile(t, root, filepath.Join("gtms/test/cases", "multi", "tc-bbb2222-pester.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-bbb2222
 title: Pester Test
 ---

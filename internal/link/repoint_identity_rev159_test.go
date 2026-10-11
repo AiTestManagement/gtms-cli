@@ -83,7 +83,7 @@ func seedForeignIdentityRepoint(t *testing.T) (root, foreignPath, requestedPath 
 		t.Fatalf("mkdir cases: %v", err)
 	}
 	for _, id := range []string{"tc-aaaaaaaa", "tc-bbbbbbbb"} {
-		body := "---\ntest_case_id: " + id + "\ntitle: \"t\"\n---\n\nbody\n"
+		body := "---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: " + id + "\ntitle: \"t\"\n---\n\nbody\n"
 		if err := os.WriteFile(filepath.Join(cases, id+"-spec.md"), []byte(body), 0o644); err != nil {
 			t.Fatalf("write spec: %v", err)
 		}

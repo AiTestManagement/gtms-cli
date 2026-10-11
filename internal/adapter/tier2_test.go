@@ -74,6 +74,22 @@ echo "TASK=$GTMS_TASK_ID CMD=$GTMS_COMMAND SRC=$GTMS_REFERENCE"
 	assert.Contains(t, result.Stdout, "SRC=JIRA-789")
 }
 
+func TestTier2Env_ExportsGTMS_TEST_TYPEOnly(t *testing.T) {
+	skipIfShort(t)
+	dir := t.TempDir()
+	scriptPath := filepath.Join(dir, "test-type-env.sh")
+	script := `#!/bin/sh
+printf 'new=%s\nold=%s\n' "$GTMS_TEST_TYPE" "${GTMS_TC_TYPE-UNSET}"
+`
+	require.NoError(t, os.WriteFile(scriptPath, []byte(script), 0o755))
+	ac := &AdapterContext{TestType: "Security", OutputDir: dir, ProjectRoot: dir, WorkDir: dir}
+	result, err := InvokeTier2(context.Background(), ac, scriptPath)
+	require.NoError(t, err)
+	assert.Equal(t, 0, result.ExitCode)
+	assert.Contains(t, result.Stdout, "new=Security")
+	assert.Contains(t, result.Stdout, "old=UNSET")
+}
+
 func TestInvokeTier2_GuidesEnvVar(t *testing.T) {
 	skipIfShort(t)
 	dir := t.TempDir()

@@ -758,10 +758,15 @@ func buildPipelineEntry(
 		LastResult:     "none",
 	}
 
-	// Classify every wiring record so the picker can rank them.
+	// Classify every wiring record so the picker can rank them. ENH-205: hash the
+	// spec via the proven owner path already carried on tc.SourceFile (set by the
+	// snapshot for migrated reads, by scanTestCases for legacy reads, by the
+	// resolved owner for detail) rather than resolving the spec by filename walk
+	// per record. This removes the per-record legacy resolver from the shared
+	// entry-builder, so status/map/detail no longer reach it through here.
 	classifications := make([]Classification, len(wiringRecs))
 	for i, w := range wiringRecs {
-		classifications[i] = ClassifyWiring(projectRoot, w)
+		classifications[i] = classifyWiringForSpec(projectRoot, tc.SourceFile, w)
 	}
 
 	// Render per-framework entries (in lexical order for deterministic JSON).

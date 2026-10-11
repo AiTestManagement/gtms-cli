@@ -10,7 +10,6 @@ import (
 
 	"github.com/aitestmanagement/gtms-cli/internal/layout"
 	"github.com/aitestmanagement/gtms-cli/internal/pathsafe"
-	"github.com/aitestmanagement/gtms-cli/internal/testcase"
 )
 
 // ResolveArtefact returns the actual path to an artefact file.
@@ -124,26 +123,10 @@ func AbsArtefactPath(projectRoot, artefactPath string) string {
 	return filepath.Join(projectRoot, artefactPath)
 }
 
-// ResolveTestCaseSpec returns the project-relative forward-slash path to the
-// test case spec for the given TC ID. It honours subfolder-scoped cases
-// (e.g. gtms/test/cases/{subfolder}/{tc}.md) by delegating to testcase.FindSource.
-//
-// ENH-117 introduced it as the single pipeline-level resolver for the
-// automation-record write paths, so no caller computed the spec path locally.
-//
-// ADR-024 5a: this is a straight delegation to the DEFERRED filename resolver and
-// is part of the same deferred surface. Its remaining callers are the bulk read
-// and list consumers ENH-205 will migrate -- reader.ClassifyWiring and
-// reader.isStaleTestCaseHash. A row-1 consumer that hashes a spec and writes a
-// record resolves through the snapshot API (testcase.ResolveOwner) instead, so it
-// hashes the file a proven Owner points at rather than the first filename match.
-func ResolveTestCaseSpec(projectRoot, tcID string) (string, error) {
-	p := testcase.FindSource(projectRoot, tcID)
-	if p == "" {
-		return "", fmt.Errorf("test case spec for %s not found under %s", tcID, layout.TestCasesDir(projectRoot))
-	}
-	return p, nil
-}
+// ResolveTestCaseSpec was the pipeline-level filename resolver (ENH-117). ENH-205
+// deleted it along with the rest of the legacy bare-ID-to-spec resolver surface:
+// every consumer now resolves identity through the snapshot (testcase.ResolveOwner /
+// Snapshot.RequireOwner) and hashes the file a proven Owner points at.
 
 // HashFile returns the SHA-256 hash of the file at path, truncated to 16 hex chars.
 // Used by execute (to store) and reader commands (to compare).
@@ -153,7 +136,13 @@ func HashFile(path string) (string, error) {
 		return "", fmt.Errorf("reading file for hash: %w", err)
 	}
 
+	return HashBytes(data), nil
+}
+
+// HashBytes returns the SHA-256 hash of data after line-ending normalization,
+// truncated to 16 hex characters.
+func HashBytes(data []byte) string {
 	data = bytes.ReplaceAll(data, []byte("\r"), []byte(""))
 	hash := sha256.Sum256(data)
-	return fmt.Sprintf("%x", hash[:8]), nil // 8 bytes = 16 hex chars
+	return fmt.Sprintf("%x", hash[:8]) // 8 bytes = 16 hex chars
 }

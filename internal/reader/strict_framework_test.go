@@ -96,6 +96,9 @@ func TestPipelineStatus_StrictFrameworkOmitsNonMatching(t *testing.T) {
 
 	// tc-aaa1111: both bats and pester records (pester passes)
 	writeFile(t, root, filepath.Join("gtms/test/cases", "dual", "tc-aaa1111-both.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-aaa1111
 title: Both Frameworks
 ---
@@ -113,6 +116,9 @@ title: Both Frameworks
 
 	// tc-bbb2222: only bats record
 	writeFile(t, root, filepath.Join("gtms/test/cases", "dual", "tc-bbb2222-bats-only.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-bbb2222
 title: Bats Only
 ---
@@ -151,6 +157,9 @@ func TestPipelineStatus_NonStrictFrameworkFallsBack(t *testing.T) {
 	// record, preserving today's behaviour.
 	root := t.TempDir()
 	writeFile(t, root, filepath.Join("gtms/test/cases", "dual", "tc-bbb2222-bats-only.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-bbb2222
 title: Bats Only
 ---
@@ -175,6 +184,9 @@ title: Bats Only
 func TestPipelineDetail_StrictFrameworkEmpty(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-bbb2222-bats-only.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-bbb2222
 title: Bats Only
 ---
@@ -203,6 +215,9 @@ func TestPipelineDetail_NonStrictFrameworkFallsBack(t *testing.T) {
 	// REGRESSION: detail view in non-strict mode keeps falling back.
 	root := t.TempDir()
 	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-bbb2222-bats-only.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-bbb2222
 title: Bats Only
 ---
@@ -228,6 +243,9 @@ func TestGaps_StrictFrameworkExcludesNonMatching(t *testing.T) {
 
 	// tc-bbb2222: only bats record, currently failing
 	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-bbb2222-bats-only.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-bbb2222
 title: Bats Only Failing
 ---
@@ -255,6 +273,9 @@ func TestGaps_NonStrictFrameworkIncludesFallback(t *testing.T) {
 	// its bats record and DOES appear in CurrentlyFailing.
 	root := t.TempDir()
 	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-bbb2222-bats-only.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-bbb2222
 title: Bats Only Failing
 ---
@@ -278,6 +299,9 @@ func TestMap_StrictFrameworkOmitsNonMatching(t *testing.T) {
 
 	// tc-aaa1111 has both bats and pester records
 	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-aaa1111-both.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-aaa1111
 title: Both Frameworks
 requirement: REQ-A
@@ -293,6 +317,9 @@ requirement: REQ-A
 
 	// tc-bbb2222 has only bats
 	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-bbb2222-bats-only.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-bbb2222
 title: Bats Only
 requirement: REQ-A
@@ -340,6 +367,9 @@ func TestMap_NonStrictFrameworkFallsBack(t *testing.T) {
 	// REGRESSION: non-strict map keeps falling back to the bats record.
 	root := t.TempDir()
 	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-bbb2222-bats-only.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-bbb2222
 title: Bats Only
 requirement: REQ-A
@@ -413,6 +443,9 @@ func TestPipelineStatus_AvailableFrameworks(t *testing.T) {
 
 	// tc-aaa1111: bats + pester records
 	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-aaa1111-both.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-aaa1111
 title: Both Frameworks
 ---
@@ -422,6 +455,9 @@ title: Both Frameworks
 
 	// tc-bbb2222: pester only
 	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-bbb2222-pester-only.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-bbb2222
 title: Pester Only
 ---
@@ -430,6 +466,9 @@ title: Pester Only
 
 	// tc-ccc3333: no records at all
 	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-ccc3333-no-records.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-ccc3333
 title: No Records
 ---
@@ -464,6 +503,9 @@ func TestPipelineDetail_AvailableFrameworks(t *testing.T) {
 
 	// TC with pester-only record
 	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-bbb2222-pester-only.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-bbb2222
 title: Pester Only
 ---
@@ -486,6 +528,9 @@ func TestPipelineDetail_AvailableFrameworks_NoRecords(t *testing.T) {
 	root := t.TempDir()
 
 	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-ccc3333-no-records.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-ccc3333
 title: No Records
 ---
@@ -504,6 +549,9 @@ func TestMap_AvailableFrameworks(t *testing.T) {
 
 	// TC with pester-only record
 	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-bbb2222-pester-only.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-bbb2222
 title: Pester Only
 requirement: REQ-A
@@ -513,6 +561,9 @@ requirement: REQ-A
 
 	// TC with no records
 	writeFile(t, root, filepath.Join("gtms/test/cases", "tc-ccc3333-no-records.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-ccc3333
 title: No Records
 requirement: REQ-A
@@ -548,6 +599,9 @@ func TestPipelineFolderSummary_FrameworkMismatch(t *testing.T) {
 
 	// tc-aaa1111: bats record (matches --framework bats)
 	writeFile(t, root, filepath.Join("gtms/test/cases", "folder-a", "tc-aaa1111-bats.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-aaa1111
 title: Has Bats
 ---
@@ -556,6 +610,9 @@ title: Has Bats
 
 	// tc-bbb2222: pester only (mismatch when --framework bats)
 	writeFile(t, root, filepath.Join("gtms/test/cases", "folder-a", "tc-bbb2222-pester-only.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-bbb2222
 title: Pester Only
 ---
@@ -564,6 +621,9 @@ title: Pester Only
 
 	// tc-ccc3333: no records at all (not a mismatch, just not automated)
 	writeFile(t, root, filepath.Join("gtms/test/cases", "folder-a", "tc-ccc3333-no-records.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-ccc3333
 title: No Records
 ---
@@ -585,6 +645,9 @@ func TestPipelineFolderSummary_FrameworkMismatch_NoFilter(t *testing.T) {
 	root := t.TempDir()
 
 	writeFile(t, root, filepath.Join("gtms/test/cases", "folder-a", "tc-aaa1111-bats.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-aaa1111
 title: Has Bats
 ---
@@ -604,6 +667,9 @@ func TestGapsFolderSummary_FrameworkMismatch(t *testing.T) {
 
 	// tc-aaa1111: bats record (matches --framework bats)
 	writeFile(t, root, filepath.Join("gtms/test/cases", "folder-a", "tc-aaa1111-bats.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-aaa1111
 title: Has Bats
 ---
@@ -612,6 +678,9 @@ title: Has Bats
 
 	// tc-bbb2222: pester only (mismatch when --framework bats)
 	writeFile(t, root, filepath.Join("gtms/test/cases", "folder-a", "tc-bbb2222-pester-only.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-bbb2222
 title: Pester Only
 ---
@@ -620,6 +689,9 @@ title: Pester Only
 
 	// tc-ccc3333: no records (not a mismatch)
 	writeFile(t, root, filepath.Join("gtms/test/cases", "folder-a", "tc-ccc3333-no-records.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-ccc3333
 title: No Records
 ---
@@ -641,6 +713,9 @@ func TestGapsFolderSummary_FrameworkMismatch_NoFilter(t *testing.T) {
 	root := t.TempDir()
 
 	writeFile(t, root, filepath.Join("gtms/test/cases", "folder-a", "tc-aaa1111-bats.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-aaa1111
 title: Has Bats
 ---

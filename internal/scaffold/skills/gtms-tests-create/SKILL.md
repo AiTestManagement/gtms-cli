@@ -23,6 +23,10 @@ generate the bodies, and shift your effort to reviewing them.
 - Look at a stamped skeleton (or `gtms/test/templates/agent-testcase.template.md`
   if present) so you know which sections GTMS writes and which you fill.
   Use the stamped sections; do not invent or remove headings.
+- Preserve the canonical frontmatter order: `gtms_schema`, `type`, `test_type`,
+  `test_case_id`, `title`, `requirement`, `priority`, `created`. The schema is
+  `"test-case/v2"`, the concept type is `Test Case Spec`, and the producer
+  default category is `test_type: Functional`.
 
 ## Arguments
 

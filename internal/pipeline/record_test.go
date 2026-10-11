@@ -409,7 +409,7 @@ func TestCreateAutomationRecord_WritesTestCaseHash(t *testing.T) {
 	require.NoError(t, os.MkdirAll(casesDir, 0755))
 	require.NoError(t, os.WriteFile(
 		filepath.Join(casesDir, "tc-linkhash-test.md"),
-		[]byte("---\ntest_case_id: tc-linkhash\ntitle: test\n---\nContent for hashing\n"), 0644))
+		[]byte("---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: tc-linkhash\ntitle: test\n---\nContent for hashing\n"), 0644))
 
 	// Create artefact
 	artefactDir := filepath.Join(root, "tests")
@@ -445,7 +445,7 @@ func TestCreateAutomationRecord_SubfolderSpec_WritesTestCaseHash(t *testing.T) {
 	require.NoError(t, os.MkdirAll(subDir, 0755))
 	require.NoError(t, os.WriteFile(
 		filepath.Join(subDir, "tc-subfold-test.md"),
-		[]byte("---\ntest_case_id: tc-subfold\ntitle: subfolder test\n---\nSubfolder content\n"), 0644))
+		[]byte("---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: tc-subfold\ntitle: subfolder test\n---\nSubfolder content\n"), 0644))
 
 	// Create artefact
 	artefactDir := filepath.Join(root, "tests")

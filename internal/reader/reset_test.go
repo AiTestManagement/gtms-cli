@@ -31,7 +31,7 @@ func writeResetFixture(t *testing.T, root, tcID, folder string) {
 		tcDir = filepath.Join(tcDir, folder)
 	}
 	require.NoError(t, os.MkdirAll(tcDir, 0755))
-	tcContent := "---\ntest_case_id: " + tcID + "\ntitle: Test " + tcID + "\nrequirement: REQ-001\n---\n"
+	tcContent := "---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: " + tcID + "\ntitle: Test " + tcID + "\nrequirement: REQ-001\n---\n"
 	require.NoError(t, os.WriteFile(filepath.Join(tcDir, tcID+"-test.md"), []byte(tcContent), 0644))
 
 	// Wiring record (CON-023 / ENH-145) — immutable identity.
@@ -197,7 +197,7 @@ func TestReset_NoAutomationRecord(t *testing.T) {
 	// Create test case but no automation record
 	tcDir := filepath.Join(root, "gtms/test/cases")
 	require.NoError(t, os.MkdirAll(tcDir, 0755))
-	tcContent := "---\ntest_case_id: tc-ccc3333\ntitle: No Automation\nrequirement: REQ-001\n---\n"
+	tcContent := "---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: tc-ccc3333\ntitle: No Automation\nrequirement: REQ-001\n---\n"
 	require.NoError(t, os.WriteFile(filepath.Join(tcDir, "tc-ccc3333-test.md"), []byte(tcContent), 0644))
 
 	result, err := ResetExecuteResults(root, nil, "tc-ccc3333", false)
@@ -282,7 +282,7 @@ func TestReset_AlreadyClear(t *testing.T) {
 	// of identity) but no terminal handoff (no execute outcome yet).
 	tcDir := filepath.Join(root, "gtms/test/cases")
 	require.NoError(t, os.MkdirAll(tcDir, 0755))
-	tcContent := "---\ntest_case_id: tc-hhh8888\ntitle: Already Clear\nrequirement: REQ-001\n---\n"
+	tcContent := "---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: tc-hhh8888\ntitle: Already Clear\nrequirement: REQ-001\n---\n"
 	require.NoError(t, os.WriteFile(filepath.Join(tcDir, "tc-hhh8888-test.md"), []byte(tcContent), 0644))
 
 	wiringDir := filepath.Join(root, "gtms/automation", "wiring")
@@ -308,7 +308,7 @@ func TestReset_ClearsLogAndLogSpill(t *testing.T) {
 
 	tcDir := filepath.Join(root, "gtms/test/cases")
 	require.NoError(t, os.MkdirAll(tcDir, 0755))
-	tcContent := "---\ntest_case_id: tc-log999\ntitle: Log reset\nrequirement: ENH-077\n---\n"
+	tcContent := "---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: tc-log999\ntitle: Log reset\nrequirement: ENH-077\n---\n"
 	require.NoError(t, os.WriteFile(filepath.Join(tcDir, "tc-log999-test.md"), []byte(tcContent), 0644))
 
 	// Wiring (read-only).
@@ -359,7 +359,7 @@ func TestReset_AlreadyClear_WithOnlyLog(t *testing.T) {
 
 	tcDir := filepath.Join(root, "gtms/test/cases")
 	require.NoError(t, os.MkdirAll(tcDir, 0755))
-	tcContent := "---\ntest_case_id: tc-logonly\ntitle: Log only\nrequirement: ENH-077\n---\n"
+	tcContent := "---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: tc-logonly\ntitle: Log only\nrequirement: ENH-077\n---\n"
 	require.NoError(t, os.WriteFile(filepath.Join(tcDir, "tc-logonly-test.md"), []byte(tcContent), 0644))
 
 	// Wiring record (read-only).
@@ -407,7 +407,7 @@ func TestReset_ClearsSummaryWhenExecuteFieldsPresent(t *testing.T) {
 
 	tcDir := filepath.Join(root, "gtms/test/cases")
 	require.NoError(t, os.MkdirAll(tcDir, 0755))
-	tcContent := "---\ntest_case_id: tc-sum001\ntitle: Summary reset\nrequirement: BUG-075\n---\n"
+	tcContent := "---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: tc-sum001\ntitle: Summary reset\nrequirement: BUG-075\n---\n"
 	require.NoError(t, os.WriteFile(filepath.Join(tcDir, "tc-sum001-test.md"), []byte(tcContent), 0644))
 
 	// Wiring (read-only).
@@ -455,7 +455,7 @@ func TestReset_PreservesSummaryOnAutomateOnlyRecord(t *testing.T) {
 
 	tcDir := filepath.Join(root, "gtms/test/cases")
 	require.NoError(t, os.MkdirAll(tcDir, 0755))
-	tcContent := "---\ntest_case_id: tc-sum002\ntitle: Automate only\nrequirement: BUG-075\n---\n"
+	tcContent := "---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: tc-sum002\ntitle: Automate only\nrequirement: BUG-075\n---\n"
 	require.NoError(t, os.WriteFile(filepath.Join(tcDir, "tc-sum002-test.md"), []byte(tcContent), 0644))
 
 	// Wiring exists; no handoff.
@@ -484,7 +484,7 @@ func TestReset_DryRun_CountsSummaryClearing(t *testing.T) {
 
 	tcDir := filepath.Join(root, "gtms/test/cases")
 	require.NoError(t, os.MkdirAll(tcDir, 0755))
-	tcContent := "---\ntest_case_id: tc-sum003\ntitle: Dry run summary\nrequirement: BUG-075\n---\n"
+	tcContent := "---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: tc-sum003\ntitle: Dry run summary\nrequirement: BUG-075\n---\n"
 	require.NoError(t, os.WriteFile(filepath.Join(tcDir, "tc-sum003-test.md"), []byte(tcContent), 0644))
 
 	wiringDir := filepath.Join(root, "gtms/automation", "wiring")

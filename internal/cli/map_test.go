@@ -8,11 +8,21 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 	"github.com/aitestmanagement/gtms-cli/internal/output"
 	"github.com/aitestmanagement/gtms-cli/internal/reader"
+	"github.com/aitestmanagement/gtms-cli/internal/testcase"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
+
+// mapTestSnap builds a snapshot for the map <tc-id> tests. ENH-205 routed the
+// single-TC map path through runMapSingleTC against a caller-built snapshot.
+func mapTestSnap(t *testing.T, root string) *testcase.Snapshot {
+	t.Helper()
+	snap, err := testcase.NewSnapshot(root)
+	require.NoError(t, err)
+	return snap
+}
 
 // writeTestFile creates a file with the given content, creating parent dirs as needed.
 func writeTestFile(t *testing.T, root, relPath, content string) {
@@ -29,12 +39,18 @@ func setupMapFixture(t *testing.T) string {
 	root := t.TempDir()
 
 	writeTestFile(t, root, filepath.Join("gtms/test/cases", "tc-aaa1111-login-happy.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-aaa1111
 title: Login Happy Path
 requirement: REQ-A
 ---
 `)
 	writeTestFile(t, root, filepath.Join("gtms/test/cases", "tc-bbb1111-checkout-flow.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-bbb1111
 title: Checkout Flow
 requirement: REQ-B
@@ -56,7 +72,7 @@ func TestRunMap_DefaultSlugView(t *testing.T) {
 	root := setupMapFixture(t)
 	var buf bytes.Buffer
 
-	err := runMap(&buf, root, nil, false, "", false, "", false)
+	err := runMap(&buf, root, nil, false, false, "", false)
 	require.NoError(t, err)
 
 	out := buf.String()
@@ -81,7 +97,7 @@ func TestRunMap_DetailAll(t *testing.T) {
 	root := setupMapFixture(t)
 	var buf bytes.Buffer
 
-	err := runMap(&buf, root, nil, true, "", false, "", false)
+	err := runMap(&buf, root, nil, true, false, "", false)
 	require.NoError(t, err)
 
 	out := buf.String()
@@ -109,7 +125,7 @@ func TestRunMap_DetailSingleTC(t *testing.T) {
 	root := setupMapFixture(t)
 	var buf bytes.Buffer
 
-	err := runMap(&buf, root, nil, false, "tc-aaa1111", false, "", false)
+	err := runMapSingleTC(&buf, mapTestSnap(t, root), root, "tc-aaa1111", false, "", false)
 	require.NoError(t, err)
 
 	out := buf.String()
@@ -135,7 +151,7 @@ func TestRunMap_DetailSingleTC_NotFound(t *testing.T) {
 	root := setupMapFixture(t)
 	var buf bytes.Buffer
 
-	err := runMap(&buf, root, nil, false, "tc-nonexistent", false, "", false)
+	err := runMapSingleTC(&buf, mapTestSnap(t, root), root, "tc-nonexistent", false, "", false)
 	require.Error(t, err)
 	assert.True(t, output.IsDisplayed(err), "error should be marked as displayed")
 	assert.Contains(t, err.Error(), "tc-nonexistent",
@@ -152,7 +168,7 @@ func TestRunMap_JSON(t *testing.T) {
 	root := setupMapFixture(t)
 	var buf bytes.Buffer
 
-	err := runMap(&buf, root, nil, false, "", true, "", false)
+	err := runMap(&buf, root, nil, false, true, "", false)
 	require.NoError(t, err)
 
 	out := buf.String()
@@ -175,7 +191,7 @@ func TestRunMap_EmptyProject(t *testing.T) {
 	root := t.TempDir()
 	var buf bytes.Buffer
 
-	err := runMap(&buf, root, nil, false, "", false, "", false)
+	err := runMap(&buf, root, nil, false, false, "", false)
 	require.NoError(t, err)
 
 	out := buf.String()
@@ -187,7 +203,7 @@ func TestRunMap_JSON_EmptyProject(t *testing.T) {
 	root := t.TempDir()
 	var buf bytes.Buffer
 
-	err := runMap(&buf, root, nil, false, "", true, "", false)
+	err := runMap(&buf, root, nil, false, true, "", false)
 	require.NoError(t, err)
 
 	out := buf.String()
@@ -212,12 +228,12 @@ func TestRunMap_DetailFlagIgnoredWithDetailID(t *testing.T) {
 
 	// Without --detail flag
 	var buf1 bytes.Buffer
-	err := runMap(&buf1, root, nil, false, "tc-aaa1111", false, "", false)
+	err := runMapSingleTC(&buf1, mapTestSnap(t, root), root, "tc-aaa1111", false, "", false)
 	require.NoError(t, err)
 
 	// With --detail flag
 	var buf2 bytes.Buffer
-	err = runMap(&buf2, root, nil, true, "tc-aaa1111", false, "", false)
+	err = runMapSingleTC(&buf2, mapTestSnap(t, root), root, "tc-aaa1111", false, "", false)
 	require.NoError(t, err)
 
 	// Both should produce identical output (--detail is ignored when detailID is set)
@@ -233,7 +249,7 @@ func TestBUG081_MapTcIdJSONLinkedPreservesGroupContext(t *testing.T) {
 	root := setupMapFixture(t)
 	var buf bytes.Buffer
 
-	err := runMap(&buf, root, nil, false, "tc-aaa1111", true, "", false)
+	err := runMapSingleTC(&buf, mapTestSnap(t, root), root, "tc-aaa1111", true, "", false)
 	require.NoError(t, err)
 
 	var report reader.MapReport
@@ -261,6 +277,9 @@ func TestBUG081_MapTcIdJSONLinkedSiblingsPreserved(t *testing.T) {
 	// Add a sibling TC under the same requirement (REQ-A) so we can assert
 	// that the filtered JSON keeps the whole group, not just the requested TC.
 	writeTestFile(t, root, filepath.Join("gtms/test/cases", "tc-aaa2222-login-locked.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-aaa2222
 title: Login Locked Account
 requirement: REQ-A
@@ -268,7 +287,7 @@ requirement: REQ-A
 `)
 
 	var buf bytes.Buffer
-	err := runMap(&buf, root, nil, false, "tc-aaa1111", true, "", false)
+	err := runMapSingleTC(&buf, mapTestSnap(t, root), root, "tc-aaa1111", true, "", false)
 	require.NoError(t, err)
 
 	var report reader.MapReport
@@ -291,6 +310,9 @@ requirement: REQ-A
 func TestBUG081_MapTcIdJSONUnlinkedShape(t *testing.T) {
 	root := setupMapFixture(t)
 	writeTestFile(t, root, filepath.Join("gtms/test/cases", "tc-ccc1111-orphan.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-ccc1111
 title: Orphan Test Case
 requirement: ""
@@ -298,7 +320,7 @@ requirement: ""
 `)
 
 	var buf bytes.Buffer
-	err := runMap(&buf, root, nil, false, "tc-ccc1111", true, "", false)
+	err := runMapSingleTC(&buf, mapTestSnap(t, root), root, "tc-ccc1111", true, "", false)
 	require.NoError(t, err)
 
 	var report reader.MapReport
@@ -317,7 +339,7 @@ func TestBUG081_MapTcIdJSONUnknownTcErrors(t *testing.T) {
 	root := setupMapFixture(t)
 	var buf bytes.Buffer
 
-	err := runMap(&buf, root, nil, false, "tc-nonexistent", true, "", false)
+	err := runMapSingleTC(&buf, mapTestSnap(t, root), root, "tc-nonexistent", true, "", false)
 	require.Error(t, err)
 	assert.True(t, output.IsDisplayed(err), "error should be marked as displayed")
 	assert.Contains(t, err.Error(), "tc-nonexistent",
@@ -338,6 +360,9 @@ func TestRunMap_DetailSingleTC_Unlinked(t *testing.T) {
 
 	// Add an unlinked test case
 	writeTestFile(t, root, filepath.Join("gtms/test/cases", "tc-ccc1111-orphan.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-ccc1111
 title: Orphan Test Case
 requirement: ""
@@ -345,7 +370,7 @@ requirement: ""
 `)
 
 	var buf bytes.Buffer
-	err := runMap(&buf, root, nil, false, "tc-ccc1111", false, "", false)
+	err := runMapSingleTC(&buf, mapTestSnap(t, root), root, "tc-ccc1111", false, "", false)
 	require.NoError(t, err)
 
 	out := buf.String()
@@ -396,7 +421,7 @@ func TestRunMap_ScopeFeedback(t *testing.T) {
 		RelPath:   "gtms/test/cases/login/",
 		Recursive: false,
 	}
-	err := runMap(&buf, root, scope, false, "", false, "", false)
+	err := runMap(&buf, root, scope, false, false, "", false)
 	require.NoError(t, err)
 
 	out := buf.String()
@@ -413,7 +438,7 @@ func TestRunMap_ScopeFeedbackRecursive(t *testing.T) {
 		RelPath:   "gtms/test/cases/login/",
 		Recursive: true,
 	}
-	err := runMap(&buf, root, scope, false, "", false, "", false)
+	err := runMap(&buf, root, scope, false, false, "", false)
 	require.NoError(t, err)
 
 	out := buf.String()
@@ -428,12 +453,18 @@ func TestRunMap_NoArgRecursive(t *testing.T) {
 
 	// TCs in subfolders — scope=nil should find them
 	writeTestFile(t, root, filepath.Join("gtms/test/cases", "login", "tc-aaa1111-login.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-aaa1111
 title: Login Test
 requirement: REQ-A
 ---
 `)
 	writeTestFile(t, root, filepath.Join("gtms/test/cases", "checkout", "tc-bbb1111-checkout.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-bbb1111
 title: Checkout Test
 requirement: REQ-B
@@ -442,7 +473,7 @@ requirement: REQ-B
 
 	var buf bytes.Buffer
 	// scope=nil triggers full recursive scan
-	err := runMap(&buf, root, nil, false, "", false, "", false)
+	err := runMap(&buf, root, nil, false, false, "", false)
 	require.NoError(t, err)
 
 	out := buf.String()
@@ -458,6 +489,9 @@ func TestRunMap_ReRecordUpdatesResult(t *testing.T) {
 
 	// Create a test case
 	writeTestFile(t, root, filepath.Join("gtms/test/cases", "tc-fff1111-rerecord.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-fff1111
 title: Re-record Test
 requirement: REQ-X
@@ -474,7 +508,7 @@ requirement: REQ-X
 
 	// Read map — should show fail
 	var buf1 bytes.Buffer
-	err := runMap(&buf1, root, nil, false, "", true, "", false)
+	err := runMap(&buf1, root, nil, false, true, "", false)
 	require.NoError(t, err)
 	var report1 reader.MapReport
 	require.NoError(t, json.Unmarshal(buf1.Bytes(), &report1))
@@ -487,7 +521,7 @@ requirement: REQ-X
 
 	// Read map again — should now show pass
 	var buf2 bytes.Buffer
-	err = runMap(&buf2, root, nil, false, "", true, "", false)
+	err = runMap(&buf2, root, nil, false, true, "", false)
 	require.NoError(t, err)
 	var report2 reader.MapReport
 	require.NoError(t, json.Unmarshal(buf2.Bytes(), &report2))
@@ -501,6 +535,9 @@ func TestRunMap_ManualAutomateShowsManual(t *testing.T) {
 	root := t.TempDir()
 
 	writeTestFile(t, root, filepath.Join("gtms/test/cases", "tc-eee1111-manual-test.md"), `---
+gtms_schema: "test-case/v2"
+type: Test Case Spec
+test_type: Functional
 test_case_id: tc-eee1111
 title: Manual Test
 requirement: REQ-Y
@@ -515,7 +552,7 @@ requirement: REQ-Y
 		[]byte("test_case_id: tc-eee1111\nframework: manual\nresult: pass\n"), 0644))
 
 	var buf bytes.Buffer
-	err := runMap(&buf, root, nil, false, "", false, "", false)
+	err := runMap(&buf, root, nil, false, false, "", false)
 	require.NoError(t, err)
 
 	out := buf.String()
@@ -526,7 +563,7 @@ func TestRunMap_EmptyWithHint(t *testing.T) {
 	root := t.TempDir()
 	var buf bytes.Buffer
 
-	err := runMap(&buf, root, nil, false, "", false, "", false)
+	err := runMap(&buf, root, nil, false, false, "", false)
 	require.NoError(t, err)
 
 	out := buf.String()

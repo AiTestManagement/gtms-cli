@@ -8,10 +8,10 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 	"github.com/aitestmanagement/gtms-cli/internal/result"
 	"github.com/aitestmanagement/gtms-cli/internal/task"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // setupCreateStatusFixture creates a minimal GTMS project with a completed create task,
@@ -31,7 +31,7 @@ func setupCreateStatusFixture(t *testing.T, taskID, target string, tcFiles []str
 	var artefactPaths []string
 	for _, tc := range tcFiles {
 		filename := fmt.Sprintf("%s-slug.md", tc.id)
-		content := fmt.Sprintf("---\ntest_case_id: %s\ntitle: %s\n---\n\n# %s\n", tc.id, tc.title, tc.title)
+		content := fmt.Sprintf("---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: %s\ntitle: %s\n---\n\n# %s\n", tc.id, tc.title, tc.title)
 		require.NoError(t, os.WriteFile(filepath.Join(tcDir, filename), []byte(content), 0644))
 		artefactPaths = append(artefactPaths, fmt.Sprintf("gtms/test/cases/%s/%s", target, filename))
 	}

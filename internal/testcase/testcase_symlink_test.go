@@ -76,26 +76,29 @@ func TestResolveFolder_InTreeAlias_Allowed(t *testing.T) {
 	assert.NoError(t, err, "an in-tree folder alias must resolve")
 }
 
-// REV-120: FindAllSpecs counts every in-tree spec carrying a bare ID -- the
-// project-wide identity used by the qualified-target ambiguity guard.
-func TestFindAllSpecs_CountsInTreeMatches(t *testing.T) {
+// REV-120: the snapshot counts every in-tree spec carrying a bare ID -- the
+// project-wide identity used by the qualified-target ambiguity guard. (ENH-205 /
+// REV-184 CODEX-003 deleted the FindAllSpecs wrapper; these assertions now run
+// against Snapshot.Resolve directly.)
+func TestSnapshotOwners_CountsInTreeMatches(t *testing.T) {
 	root := t.TempDir()
 	cases := filepath.Join(root, "gtms", "test", "cases")
 	writeSpec(t, filepath.Join(cases, "foo"), "tc-abc12345-a.md")
 	writeSpec(t, filepath.Join(cases, "bar"), "tc-abc12345-b.md")
 	writeSpec(t, filepath.Join(cases, "foo"), "tc-99999999-only.md")
 
-	dup, err := FindAllSpecs(root, "tc-abc12345")
-	assert.NoError(t, err)
-	assert.Len(t, dup, 2, "a cross-folder duplicate id must count both specs")
+	snap, err := NewSnapshot(root)
+	require(t, err)
 
-	uniq, err := FindAllSpecs(root, "tc-99999999")
-	assert.NoError(t, err)
-	assert.Len(t, uniq, 1)
+	dup := snap.Resolve("tc-abc12345")
+	assert.Equal(t, OutcomeAmbiguous, dup.Outcome)
+	assert.Len(t, dup.Owners, 2, "a cross-folder duplicate id must count both specs")
 
-	absent, err := FindAllSpecs(root, "tc-00000000")
-	assert.NoError(t, err)
-	assert.Len(t, absent, 0)
+	uniq := snap.Resolve("tc-99999999")
+	assert.Equal(t, OutcomeUniqueOwner, uniq.Outcome)
+
+	absent := snap.Resolve("tc-00000000")
+	assert.Equal(t, OutcomeNotFound, absent.Outcome)
 }
 
 // REV-122: MatchesSpecFile is the single shared spec predicate. A prefixed non-.md
@@ -126,26 +129,15 @@ func TestMatchesSpecFile(t *testing.T) {
 	}
 }
 
-// TestExists_NonSpecDecoy_NotAScopedSpec covers REV-122 CODEX-001: a non-.md decoy
-// under a folder must NOT satisfy the scoped existence check (which would let a
-// qualified command broaden to the global ID and delete the real spec elsewhere).
-func TestExists_NonSpecDecoy_NotAScopedSpec(t *testing.T) {
-	root := t.TempDir()
-	cases := filepath.Join(root, "gtms", "test", "cases")
-	require(t, os.MkdirAll(filepath.Join(cases, "foo"), 0o755))
-	require(t, os.WriteFile(filepath.Join(cases, "foo", "tc-abc12345-notes.txt"), []byte("decoy"), 0o644))
-	writeSpec(t, filepath.Join(cases, "bar"), "tc-abc12345-real.md")
-
-	assert.False(t, Exists(root, "foo/tc-abc12345"),
-		"a non-.md decoy must NOT satisfy scoped existence under foo/")
-	assert.True(t, Exists(root, "bar/tc-abc12345"), "the real .md spec resolves under bar/")
-	assert.True(t, Exists(root, "tc-abc12345"), "bare id resolves globally to the real spec")
-}
+// REV-122 CODEX-001 (a non-.md decoy under a folder must NOT satisfy a scoped
+// existence check) was covered here via the deleted testcase.Exists; ENH-205 keeps
+// that coverage against the snapshot in TestSnapshotOwners_OnlyMarkdownSpecForms
+// below (prefixed non-.md files/dirs must not count as spec owners).
 
 // REV-121 CODEX-002: only real .md spec forms ("<tcID>.md" / "<tcID>-*.md") count,
 // aligned with the delete/reset mutation resolver. A prefixed non-spec file must not
 // inflate the duplicate count.
-func TestFindAllSpecs_OnlyMarkdownSpecForms(t *testing.T) {
+func TestSnapshotOwners_OnlyMarkdownSpecForms(t *testing.T) {
 	root := t.TempDir()
 	cases := filepath.Join(root, "gtms", "test", "cases")
 	writeSpec(t, filepath.Join(cases, "foo"), "tc-abc12345-real.md") // prefix form: counts
@@ -155,15 +147,17 @@ func TestFindAllSpecs_OnlyMarkdownSpecForms(t *testing.T) {
 	require(t, os.WriteFile(filepath.Join(cases, "foo", "tc-abc12345.bak"), []byte("x"), 0o644))
 	require(t, os.MkdirAll(filepath.Join(cases, "foo", "tc-abc12345-subdir"), 0o755))
 
-	got, err := FindAllSpecs(root, "tc-abc12345")
-	assert.NoError(t, err)
-	assert.Len(t, got, 2, "only the two .md specs count; prefixed non-.md files/dirs must not")
+	snap, err := NewSnapshot(root)
+	require(t, err)
+	got := snap.Resolve("tc-abc12345")
+	assert.Equal(t, OutcomeAmbiguous, got.Outcome)
+	assert.Len(t, got.Owners, 2, "only the two .md specs count; prefixed non-.md files/dirs must not")
 }
 
 // REV-121 CODEX-001: an incomplete filesystem scan must FAIL CLOSED (return an
 // error) so the qualified ambiguity guard aborts rather than undercounting a hidden
 // duplicate and mutating shared flat state.
-func TestFindAllSpecs_ScanError_FailsClosed(t *testing.T) {
+func TestSnapshotOwners_ScanError_FailsClosed(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("unix directory-permission fixture")
 	}
@@ -179,11 +173,11 @@ func TestFindAllSpecs_ScanError_FailsClosed(t *testing.T) {
 	require(t, os.Chmod(secret, 0o000))
 	t.Cleanup(func() { _ = os.Chmod(secret, 0o755) }) // allow TempDir cleanup
 
-	_, err := FindAllSpecs(root, "tc-abc12345")
+	_, err := NewSnapshot(root)
 	assert.Error(t, err, "an unreadable subtree makes the scan incomplete -- must fail closed")
 }
 
-func TestFindAllSpecs_OutOfTreeSpecSymlink_NotCounted(t *testing.T) {
+func TestSnapshotOwners_OutOfTreeSpecSymlink_NotCounted(t *testing.T) {
 	skipWithoutSymlinks(t)
 	root := t.TempDir()
 	cases := filepath.Join(root, "gtms", "test", "cases")
@@ -194,12 +188,13 @@ func TestFindAllSpecs_OutOfTreeSpecSymlink_NotCounted(t *testing.T) {
 	require(t, os.WriteFile(filepath.Join(outside, "evil.md"), []byte("evil"), 0o644))
 	mustSymlink(t, filepath.Join(outside, "evil.md"), filepath.Join(cases, "bar", "tc-abc12345-ext.md"))
 
-	got, err := FindAllSpecs(root, "tc-abc12345")
-	assert.NoError(t, err)
-	assert.Len(t, got, 1, "an out-of-tree spec symlink must not be counted as a duplicate")
+	snap, err := NewSnapshot(root)
+	require(t, err)
+	got := snap.Resolve("tc-abc12345")
+	assert.Equal(t, OutcomeUniqueOwner, got.Outcome, "an out-of-tree spec symlink must not be counted as a duplicate")
 }
 
-// REV-123 CODEX-002: ResolveSpec and FindAllSpecs must relativise against the
+// REV-123 CODEX-002: owner resolution must relativise against the
 // CANONICAL project root. A NON-canonical projectRoot (here a symlink to the real
 // root; on Windows an 8.3 short path) would otherwise make filepath.Rel emit a
 // spurious "../.." instead of "gtms/test/cases/...".
@@ -208,7 +203,7 @@ func TestSpecResolvers_NonCanonicalRoot_CleanProjectRelativePaths(t *testing.T) 
 	real := t.TempDir()
 	foo := filepath.Join(real, "gtms", "test", "cases", "foo")
 	require(t, os.MkdirAll(foo, 0o755))
-	require(t, os.WriteFile(filepath.Join(foo, "tc-abc12345-real.md"), []byte("---\ntest_case_id: tc-abc12345\ntitle: t\n---\nspec\n"), 0o644))
+	require(t, os.WriteFile(filepath.Join(foo, "tc-abc12345-real.md"), []byte("---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: tc-abc12345\ntitle: t\n---\nspec\n"), 0o644))
 
 	// A symlink to the real root -- a non-canonical projectRoot.
 	link := filepath.Join(t.TempDir(), "linkroot")
@@ -216,16 +211,15 @@ func TestSpecResolvers_NonCanonicalRoot_CleanProjectRelativePaths(t *testing.T) 
 
 	const want = "gtms/test/cases/foo/tc-abc12345-real.md"
 
-	all, err := FindAllSpecs(link, "tc-abc12345")
-	assert.NoError(t, err)
-	if assert.Len(t, all, 1) {
-		assert.Equal(t, want, all[0], "FindAllSpecs must yield a clean project-relative path")
-		assert.NotContains(t, all[0], "..", "no spurious ../ from a non-canonical root")
+	snap, err := NewSnapshot(link)
+	require(t, err)
+	res := snap.Resolve("tc-abc12345")
+	if assert.Equal(t, OutcomeUniqueOwner, res.Outcome) {
+		assert.Equal(t, want, res.OwnerLogicalRel, "the snapshot must yield a clean project-relative path")
+		assert.NotContains(t, res.OwnerLogicalRel, "..", "no spurious ../ from a non-canonical root")
 	}
-
-	rel, err := ResolveSpec(link, "foo/tc-abc12345")
-	assert.NoError(t, err)
-	assert.Equal(t, want, rel, "ResolveSpec must yield a clean project-relative path")
+	// ENH-205 deleted ResolveSpec and FindAllSpecs; Snapshot.Resolve carries the
+	// clean-project-relative-path assertion for a non-canonical root.
 }
 
 func TestResolveFolder_CasesRootOutOfTreeSymlink_Rejected(t *testing.T) {
@@ -269,7 +263,7 @@ func mustSymlink(t *testing.T, target, link string) {
 func writeSpec(t *testing.T, dir, name string) {
 	t.Helper()
 	require(t, os.MkdirAll(dir, 0o755))
-	body := "---\ntest_case_id: " + idFromSpecName(name) + "\ntitle: \"t\"\n---\n\nspec\n"
+	body := "---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: " + idFromSpecName(name) + "\ntitle: \"t\"\n---\n\nspec\n"
 	require(t, os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644))
 }
 
@@ -285,153 +279,4 @@ func idFromSpecName(name string) string {
 		rest = rest[:i]
 	}
 	return "tc-" + rest
-}
-
-// REV-116 CODEX-001: the cases directory ITSELF is validated under the project
-// root before it is trusted as the containment boundary.
-
-// 1. Cases-root symlink resolving OUTSIDE the project -> rejected. Before the fix
-// this external directory became the trusted root and any spec inside it passed.
-func TestResolveSpec_CasesRootOutOfTreeSymlink_Rejected(t *testing.T) {
-	skipWithoutSymlinks(t)
-	root := t.TempDir()
-	external := t.TempDir() // sibling temp dir, not under root
-	writeSpec(t, external, "tc-77777777-x.md")
-	require(t, os.MkdirAll(filepath.Join(root, "gtms", "test"), 0o755))
-	mustSymlink(t, external, filepath.Join(root, "gtms", "test", "cases"))
-
-	assert.False(t, Exists(root, "tc-77777777"),
-		"a cases-dir symlink resolving outside the project must be rejected")
-	// Also fail closed for a folder-qualified lookup through the same alias.
-	writeSpec(t, filepath.Join(external, "sub"), "tc-77aa7777-x.md")
-	assert.False(t, Exists(root, "sub/tc-77aa7777"),
-		"a qualified lookup through an out-of-project cases-dir symlink must be rejected")
-}
-
-// 2. Cases-root symlink resolving to an IN-PROJECT directory -> allowed. An
-// in-project alias canonicalises to its in-tree target and still resolves.
-func TestResolveSpec_CasesRootInTreeSymlink_Allowed(t *testing.T) {
-	skipWithoutSymlinks(t)
-	root := t.TempDir()
-	realCases := filepath.Join(root, "real-cases") // still under the project root
-	writeSpec(t, realCases, "tc-88888888-x.md")
-	require(t, os.MkdirAll(filepath.Join(root, "gtms", "test"), 0o755))
-	mustSymlink(t, realCases, filepath.Join(root, "gtms", "test", "cases"))
-
-	assert.True(t, Exists(root, "tc-88888888"),
-		"an in-project cases-dir alias must resolve like the real directory")
-}
-
-// 3. Root-component in-tree directory symlink -> true.
-func TestResolveSpec_RootInTreeDirSymlink_Allowed(t *testing.T) {
-	skipWithoutSymlinks(t)
-	root := t.TempDir()
-	cases := filepath.Join(root, "gtms", "test", "cases")
-	writeSpec(t, filepath.Join(cases, "real"), "tc-11111111-x.md")
-	mustSymlink(t, filepath.Join(cases, "real"), filepath.Join(cases, "alias"))
-
-	assert.True(t, Exists(root, "alias/tc-11111111"),
-		"an in-tree directory alias must resolve like the real directory")
-}
-
-// 4. Intermediate in-tree directory symlink -> true.
-func TestResolveSpec_IntermediateInTreeDirSymlink_Allowed(t *testing.T) {
-	skipWithoutSymlinks(t)
-	root := t.TempDir()
-	cases := filepath.Join(root, "gtms", "test", "cases")
-	writeSpec(t, filepath.Join(cases, "realparent", "sub"), "tc-22222222-x.md")
-	mustSymlink(t, filepath.Join(cases, "realparent"), filepath.Join(cases, "aliasparent"))
-
-	assert.True(t, Exists(root, "aliasparent/sub/tc-22222222"),
-		"an in-tree intermediate alias component must resolve")
-}
-
-// 5. Root-component out-of-tree directory symlink -> false.
-func TestResolveSpec_RootOutOfTreeDirSymlink_Rejected(t *testing.T) {
-	skipWithoutSymlinks(t)
-	root := t.TempDir()
-	cases := filepath.Join(root, "gtms", "test", "cases")
-	require(t, os.MkdirAll(cases, 0o755))
-	outside := filepath.Join(root, "outside")
-	writeSpec(t, outside, "tc-33333333-x.md")
-	mustSymlink(t, outside, filepath.Join(cases, "escape"))
-
-	assert.False(t, Exists(root, "escape/tc-33333333"),
-		"a scope symlink resolving outside cases/ must be rejected")
-}
-
-// 6. Intermediate out-of-tree directory symlink -> false.
-func TestResolveSpec_IntermediateOutOfTreeDirSymlink_Rejected(t *testing.T) {
-	skipWithoutSymlinks(t)
-	root := t.TempDir()
-	cases := filepath.Join(root, "gtms", "test", "cases")
-	require(t, os.MkdirAll(cases, 0o755))
-	outside := filepath.Join(root, "outside")
-	writeSpec(t, filepath.Join(outside, "sub"), "tc-44444444-x.md")
-	mustSymlink(t, outside, filepath.Join(cases, "escapeparent"))
-
-	assert.False(t, Exists(root, "escapeparent/sub/tc-44444444"),
-		"an intermediate symlink component resolving outside cases/ must be rejected")
-}
-
-// 7. In-tree spec symlink targeting ANOTHER in-tree spec -> true (documented:
-// consistent with resolved containment).
-func TestResolveSpec_InTreeSpecSymlink_ToInTreeSpec_Allowed(t *testing.T) {
-	skipWithoutSymlinks(t)
-	root := t.TempDir()
-	cases := filepath.Join(root, "gtms", "test", "cases")
-	writeSpec(t, filepath.Join(cases, "a"), "tc-55555555-x.md")
-	require(t, os.MkdirAll(filepath.Join(cases, "b"), 0o755))
-	mustSymlink(t, filepath.Join(cases, "a", "tc-55555555-x.md"), filepath.Join(cases, "b", "tc-55555555-x.md"))
-
-	assert.True(t, Exists(root, "b/tc-55555555"),
-		"a spec symlink resolving to another in-tree spec is allowed")
-}
-
-// 8. In-tree spec symlink targeting an OUT-OF-TREE file -> false.
-func TestResolveSpec_InTreeSpecSymlink_ToOutOfTree_Rejected(t *testing.T) {
-	skipWithoutSymlinks(t)
-	root := t.TempDir()
-	cases := filepath.Join(root, "gtms", "test", "cases")
-	require(t, os.MkdirAll(filepath.Join(cases, "c"), 0o755))
-	outside := filepath.Join(root, "outside")
-	require(t, os.MkdirAll(outside, 0o755))
-	require(t, os.WriteFile(filepath.Join(outside, "evil.md"), []byte("evil"), 0o644))
-	mustSymlink(t, filepath.Join(outside, "evil.md"), filepath.Join(cases, "c", "tc-66666666-x.md"))
-
-	assert.False(t, Exists(root, "c/tc-66666666"),
-		"a spec symlink resolving outside cases/ must be rejected even inside a safe dir")
-}
-
-// 9. Missing spec beneath a valid in-tree alias -> false.
-func TestResolveSpec_MissingSpecUnderValidAlias_False(t *testing.T) {
-	skipWithoutSymlinks(t)
-	root := t.TempDir()
-	cases := filepath.Join(root, "gtms", "test", "cases")
-	require(t, os.MkdirAll(filepath.Join(cases, "real9"), 0o755)) // empty
-	mustSymlink(t, filepath.Join(cases, "real9"), filepath.Join(cases, "alias9"))
-
-	assert.False(t, Exists(root, "alias9/tc-99999999"),
-		"a valid in-tree alias with no matching spec must be false")
-}
-
-// 10. Unqualified global lookup remains functional but cannot accept an
-// out-of-tree spec symlink.
-func TestResolveSpec_UnqualifiedGlobal_RejectsOutOfTreeSpecSymlink(t *testing.T) {
-	skipWithoutSymlinks(t)
-	root := t.TempDir()
-	cases := filepath.Join(root, "gtms", "test", "cases")
-
-	// Functional: a real in-tree spec still resolves globally.
-	writeSpec(t, filepath.Join(cases, "d"), "tc-good1111-x.md")
-	assert.True(t, Exists(root, "tc-good1111"), "global lookup must still find a real in-tree spec")
-
-	// An out-of-tree spec symlink inside a real dir must NOT be accepted globally.
-	require(t, os.MkdirAll(filepath.Join(cases, "e"), 0o755))
-	outside := filepath.Join(root, "outside")
-	require(t, os.MkdirAll(outside, 0o755))
-	require(t, os.WriteFile(filepath.Join(outside, "bad.md"), []byte("bad"), 0o644))
-	mustSymlink(t, filepath.Join(outside, "bad.md"), filepath.Join(cases, "e", "tc-bad11111-x.md"))
-	assert.False(t, Exists(root, "tc-bad11111"),
-		"global lookup must not accept an out-of-tree spec symlink")
 }

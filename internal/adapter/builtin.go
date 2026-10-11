@@ -11,6 +11,12 @@ import (
 // This is the Tier 0 (built-in) adapter invocation path.
 // Context is accepted for API consistency but not propagated to reader functions
 // (they are fast filesystem reads, not subprocess calls).
+//
+// ADR-024 5b / REV-184 CODEX-004: the bulk readers dispatched here return a
+// typed *reader.IncompleteReadError (and no rows) when any test-case identity is
+// Ambiguous or Unprovable. The dispatcher has no stderr channel for per-identity
+// diagnostics, so it propagates that error unchanged rather than returning a
+// partial result as success; callers can detect it with errors.As.
 func InvokeBuiltin(ctx context.Context, command string, args []string, projectRoot string, specDirs []string, defaultFramework string) (interface{}, error) {
 	switch command {
 	case "status":

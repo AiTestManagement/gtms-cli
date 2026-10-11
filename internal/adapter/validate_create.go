@@ -7,13 +7,8 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/adrg/frontmatter"
+	"github.com/aitestmanagement/gtms-cli/internal/testcase"
 )
-
-// specFrontmatter holds the minimal frontmatter fields needed for validation.
-type specFrontmatter struct {
-	TestCaseID string `yaml:"test_case_id"`
-}
 
 // SpecValidationError represents a single validation failure for a spec file.
 type SpecValidationError struct {
@@ -21,24 +16,17 @@ type SpecValidationError struct {
 	Reason string // human-readable description of the violation
 }
 
-// DegradedFile represents a spec file that could not be strictly validated
-// because its frontmatter is missing or unparseable. These files degrade to
-// filename-only listing (ENH-092) instead of hard-failing create (BUG-106).
+// DegradedFile is retained in the presentation DTO for compatibility. Strict v2
+// create validation no longer adds entries to this slice: every supplied
+// testcase candidate with an invalid document is a violation.
 type DegradedFile struct {
 	File   string // basename of the degraded file
 	Reason string // why it degraded (e.g. "could not parse frontmatter")
 }
 
-// ValidateCreateResult bundles hard validation failures (Violations) and
-// soft-pass degraded files (Degraded). The invoker hard-fails only on
-// Violations; Degraded files are allowed through to the listing code,
-// which renders them filename-only.
-//
-// BUG-106 precedence rule: the boundary is whether test_case_id is parseable.
-//   - Parseable test_case_id: strict BUG-038/BUG-104 validation applies.
-//   - Unparseable test_case_id (missing/malformed frontmatter): ENH-092
-//     degraded listing applies -- no hard failure.
-//   - Malformed filename shape: always a hard failure regardless of frontmatter.
+// ValidateCreateResult retains its established presentation shape. Under strict
+// v2 validation supplied testcase candidates populate Violations or pass;
+// Degraded remains empty.
 type ValidateCreateResult struct {
 	Violations []SpecValidationError
 	Degraded   []DegradedFile
@@ -62,19 +50,13 @@ var validShapePattern = regexp.MustCompile(`^(tc-[0-9a-f]{8})(-[A-Za-z0-9][A-Za-
 var tcIDFormatPattern = regexp.MustCompile(`^tc-[0-9a-f]{8}$`)
 
 // ValidateCreateSpecs scans outputDir for .md spec files whose names start
-// with tc-{8hex} (the GTMS gate pattern), then classifies each file into
-// one of three categories:
+// with tc-{8hex} (the GTMS gate pattern), then classifies each file:
 //
-//   - Hard violation (ValidateCreateResult.Violations): the file has a
-//     parseable test_case_id that fails strict checks, or the filename
-//     shape is malformed. These block the create command.
-//   - Degraded (ValidateCreateResult.Degraded): the file's frontmatter is
-//     missing or unparseable, so test_case_id cannot be determined. These
-//     are allowed through and render as filename-only in the TC listing
-//     (ENH-092 degradation). BUG-106 precedence rule.
+//   - Hard violation (ValidateCreateResult.Violations): the filename shape,
+//     strict v2 schema, or identity checks fail. These block create.
 //   - Valid: the file passes all checks. No entry in either list.
 //
-// Strict checks (applied only when test_case_id is parseable):
+// Strict checks:
 //
 //  1. The filename is a valid shape: bare tc-{8hex}.md or slugged tc-{8hex}-slug.md.
 //  2. The test_case_id matches the expected format (tc-{8hex}).
@@ -137,6 +119,9 @@ func ValidateCreateSpecs(outputDir string, batchIDs []string, preExisting map[st
 		}
 
 		base := entry.Name()
+		if testcase.IsReservedCompanion(base) {
+			continue
+		}
 
 		// Only inspect .md files whose name starts with tc-{8hex}
 		if !strings.HasSuffix(base, ".md") {
@@ -177,30 +162,22 @@ func ValidateCreateSpecs(outputDir string, batchIDs []string, preExisting map[st
 		filenameID := shapeMatch[1]
 		path := filepath.Join(outputDir, base)
 
-		// Parse frontmatter
-		f, openErr := os.Open(path)
-		if openErr != nil {
+		data, readErr := os.ReadFile(path)
+		if readErr != nil {
 			continue // skip unreadable files
 		}
-
-		var fm specFrontmatter
-		_, parseErr := frontmatter.Parse(f, &fm)
-		f.Close()
-
-		// BUG-106 degradation: if frontmatter cannot be parsed, the file
-		// degrades to filename-only listing instead of hard-failing.
-		if parseErr != nil {
-			result.Degraded = append(result.Degraded, DegradedFile{
+		decoded := testcase.DecodeCandidate(data)
+		if decoded.Failure != nil {
+			result.Violations = append(result.Violations, SpecValidationError{
 				File:   base,
-				Reason: fmt.Sprintf("could not parse frontmatter: %v", parseErr),
+				Reason: createSchemaFailureReason(decoded.Failure),
 			})
 			continue
 		}
 
-		// BUG-106 degradation: if test_case_id is missing from parseable
-		// frontmatter, the file degrades to filename-only listing.
-		if fm.TestCaseID == "" {
-			result.Degraded = append(result.Degraded, DegradedFile{
+		bodyID := decoded.ParsedIdentity
+		if bodyID == "" {
+			result.Violations = append(result.Violations, SpecValidationError{
 				File:   base,
 				Reason: "frontmatter is missing required field 'test_case_id'",
 			})
@@ -210,44 +187,51 @@ func ValidateCreateSpecs(outputDir string, batchIDs []string, preExisting map[st
 		// From here, test_case_id is parseable -- strict validation applies.
 
 		// Check 2: test_case_id matches expected format
-		if !tcIDFormatPattern.MatchString(fm.TestCaseID) {
+		if !tcIDFormatPattern.MatchString(bodyID) {
 			result.Violations = append(result.Violations, SpecValidationError{
 				File:   base,
-				Reason: fmt.Sprintf("frontmatter test_case_id '%s' does not match expected format tc-{8hex}", fm.TestCaseID),
+				Reason: fmt.Sprintf("frontmatter test_case_id '%s' does not match expected format tc-{8hex}", bodyID),
 			})
 			continue
 		}
 
 		// Check 3: test_case_id matches filename ID
-		if fm.TestCaseID != filenameID {
+		if bodyID != filenameID {
 			result.Violations = append(result.Violations, SpecValidationError{
 				File:   base,
-				Reason: fmt.Sprintf("frontmatter test_case_id '%s' does not match filename ID '%s'", fm.TestCaseID, filenameID),
+				Reason: fmt.Sprintf("frontmatter test_case_id '%s' does not match filename ID '%s'", bodyID, filenameID),
 			})
 		}
 
 		// Check 4: test_case_id is in the pre-generated batch
 		if len(batchSet) > 0 {
-			if _, ok := batchSet[fm.TestCaseID]; !ok {
+			if _, ok := batchSet[bodyID]; !ok {
 				result.Violations = append(result.Violations, SpecValidationError{
 					File:   base,
-					Reason: fmt.Sprintf("frontmatter test_case_id '%s' is not in the pre-generated batch", fm.TestCaseID),
+					Reason: fmt.Sprintf("frontmatter test_case_id '%s' is not in the pre-generated batch", bodyID),
 				})
 			}
 		}
 
 		// Track for duplicate detection
-		if firstFile, seen := seenIDs[fm.TestCaseID]; seen {
+		if firstFile, seen := seenIDs[bodyID]; seen {
 			result.Violations = append(result.Violations, SpecValidationError{
 				File:   base,
-				Reason: fmt.Sprintf("duplicate test_case_id '%s' (also used by %s)", fm.TestCaseID, firstFile),
+				Reason: fmt.Sprintf("duplicate test_case_id '%s' (also used by %s)", bodyID, firstFile),
 			})
 		} else {
-			seenIDs[fm.TestCaseID] = base
+			seenIDs[bodyID] = base
 		}
 	}
 
 	return result, nil
+}
+
+func createSchemaFailureReason(failure *testcase.SchemaFailure) string {
+	if failure.Kind == testcase.SchemaFailureMalformedYAML && failure.Key == "" {
+		return "could not parse frontmatter: " + testcase.SanitizeIdentityString(failure.Detail)
+	}
+	return failure.Error()
 }
 
 // FormatValidationErrors builds a human-readable summary from a slice of
@@ -260,7 +244,17 @@ func FormatValidationErrors(violations []SpecValidationError) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "spec validation failed: %d violation(s) in adapter output", len(violations))
 	for _, v := range violations {
-		fmt.Fprintf(&b, "\n    %s: %s", v.File, v.Reason)
+		fmt.Fprintf(&b, "\n    %s: %s", testcase.SanitizeIdentityString(v.File), sanitizeValidationReason(v.Reason))
 	}
 	return b.String()
+}
+
+func sanitizeValidationReason(reason string) string {
+	// A reason can contain a nested FormatValidationErrors list. Preserve its
+	// structural newlines while sanitizing every rendered line independently.
+	lines := strings.Split(reason, "\n")
+	for i := range lines {
+		lines[i] = testcase.SanitizeIdentityString(lines[i])
+	}
+	return strings.Join(lines, "\n")
 }

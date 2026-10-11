@@ -75,7 +75,7 @@ func seedBatchOwners(t *testing.T, root string, n int) []*testcase.Owner {
 		ids[i] = fmt.Sprintf("tc-batch%04d", i)
 		abs := filepath.Join(root, "gtms", "test", "cases", "feat", ids[i]+"-case.md")
 		require.NoError(t, os.MkdirAll(filepath.Dir(abs), 0o755))
-		body := "---\ntest_case_id: " + ids[i] + "\ntitle: Batch case\npriority: Medium\ntype: Functional\n---\n\n## Test Objective\n\nBatch.\n"
+		body := "---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: " + ids[i] + "\ntitle: Batch case\npriority: Medium\n---\n\n## Test Objective\n\nBatch.\n"
 		require.NoError(t, os.WriteFile(abs, []byte(body), 0o644))
 	}
 	owners := make([]*testcase.Owner, n)

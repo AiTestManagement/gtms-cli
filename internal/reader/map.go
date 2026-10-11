@@ -1,13 +1,19 @@
 package reader
 
 import (
+	"errors"
 	"fmt"
 	"path/filepath"
 	"sort"
 	"strings"
 
+	"github.com/aitestmanagement/gtms-cli/internal/testcase"
 	"github.com/aitestmanagement/gtms-cli/internal/wiring"
 )
+
+// ErrMapTargetNotFound is returned by MapTargetDiagnostics when the named target
+// resolves to NotFound, so the CLI can render map's existing not-found wording.
+var ErrMapTargetNotFound = errors.New("map target not found")
 
 // Map returns a traceability report grouping test cases by their requirement field.
 // When scope is nil, all test cases are included. When scope is non-nil, only test cases
@@ -15,7 +21,7 @@ import (
 // strictFramework (ENH-082) honours an explicit --framework flag in per-TC entries:
 // when true and defaultFramework is non-empty, TCs without a matching wiring record
 // render with no SelectedFramework and em-dashes for AUTOMATE/EXECUTE (no fallback).
-// CON-023 / ENH-145 / ENH-146 — Phase 3D:
+// CON-023 / ENH-145 / ENH-146 -- Phase 3D:
 // Automation identity comes from wiring (gtms/automation/wiring/);
 // execution state comes from the latest terminal handoff in .gtms/results/;
 // manual-only TCs surface via gtms/manual/records/. The map shares the
@@ -26,11 +32,39 @@ import (
 // carriers so a sibling-framework failure cannot hide behind a
 // picker-selected pass on the human row.
 func Map(projectRoot string, scope *ScopeInfo, defaultFramework string, strictFramework bool) (*MapReport, error) {
-	testCases, err := scanTestCases(projectRoot, scope)
+	report, diags, err := MapWithDiagnostics(projectRoot, scope, defaultFramework, strictFramework)
 	if err != nil {
-		return nil, fmt.Errorf("scanning test cases: %w", err)
+		return nil, err
 	}
+	if ierr := incompleteReadErr(diags); ierr != nil {
+		return nil, ierr
+	}
+	return report, nil
+}
 
+// MapWithDiagnostics is the ENH-205 bulk map operation on the snapshot. It resolves
+// identity from ONE snapshot per operation and returns the traceability report over
+// the proven, unique, decodable owners plus the identity diagnostics for policy (e):
+// a duplicated or unprovable test case is left out of every group, the unlinked
+// section and the summary, named on stderr, and the command exits 1 (tc-197d8c3b).
+func MapWithDiagnostics(projectRoot string, scope *ScopeInfo, defaultFramework string, strictFramework bool) (*MapReport, IdentityDiagnostics, error) {
+	snap, err := testcase.NewSnapshot(projectRoot)
+	if err != nil {
+		return nil, IdentityDiagnostics{}, err
+	}
+	testCases, diags, err := resolveScopedSpecs(snap, projectRoot, scope)
+	if err != nil {
+		return nil, IdentityDiagnostics{}, err
+	}
+	report, err := mapFromSpecs(projectRoot, testCases, defaultFramework, strictFramework)
+	if err != nil {
+		return nil, IdentityDiagnostics{}, err
+	}
+	return report, diags, nil
+}
+
+// mapFromSpecs builds the traceability report from already-resolved, proven specs.
+func mapFromSpecs(projectRoot string, testCases []testCaseFrontmatter, defaultFramework string, strictFramework bool) (*MapReport, error) {
 	wiringByTC, err := wiringScan(projectRoot)
 	if err != nil {
 		return nil, fmt.Errorf("scanning wiring records: %w", err)
@@ -122,6 +156,108 @@ func Map(projectRoot string, scope *ScopeInfo, defaultFramework string, strictFr
 	}, nil
 }
 
+// MapTargetDiagnostics resolves the target of `map <tc-id>` and, when the target
+// is proven, builds the whole-tree map plus the diagnostics scoped for the single-TC
+// form (ADR-024 5b "Single-TC forms" -> map <tc-id>):
+//
+//   - targetErr != nil: the target itself is Ambiguous / Unprovable / NotFound / a
+//     display-field decode failure. The CLI refuses with empty stdout and exit 1.
+//     NotFound is signalled with ErrMapTargetNotFound so the CLI keeps map's wording.
+//   - otherwise: report is the whole-tree proven map (the CLI filters it to the
+//     target's printed group), and diags carries the Ambiguous IDs whose owners fall
+//     in the printed group PLUS every tree-wide Unprovable / display-field failure.
+//     An Ambiguous ID outside the printed group does not affect map <tc-id>.
+func MapTargetDiagnostics(projectRoot, tcID, defaultFramework string, strictFramework bool) (report *MapReport, targetErr error, diags IdentityDiagnostics, err error) {
+	snap, serr := testcase.NewSnapshot(projectRoot)
+	if serr != nil {
+		return nil, nil, IdentityDiagnostics{}, serr
+	}
+	return MapTargetDiagnosticsWithSnapshot(snap, projectRoot, tcID, defaultFramework, strictFramework)
+}
+
+// MapTargetDiagnosticsWithSnapshot is MapTargetDiagnostics against a snapshot the
+// caller already built, so a qualified `map <folder>/<tc-id>` runs its scoped-owner
+// check and this read against ONE snapshot (ADR-024 5b "Qualified targets resolve
+// once").
+func MapTargetDiagnosticsWithSnapshot(snap *testcase.Snapshot, projectRoot, tcID, defaultFramework string, strictFramework bool) (report *MapReport, targetErr error, diags IdentityDiagnostics, err error) {
+	r := snap.Resolve(tcID)
+	switch r.Outcome {
+	case testcase.OutcomeAmbiguous, testcase.OutcomeUnprovable:
+		return nil, testcase.OwnershipErrorFor(r), IdentityDiagnostics{}, nil
+	case testcase.OutcomeNotFound:
+		return nil, ErrMapTargetNotFound, IdentityDiagnostics{}, nil
+	}
+	// UniqueOwner: consume the normalized fields already carried by the snapshot.
+	targetTC, badField := testCaseFromNormalized(r.OwnerMetadata, r.OwnerDecodeFailure)
+	if badField != "" {
+		return nil, errors.New(renderDisplayFieldError(r.OwnerLogicalRel, badField)), IdentityDiagnostics{}, nil
+	}
+
+	// The target is proven. Build the whole-tree proven map and the tree-wide
+	// diagnostics, then narrow the Ambiguous arm to the printed group.
+	testCases, treeDiags, rerr := resolveScopedSpecs(snap, projectRoot, nil)
+	if rerr != nil {
+		return nil, nil, IdentityDiagnostics{}, rerr
+	}
+	report, rerr = mapFromSpecs(projectRoot, testCases, defaultFramework, strictFramework)
+	if rerr != nil {
+		return nil, nil, IdentityDiagnostics{}, rerr
+	}
+
+	targetReq := targetTC.Requirement
+	scoped := IdentityDiagnostics{
+		// Unprovable and display-field failures are checked tree-wide: their group
+		// membership cannot be ruled out (ADR-024 5b; tc-a99b5902).
+		pathIssues: treeDiags.pathIssues,
+	}
+	for _, a := range treeDiags.ambiguous {
+		if ambiguousInPrintedGroup(a, targetReq) {
+			scoped.ambiguous = append(scoped.ambiguous, a)
+		}
+	}
+	return report, nil, scoped, nil
+}
+
+// ambiguousInPrintedGroup reports whether an Ambiguous ID belongs to the group
+// map <tc-id> prints: the target's requirement group for a linked target, or the
+// whole unlinked section for an unlinked one. An owner declaring the target's
+// requirement (or, for an unlinked target, declaring no requirement) puts the
+// ambiguous ID in the printed group.
+//
+// Membership is decided from each owner's `requirement` field ALONE (REV-184
+// CODEX-001). A full-frontmatter decode would fail on an unrelated wrong-type
+// field (priority, tags, ...) and silently drop an owner whose requirement
+// plainly matches -- and ambiguous owners are never in the tree-wide display-field
+// diagnostics, so the affected identity would vanish with exit 0. When an owner's
+// requirement cannot be read at all, membership cannot be ruled out, so the ID is
+// conservatively treated as in the group and surfaced.
+func ambiguousInPrintedGroup(a ambiguousDiag, targetReq string) bool {
+	if len(a.evidence) != len(a.owners) {
+		return true
+	}
+	for _, owner := range a.evidence {
+		if owner.DecodeFailure != nil && (owner.DecodeFailure.Key == "" || schemaFailureHasRetainedKey(owner.DecodeFailure, "requirement")) {
+			return true
+		}
+		if owner.Metadata.Requirement == targetReq {
+			return true
+		}
+	}
+	return false
+}
+
+func schemaFailureHasRetainedKey(failure *testcase.SchemaFailure, key string) bool {
+	if failure.Key == key {
+		return true
+	}
+	for _, field := range failure.RetainedFields {
+		if field.Key == key {
+			return true
+		}
+	}
+	return false
+}
+
 // buildMapEntry constructs a MapEntry from a test case, its wiring
 // records, the global terminal-result overlay, the manual record (if
 // any), and active tasks. Routes through buildPipelineEntry so the map
@@ -142,7 +278,7 @@ func Map(projectRoot string, scope *ScopeInfo, defaultFramework string, strictFr
 // in-progress state still win.
 //
 // CON-023 / ENH-146: orphan terminal handoffs (no matching wiring) are
-// ignored — buildPipelineEntry only joins overlay entries on (TC,
+// ignored -- buildPipelineEntry only joins overlay entries on (TC,
 // framework) keys taken from wiring. Non-terminal handoffs are
 // pre-filtered in scanTerminalResults.
 func buildMapEntry(
@@ -163,16 +299,16 @@ func buildMapEntry(
 	// while a sibling wired framework has terminal fail/error/skip state."
 	//
 	// Scoping rules:
-	//   - Non-strict mode: every wired framework contributes — a sibling
+	//   - Non-strict mode: every wired framework contributes -- a sibling
 	//     failure must not hide behind a picker-selected pass.
 	//   - Strict mode with --framework X: the user has explicitly asked
 	//     for X only, so sibling frameworks are out of scope. Restrict
 	//     worst-of to the selected framework, which collapses to "use
-	//     the picker's overlay" — matches the existing strict-framework
+	//     the picker's overlay" -- matches the existing strict-framework
 	//     contract pinned by TestMap_StrictFrameworkOmitsNonMatching.
 	//   - Strict-mode miss (no matching wiring): no relevant framework,
 	//     so worst-of contributes nothing and the em-dash carries through.
-	//   - Manual-only TCs are skipped — they're not wiring units, and
+	//   - Manual-only TCs are skipped -- they're not wiring units, and
 	//     the manual record drives the compact LastResult upstream.
 	//
 	// Applied on PipelineEntry before applyTaskStatus (see function-level
@@ -250,7 +386,7 @@ func buildMapEntry(
 }
 
 // deriveSlug extracts the slug portion from a test case filename.
-// e.g. "tc-a1b2c3d-tier1-sync-happy-path.md" → "tier1-sync-happy-path"
+// e.g. "tc-a1b2c3d-tier1-sync-happy-path.md" -> "tier1-sync-happy-path"
 func deriveSlug(tc testCaseFrontmatter) string {
 	if tc.SourceFile == "" {
 		return ""

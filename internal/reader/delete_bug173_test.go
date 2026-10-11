@@ -27,7 +27,7 @@ func seedWiredArtefact(t *testing.T, root, tcID, folder, artefactRel string) str
 	require.NoError(t, os.MkdirAll(tcDir, 0755))
 	require.NoError(t, os.WriteFile(
 		filepath.Join(tcDir, tcID+"-spec.md"),
-		[]byte("---\ntest_case_id: "+tcID+"\ntitle: "+tcID+"\n---\n"), 0644))
+		[]byte("---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: "+tcID+"\ntitle: "+tcID+"\n---\n"), 0644))
 
 	artefactAbs := filepath.Join(root, filepath.FromSlash(artefactRel))
 	require.NoError(t, os.MkdirAll(filepath.Dir(artefactAbs), 0755))

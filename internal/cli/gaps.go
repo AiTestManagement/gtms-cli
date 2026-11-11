@@ -22,7 +22,7 @@ func newGapsCmd() *cobra.Command {
 		Short: "Show test coverage gaps",
 		Long: `Analyse the project for test coverage gaps across the wiring-aware
 categories: missing automation, currently failing,
-execution errors, runtime-skipped, stale wiring (testcase / artefact),
+execution errors, runtime-skipped, test case specs changed, automation scripts changed,
 missing artefacts, and manual test cases with spec drift.
 
   gtms gaps              -- folder summary table (per-folder gap counts)
@@ -219,8 +219,8 @@ func runGaps(w io.Writer, projectRoot string, scope *reader.ScopeInfo, jsonOut b
 	printCurrentlyFailing(w, report.CurrentlyFailing, report.CurrentlyFailingTriaged, report.CurrentlyFailingUntriaged)
 	printGapCategory(w, "Execution errors", report.ExecutionErrors)
 	printGapCategory(w, "Runtime-skipped tests", report.RuntimeSkipped)
-	printGapCategory(w, "Stale wiring (testcase)", report.StaleTestCaseHash)
-	printGapCategory(w, "Stale wiring (artefact)", report.StaleArtefactHash)
+	printGapCategory(w, "Test case specs changed", report.StaleTestCaseHash)
+	printGapCategory(w, "Automation scripts changed", report.StaleArtefactHash)
 	printGapCategory(w, "Missing artefacts", report.MissingArtefact)
 	printGapCategory(w, "Manual results with TC drift", report.DriftDetected)
 

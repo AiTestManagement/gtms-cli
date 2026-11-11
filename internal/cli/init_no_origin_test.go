@@ -65,7 +65,7 @@ func TestFormatInitOutput_RealRepo_NoGuidance(t *testing.T) {
 func TestFormatDemoOutput_FreshBanner_NoOrigin(t *testing.T) {
 	root := t.TempDir()
 	out := captureStdout(t, func() {
-		formatDemoOutput(root, "demo-project", config.NoOriginRepo, true, &scaffold.DemoSeedResult{}, false)
+		formatDemoOutput(root, "demo-project", config.NoOriginRepo, true, nil, &scaffold.DemoSeedResult{}, false)
 	})
 
 	assert.Contains(t, out, "Demo data seeded",
@@ -82,7 +82,7 @@ func TestFormatDemoOutput_FreshBanner_NoOrigin(t *testing.T) {
 func TestFormatDemoOutput_FreshBanner_RealRepo(t *testing.T) {
 	root := t.TempDir()
 	out := captureStdout(t, func() {
-		formatDemoOutput(root, "demo-project", "chosen/demo", true, &scaffold.DemoSeedResult{}, false)
+		formatDemoOutput(root, "demo-project", "chosen/demo", true, nil, &scaffold.DemoSeedResult{}, false)
 	})
 
 	assert.Contains(t, out, "Project: demo-project (chosen/demo)")
@@ -95,7 +95,7 @@ func TestFormatDemoOutput_FreshBanner_RealRepo(t *testing.T) {
 func TestFormatDemoOutput_MergePath_NoBanner(t *testing.T) {
 	root := t.TempDir()
 	out := captureStdout(t, func() {
-		formatDemoOutput(root, "", "", false, &scaffold.DemoSeedResult{}, false)
+		formatDemoOutput(root, "", "", false, nil, &scaffold.DemoSeedResult{}, false)
 	})
 
 	assert.Contains(t, out, "Demo data seeded")

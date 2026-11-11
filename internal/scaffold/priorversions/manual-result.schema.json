@@ -1,0 +1,99 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GTMS Manual Test Result",
+  "description": "Schema for user-authored manual test result files.",
+  "type": "object",
+  "required": ["test_case_id", "test_case_hash", "framework", "result"],
+  "properties": {
+    "test_case_id": {
+      "type": "string",
+      "pattern": "^tc-[a-f0-9]{8}$",
+      "description": "GTMS contract: test case identifier"
+    },
+    "test_case_hash": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{16}$",
+      "description": "GTMS contract: SHA-256 hash of the test case file content at prime time (16 hex chars)"
+    },
+    "framework": {
+      "type": "string",
+      "const": "manual",
+      "description": "GTMS contract: test framework identifier"
+    },
+    "result": {
+      "type": ["string", "null"],
+      "enum": ["pass", "fail", "skip", null],
+      "description": "REQUIRED: test outcome recorded by the tester (null while freshly stamped)"
+    },
+    "title": {
+      "type": "string",
+      "description": "Optional metadata: test case title snapshot at prime time"
+    },
+    "requirement": {
+      "type": "string",
+      "description": "Optional metadata: requirement reference snapshot at prime time"
+    },
+    "priority": {
+      "type": "string",
+      "description": "Optional metadata: test case priority snapshot at prime time"
+    },
+    "type": {
+      "type": "string",
+      "description": "Optional metadata: test case type snapshot at prime time"
+    },
+    "branch": {
+      "type": "string",
+      "description": "Optional metadata: git branch at prime time"
+    },
+    "executed_by": {
+      "type": "string",
+      "description": "Identity that recorded the result (stamped by gtms-pass/fail/skip snippet)"
+    },
+    "executed_at": {
+      "type": "string",
+      "description": "Timestamp when the result was recorded -- ISO 8601 local time, no timezone enforcement"
+    },
+    "defect": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Defect identifiers linked to a fail result (e.g. JIRA ticket IDs)"
+    },
+    "skip_reason": {
+      "type": "string",
+      "description": "Reason for skipping the test (paired with result: skip)"
+    },
+    "steps": {
+      "type": ["array", "null"],
+      "description": "Optional step-level results (null while freshly stamped)",
+      "items": {
+        "type": "object",
+        "properties": {
+          "step": {
+            "type": "string",
+            "description": "Step identifier"
+          },
+          "name": {
+            "type": "string",
+            "description": "Step description"
+          },
+          "status": {
+            "type": "string",
+            "enum": ["pass", "fail", "skip"],
+            "description": "Step outcome"
+          },
+          "notes": {
+            "type": "string",
+            "description": "Observations for this step"
+          },
+          "defect": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Defect identifiers linked to a failing step"
+          }
+        },
+        "required": ["step", "name", "status"]
+      }
+    }
+  },
+  "additionalProperties": true
+}

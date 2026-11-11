@@ -2,8 +2,10 @@ package adapter
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"time"
@@ -12,6 +14,7 @@ import (
 	gitpkg "github.com/aitestmanagement/gtms-cli/internal/git"
 	"github.com/aitestmanagement/gtms-cli/internal/id"
 	"github.com/aitestmanagement/gtms-cli/internal/layout"
+	"github.com/aitestmanagement/gtms-cli/internal/pathsafe"
 	"github.com/aitestmanagement/gtms-cli/internal/prompt"
 	"github.com/aitestmanagement/gtms-cli/internal/result"
 	"github.com/aitestmanagement/gtms-cli/internal/task"
@@ -50,10 +53,32 @@ func effectiveDefaultSyncTimeout() time.Duration {
 type invocationError struct {
 	summary string
 	err     error
+	// started reports whether the adapter process was launched before this
+	// failure (ENH-222). It lets the CLI tell a post-launch failure (timeout,
+	// cancellation, stream/wait error -- "started, then failed") from a
+	// pre-launch failure ("could not start") without parsing the summary.
+	started bool
 }
 
 func (e *invocationError) Error() string { return e.summary }
 func (e *invocationError) Unwrap() error { return e.err }
+
+// Started reports whether the adapter process (or asynchronous dispatch) was
+// launched for this invocation (ENH-222 Owner Decision 2026-10-27 #4). It is
+// readable even when InvokeWithRoot returned an error, so the CLI can tell
+// "accepted and ran" (Draft D) from "accepted but could not start" (Draft E)
+// from a structured signal, never from error text. It inspects the result's
+// Started field first, then the error chain for an *invocationError.
+func Started(res *InvokeResult, err error) bool {
+	if res != nil && res.Started {
+		return true
+	}
+	var ie *invocationError
+	if errors.As(err, &ie) {
+		return ie.started
+	}
+	return false
+}
 
 // InvokeResult holds the outcome of an Invoke call, used by CLI for output formatting.
 type InvokeResult struct {
@@ -74,6 +99,16 @@ type InvokeResult struct {
 	// <name>" report from this; empty for non-automate commands or when no
 	// wiring was written (e.g. failed/dry-run automate).
 	WiringAdapter string
+	// Started reports whether the adapter process/dispatch was launched (ENH-222).
+	// Threaded from InvocationResult.Started. Read via adapter.Started, which also
+	// covers the error-return paths where this result is nil.
+	Started bool
+	// Remediation is the bound ENH-188 second line ("A Tier 2 execute adapter
+	// must write a terminal status ...") for the non-terminal-execute error. It
+	// is the CLI-only hint rendered under the first diagnostic line; it is NOT
+	// written to the handoff. Empty on every other path, and the CLI branches on
+	// it rather than on tier/mode (CLAUDE rule 2).
+	Remediation string
 }
 
 // Invoke is the unified invocation orchestrator (Phase 4: Handoff).
@@ -306,12 +341,27 @@ func InvokeWithRoot(ctx context.Context, projectRoot string, cfg *config.Config,
 		return nil, fmt.Errorf("creating task file: %w", createErr)
 	}
 
-	// 4. Ensure .gtms/ directories exist
+	// 4. Ensure .gtms/ directories exist.
+	//
+	// BUG-209 (tc-c5b20358 Step 4 / AC7): verify .gtms/results containment BEFORE
+	// creating any .gtms subdirectory, so an escaping .gtms or .gtms/results link
+	// never has results/worktrees/logs/tmp created inside its target. A refusal
+	// here stops the adapter before it starts and routes the task to error/ so no
+	// pending task is stranded to block the next run (AC18).
+	if containErr := result.VerifyResultsDirContainment(projectRoot); containErr != nil {
+		return nil, failBeforeInvocation(projectRoot, tf, containErr)
+	}
 	for _, subdir := range []string{"results", "worktrees", "logs", "tmp"} {
 		dir := filepath.Join(projectRoot, ".gtms", subdir)
 		if err := os.MkdirAll(dir, 0755); err != nil {
-			return nil, fmt.Errorf("creating .gtms/%s directory: %w", subdir, err)
+			return nil, failBeforeInvocation(projectRoot, tf, fmt.Errorf("creating .gtms/%s directory: %w", subdir, err))
 		}
+	}
+	// BUG-209 section 4: open and verify what was created before anything uses it. A
+	// swap during creation is refused here. The instant between the check above and
+	// the creation stays open and is accepted for v0.4.1.
+	if containErr := result.VerifyCreatedResultsDir(projectRoot); containErr != nil {
+		return nil, failBeforeInvocation(projectRoot, tf, containErr)
 	}
 
 	// 5. Create result contract.
@@ -338,7 +388,10 @@ func InvokeWithRoot(ctx context.Context, projectRoot string, cfg *config.Config,
 
 	resultPath, err := result.Create(projectRoot, rc)
 	if err != nil {
-		return nil, fmt.Errorf("creating result contract: %w", err)
+		// BUG-209 AC18: any pre-invocation handoff write failure (an unsafe-path
+		// refusal, a Create collision, or any other) stops the adapter and must not
+		// strand a pending task that blocks the next run as a duplicate active task.
+		return nil, failBeforeInvocation(projectRoot, tf, fmt.Errorf("creating result contract: %w", err))
 	}
 
 	// 6. Skip worktree creation for now (would require git operations in test)
@@ -364,7 +417,12 @@ func InvokeWithRoot(ctx context.Context, projectRoot string, cfg *config.Config,
 	// sees the right framework for this terminal handoff.
 	if ac.ResultFramework != "" && ac.ResultFramework != rc.Framework {
 		rc.Framework = ac.ResultFramework
-		_ = result.Update(resultPath, map[string]interface{}{"framework": ac.ResultFramework})
+		// BUG-209 section 9: this is a pre-invocation write. If it fails the adapter
+		// must not start, and the task must be routed to error/ so no pending task
+		// is stranded.
+		if updErr := result.Update(resultPath, map[string]interface{}{"framework": ac.ResultFramework}); updErr != nil {
+			return nil, failBeforeInvocation(projectRoot, tf, fmt.Errorf("recording framework on handoff: %w", updErr))
+		}
 	}
 
 	// 9. Assemble prompt if prompt-template is set
@@ -427,12 +485,13 @@ func InvokeWithRoot(ctx context.Context, projectRoot string, cfg *config.Config,
 
 		var warnings []string
 
-		if updateErr := result.Update(resultPath, map[string]interface{}{
+		// BUG-209 section 9: an outcome that did not land writes no record.
+		if updateErr := persistTerminal(resultPath, map[string]interface{}{
 			"status":    "error",
 			"summary":   summary,
 			"completed": now,
-		}); updateErr != nil {
-			warnings = append(warnings, fmt.Sprintf("contract update failed: %v", updateErr))
+		}, nil); updateErr != nil {
+			return nil, failBeforeInvocation(projectRoot, tf, fmt.Errorf("contract update failed: %w", updateErr))
 		}
 
 		tf.Error = summary
@@ -491,12 +550,19 @@ func InvokeWithRoot(ctx context.Context, projectRoot string, cfg *config.Config,
 		sweepWarnings = append(sweepWarnings, kept...)
 		if cleanupErr != nil {
 			tf.Error = cleanupErr.Error()
-			_ = task.Move(projectRoot, tf, "error")
-			_ = result.Update(resultPath, map[string]interface{}{
+			moveErr := moveTaskToError(projectRoot, tf)
+			// BUG-209 section 9: surface the handoff-write failure alongside the
+			// cleanup failure rather than discarding it.
+			if updErr := result.Update(resultPath, map[string]interface{}{
 				"status":    "error",
 				"summary":   cleanupErr.Error(),
 				"completed": time.Now().UTC().Format(time.RFC3339),
-			})
+			}); updErr != nil {
+				cleanupErr = fmt.Errorf("%w (and recording it on the handoff failed: %v)", cleanupErr, updErr)
+			}
+			if moveErr != nil {
+				return nil, fmt.Errorf("%w (and %v)", cleanupErr, moveErr)
+			}
 			return nil, cleanupErr
 		}
 	}
@@ -511,12 +577,26 @@ func InvokeWithRoot(ctx context.Context, projectRoot string, cfg *config.Config,
 	if err := task.Move(projectRoot, tf, "in-progress"); err != nil {
 		return nil, fmt.Errorf("moving task to in-progress: %w", err)
 	}
-	_ = result.Update(resultPath, map[string]interface{}{
+	// BUG-209 section 9: this is a pre-invocation write. If it fails the adapter
+	// must not start; route the now-in-progress task to error/ so it does not
+	// strand and block the next run as a duplicate active task.
+	if updErr := result.Update(resultPath, map[string]interface{}{
 		"status": "in-progress",
-	})
+	}); updErr != nil {
+		return nil, failBeforeInvocation(projectRoot, tf, fmt.Errorf("recording in-progress on handoff: %w", updErr))
+	}
 
 	// 12. Invoke adapter based on tier
 	var invResult *InvocationResult
+
+	// ENH-222: thread the structured "started" signal onto every non-error
+	// return (success, async, create-quarantine, handleSyncResult). Error
+	// returns set invokeRes=nil and carry Started on the invocationError instead.
+	defer func() {
+		if invokeRes != nil && invResult != nil {
+			invokeRes.Started = invResult.Started
+		}
+	}()
 
 	switch resolved.Tier {
 	case 1:
@@ -546,17 +626,29 @@ func InvokeWithRoot(ctx context.Context, projectRoot string, cfg *config.Config,
 			summary = "adapter cancelled"
 		}
 		tf.Error = summary
-		_ = task.Move(projectRoot, tf, "error")
-		_ = result.Update(resultPath, map[string]interface{}{
+		moveErr := moveTaskToError(projectRoot, tf)
+		// BUG-209 section 9: surface a handoff-write failure (keeping the error
+		// routing) rather than discarding it.
+		if updErr := persistTerminal(resultPath, map[string]interface{}{
 			"status":    "error",
 			"summary":   summary,
 			"completed": time.Now().UTC().Format(time.RFC3339),
-		})
+		}, nil); updErr != nil {
+			summary = fmt.Sprintf("%s\n    (recording the error on the handoff failed: %v)", summary, updErr)
+		}
+		if moveErr != nil {
+			summary = fmt.Sprintf("%s\n    (%v)", summary, moveErr)
+		}
+		// ENH-222: a post-launch failure (stream/wait error, or a timeout/cancel
+		// that still returned a started InvocationResult) carries Started so the
+		// CLI reports "started, then failed" rather than "could not start". A
+		// pre-launch cmd.Start failure leaves invResult nil => Started false.
+		started := invResult != nil && invResult.Started
 		// BUG-171: wrap so the human-readable summary stays the surfaced
 		// message (timeout/cancel/generic diagnostics unchanged) WHILE the
 		// underlying error's unwrap chain survives, keeping typed errors like
 		// *MissingExecuteAdapterError discoverable via errors.As at the CLI.
-		return nil, &invocationError{summary: summary, err: err}
+		return nil, &invocationError{summary: summary, err: err, started: started}
 	}
 
 	// Detect cancellation/timeout even when process exited with non-zero code
@@ -567,13 +659,22 @@ func InvokeWithRoot(ctx context.Context, projectRoot string, cfg *config.Config,
 			summary = fmt.Sprintf("adapter timed out after %s", effectiveTimeoutStr(resolved))
 		}
 		tf.Error = summary
-		_ = task.Move(projectRoot, tf, "error")
-		_ = result.Update(resultPath, map[string]interface{}{
+		moveErr := moveTaskToError(projectRoot, tf)
+		// BUG-209 section 9: surface a handoff-write failure (keeping the error
+		// routing) rather than discarding it.
+		if updErr := persistTerminal(resultPath, map[string]interface{}{
 			"status":    "error",
 			"summary":   summary,
 			"completed": time.Now().UTC().Format(time.RFC3339),
-		})
-		return nil, fmt.Errorf("%s", summary)
+		}, nil); updErr != nil {
+			summary = fmt.Sprintf("%s\n    (recording the error on the handoff failed: %v)", summary, updErr)
+		}
+		if moveErr != nil {
+			summary = fmt.Sprintf("%s\n    (%v)", summary, moveErr)
+		}
+		// ENH-222: the process launched (invResult != nil && invResult.Started),
+		// then the timeout/cancel fired -- "started, then failed".
+		return nil, &invocationError{summary: summary, err: errors.New(summary), started: invResult.Started}
 	}
 
 	// 12a. Post-write validation for create commands (BUG-038, BUG-106)
@@ -608,7 +709,106 @@ func InvokeWithRoot(ctx context.Context, projectRoot string, cfg *config.Config,
 			// (the adapter succeeded; scanning failed for an OS reason)
 		} else if len(valResult.Violations) > 0 {
 			now := time.Now().UTC().Format(time.RFC3339)
-			summary := FormatValidationErrors(valResult.Violations)
+
+			// BUG-203 AC10/AC11 (Owner Decision 4, revised 2026-10-15 quarantine,
+			// 2026-10-16 ownership + honest reporting; REV-209 CODEX-001/002,
+			// CLAUDE-001/004).
+			//
+			// Validation inspects and reports every newly appeared spec. A rejected
+			// spec is QUARANTINED -- moved byte-for-byte out of gtms/test/cases/ into
+			// gtms/tasks/error/<task-id>/artifacts/ (where task.List and the reader
+			// scanners never look: they read only top-level *.md per status folder) --
+			// ONLY when its canonical filename ID is one of the IDs GTMS generated for
+			// this invocation (batchIDs), i.e. GTMS can prove this create owns it. An
+			// unattributable file (any other ID, including an invented or malformed one,
+			// or a concurrent sibling create's output) is NEVER moved: it is left in
+			// place, named, and flagged so the user inspects concurrent create activity.
+			// Valid files from this invocation stay untouched. A file counts as
+			// quarantined only once the artefact exists and the source is gone; a failed
+			// move is reported with the file's actual location, never as preserved.
+			//
+			// REV-209 R2-CODEX-001 (path containment): before moving anything, resolve
+			// BOTH the source (under ac.OutputDir, which config may point outside the root
+			// via a relative `..` or a parent symlink/junction) and the destination
+			// through pathsafe.ResolveUnderRoot. If either cannot be proven inside the
+			// physical project root, do not move -- leave the source in place and report it
+			// with a DISTINCT path-containment message.
+			//
+			// REV-209 R2-CLAUDE-002 (no hard-coded gtms/): build the artefacts folder from
+			// layout.TasksDir, which follows a renamed GTMS parent (ENH-098), so the
+			// quarantine lands beside the error task and no stray gtms/ tree is created.
+			batchSet := make(map[string]struct{}, len(batchIDs))
+			for _, id := range batchIDs {
+				if trimmed := strings.TrimSpace(id); trimmed != "" {
+					batchSet[trimmed] = struct{}{}
+				}
+			}
+			artifactsDir := filepath.Join(layout.TasksDir(projectRoot), "error", tf.ID, "artifacts")
+			seenRejected := make(map[string]struct{}, len(valResult.Violations))
+			var preserved []string             // project-relative quarantine paths (fully moved)
+			var unattributable []string        // original paths left in place (ownership unproven)
+			var notRegular []string            // original paths left in place (symlink / special file)
+			var pathUnsafe []string            // original paths left in place (outside the root / unresolvable)
+			var moveFailed []quarantineFailure // move attempted but failed; file still at original path
+			for _, v := range valResult.Violations {
+				if _, done := seenRejected[v.File]; done {
+					continue // a file with several violations is handled once
+				}
+				seenRejected[v.File] = struct{}{}
+				srcAbs := filepath.Join(ac.OutputDir, v.File)
+				// REV-246 chunk-001-001: ac.OutputDir is canonical for create (BUG-214) while
+				// projectRoot may be the link spelling, so a plain Rel would show
+				// "../project/..." in this diagnostic. canonicalProjectRel reconciles the two
+				// root spellings; on error keep the old safe fallback (forward-slashed abs).
+				origRel, relErr := canonicalProjectRel(projectRoot, srcAbs)
+				if relErr != nil {
+					origRel = filepath.ToSlash(srcAbs)
+				}
+				if !ownedByBatch(v.File, batchSet) {
+					// Ownership unproven: never move it (REV-209 CODEX-001/CLAUDE-001).
+					unattributable = append(unattributable, origRel)
+					continue
+				}
+				// REV-209 R3-CODEX-004: Lstat (no follow) BEFORE resolving the path. Only a
+				// regular file may be quarantined -- resolving an in-project symlink first
+				// would make its target the thing that gets moved, and moving a symlink
+				// preserves the link, not the validated bytes. A symlink/special file is left
+				// in place with an accurate diagnostic.
+				if fi, lerr := os.Lstat(srcAbs); lerr != nil || !fi.Mode().IsRegular() {
+					notRegular = append(notRegular, origRel)
+					continue
+				}
+				// REV-209 R2-CODEX-001 (containment) + R3-CODEX-003: resolve BOTH source and
+				// destination under the project root, and MOVE the resolved paths (not the
+				// lexical ones). If either escapes or cannot resolve, leave the source in
+				// place and report the distinct path-containment message.
+				srcResolved, _, srcErr := pathsafe.ResolveUnderRoot(projectRoot, srcAbs)
+				if srcErr != nil {
+					pathUnsafe = append(pathUnsafe, origRel)
+					continue
+				}
+				dstResolved, _, dstErr := pathsafe.ResolveUnderRoot(projectRoot, filepath.Join(artifactsDir, v.File))
+				if dstErr != nil {
+					pathUnsafe = append(pathUnsafe, origRel)
+					continue
+				}
+				dest, ok, qErr := quarantineRejectedSpec(projectRoot, srcResolved, dstResolved)
+				if ok {
+					preserved = append(preserved, dest)
+				} else {
+					moveFailed = append(moveFailed, quarantineFailure{path: origRel, err: qErr})
+				}
+			}
+
+			summary := quarantineCreateFailureSummary(valResult.Violations, preserved, unattributable, notRegular, pathUnsafe, moveFailed)
+
+			// BUG-203 AC6: when the failure is a stale pre-v2 header (a v0.3.x
+			// scaffolded producer that was never refreshed), name the producing
+			// template or script and how to refresh it, so the user does not look at
+			// the stamped spec the error otherwise names.
+			if hint := staleScaffoldProducerHint(resolved, ac, projectRoot, valResult.Violations); hint != "" {
+				summary = summary + "\n    " + hint
+			}
 
 			// REV-164 CODEX-001: this branch runs BEFORE handleSyncResult, so
 			// it never reached the BUG-191 recovery. Update decodes the file on
@@ -623,18 +823,23 @@ func InvokeWithRoot(ctx context.Context, projectRoot string, cfg *config.Config,
 			// reconstruction path the BUG-191 recovery uses BOTH diagnostics.
 			// The violations stay primary (they are why this branch exists);
 			// the contract-read failure is appended, never substituted.
-			if updateErr := result.Update(resultPath, map[string]interface{}{
+			prior, _ := result.CaptureHandoffState(resultPath)
+			if updateErr := persistTerminal(resultPath, map[string]interface{}{
 				"status":           "error",
 				"completed":        now,
 				"attempts":         1,
 				"summary":          summary,
 				"validation-error": summary,
-			}); updateErr != nil {
-				return recoverUnusableContract(ctx, projectRoot, tf, resultPath, resolved, invResult, flags.ArtefactHash, ac.ArtefactFile, updateErr, summary)
+			}, nil); updateErr != nil {
+				recovered, recoverErr := recoverUnusableContract(ctx, projectRoot, tf, resultPath, resolved, invResult, prior, flags.ArtefactHash, ac.ArtefactFile, updateErr, summary)
+				return recovered, withPostRunSignal(invResult, recoverErr)
 			}
 
 			tf.Error = summary
-			_ = task.Move(projectRoot, tf, "error")
+			if moveErr := moveTaskToError(projectRoot, tf); moveErr != nil {
+				combined := fmt.Sprintf("%s\n    (%v)", summary, moveErr)
+				return nil, &invocationError{summary: combined, err: moveErr, started: invResult.Started}
+			}
 
 			return &InvokeResult{
 				TaskID:   tf.ID,
@@ -657,7 +862,7 @@ func InvokeWithRoot(ctx context.Context, projectRoot string, cfg *config.Config,
 		if invokeRes != nil && testCaseReadErr != nil {
 			invokeRes.Warnings = append(invokeRes.Warnings, fmt.Sprintf("Test case file found but could not be read: %v", testCaseReadErr))
 		}
-		return invokeRes, invokeErr
+		return invokeRes, withPostRunSignal(invResult, invokeErr)
 	}
 
 	// Async: task is already in-progress (moved before invocation), just return
@@ -714,7 +919,15 @@ func buildAdapterContext(projectRoot, taskID string, resolved *ResolvedAdapter, 
 	case "create":
 		ctx.Reference = flags.Reference
 		ctx.TestCaseName = flags.Name
-		if resolved.Config.OutputDir != "" {
+		// BUG-214 Owner Decision 7: when the create admission boundary carried the
+		// containment-checked output directory, use it verbatim -- MkdirAll, the
+		// built-in write, Tier 1 {output_dir} and Tier 2 GTMS_OUTPUT_DIR all read
+		// ctx.OutputDir, so this is what makes the path the adapter writes provably
+		// the path that was checked. The fallback below is for direct callers (tests)
+		// that do not set the carrier; production create always sets it.
+		if flags.ResolvedOutputDir != "" {
+			ctx.OutputDir = flags.ResolvedOutputDir
+		} else if resolved.Config.OutputDir != "" {
 			ctx.OutputDir = filepath.Join(projectRoot, resolved.Config.OutputDir)
 		} else {
 			ctx.OutputDir = filepath.Join(layout.TestCasesDir(projectRoot), flags.Folder)
@@ -818,6 +1031,82 @@ func buildAdapterContext(projectRoot, taskID string, resolved *ResolvedAdapter, 
 	return ctx
 }
 
+// normalizeReservedMode3Runtime enforces the GTMS-owned runtime metadata on a
+// reserved Mode 3 execute adapter's post-invocation handoff (BUG-210): framework
+// is always "manual" and mode is always "sync". The scaffolded adapter scripts
+// are user-editable, so a script may write framework: fx or mode: async into its
+// own contract; admission refuses those as CONFIGURED values, but an edited
+// script body is the one route admission cannot catch. It mutates rc in place and
+// returns only the fields it changed, so the caller folds them into its single
+// restore write. Historical evidence is not touched -- this runs only on the
+// handoff for the current run.
+func normalizeReservedMode3Runtime(rc *result.ResultContract) map[string]interface{} {
+	updates := map[string]interface{}{}
+	if rc.Framework != "manual" {
+		rc.Framework = "manual"
+		updates["framework"] = "manual"
+	}
+	if rc.Mode != "sync" {
+		rc.Mode = "sync"
+		updates["mode"] = "sync"
+	}
+	return updates
+}
+
+// canonicalReservedExecuteErrorContract builds a COMPLETE error contract for a
+// reserved Mode 3 execute run entirely from GTMS-held identity (BUG-210 / REV-273):
+// framework is manual and mode is sync, never the adapter's. It is the Reconstruct
+// fallback source for the invalid-contract recovery, so a handoff Update cannot
+// overwrite is still replaced by a readable, canonical error document that no
+// reader attributes to a wired framework. summary/log are the recovery diagnostics
+// and completed is the recovery timestamp.
+func canonicalReservedExecuteErrorContract(ctx context.Context, projectRoot string, tf *task.TaskFile, resolved *ResolvedAdapter, summary, log, completed string) *result.ResultContract {
+	rc := &result.ResultContract{
+		Task:        tf.ID,
+		Command:     resolved.Command,
+		Target:      tf.Target,
+		Adapter:     resolved.Name,
+		Mode:        "sync",
+		Created:     tf.Created,
+		Status:      "error",
+		Framework:   "manual",
+		Summary:     result.CapSummary(summary),
+		Log:         log,
+		Attempts:    1,
+		Completed:   completed,
+		ExecutedBy:  tf.ExecutedBy,
+		Environment: tf.Environment,
+	}
+	stampGitContext(ctx, projectRoot, rc)
+	return rc
+}
+
+// persistReservedMode3Handoff durably writes the canonical contract for a reserved
+// Mode 3 execute run, failing CLOSED (BUG-210 / REV-272 CODEX-002). It first
+// applies updates with result.Update -- a field merge that re-reads and validates
+// the on-disk handoff -- so the adapter's other fields survive. If that merge
+// fails (for example the adapter left the file corrupt or unwritable), it rewrites
+// the whole contract with result.Reconstruct, which does NOT read the old file and
+// which rc fully describes (rc already carries framework: manual, mode: sync and a
+// valid terminal status). It returns nil once either write persists the canonical
+// fields, and an error naming BOTH failures otherwise -- the residual case the
+// caller treats as the documented total-persistence limitation (BUG-218): route
+// the task to error, do not complete it or write a pipeline record. With no updates
+// there is nothing to persist, so it returns nil.
+//
+// BUG-209 section 9: this goes through the shared rule, so a refusal or a concurrency
+// error is returned as it is, with no reconstruct over the newer writer's file.
+func persistReservedMode3Handoff(path string, updates map[string]interface{}, rc *result.ResultContract) error {
+	updateErr, reconstructErr := persistTerminalDetail(path, updates, rc)
+	if updateErr == nil || blocksReconstruct(updateErr) {
+		return updateErr
+	}
+	if reconstructErr != nil {
+		return fmt.Errorf("could not persist GTMS-owned framework/mode for reserved Mode 3 adapter: update: %v; reconstruct: %w", updateErr, reconstructErr)
+	}
+	return nil
+}
+
 // handleSyncResult processes the result of a synchronous adapter invocation.
 //
 // cfg is threaded through so the automate branch can resolve the canonical
@@ -854,30 +1143,90 @@ func handleSyncResult(ctx context.Context, projectRoot string, cfg *config.Confi
 	// BUG-111 round 3: an empty status (rc.Status == "") means the Tier 2
 	// script's contract write failed partway -- e.g. a restricted PATH
 	// truncated the result file via `>` redirect before `cat` could run.
-	// Fall through to exit-code handling so the script's stderr is folded
-	// into the surfaced summary (where the missing-tooling diagnostic
-	// lives) instead of getting buried by a generic "invalid contract"
-	// recovery message.
+	// For create/automate/prime this still falls through to exit-code
+	// handling so the script's stderr is folded into the surfaced summary
+	// (where the missing-tooling diagnostic lives). ENH-188 Option A routes
+	// synchronous Tier 2 EXECUTE instead to recordNonTerminalExecuteError,
+	// which preserves that same stderr folding in the summary while recording
+	// status: error rather than a false exit-code pass.
 	if resolved.Tier == 2 {
+		// BUG-209 section 9: the state recovery may later reconstruct over must be the
+		// file this read looked at, so a newer writer's file is never overwritten.
+		priorState, _ := result.CaptureHandoffState(resultPath)
 		rc, err := result.Read(resultPath)
 		if err == nil && rc.Status != "" && rc.Status != "pending" && rc.Status != "in-progress" {
+			// BUG-210 / REV-272 (CLAUDE-001, CODEX-001, CODEX-003): framework and
+			// mode are GTMS-owned for a reserved Mode 3 EXECUTE adapter (command
+			// scoped -- a same-named automate/prime adapter is ordinary). Every exit
+			// from this terminal branch -- invalid-contract recovery below and the
+			// valid-terminal restore further down -- must record framework: manual
+			// and mode: sync, so a user-edited script that wrote framework: fx or
+			// mode: async cannot attribute the run to a wired framework. The two
+			// other Tier 2 exits are already canonical from GTMS-held state:
+			// recordNonTerminalExecuteError and recoverUnusableContract both stamp
+			// framework from tf.Framework (manual) and mode from resolved.Mode (sync).
+			reservedMode3 := isReservedMode3Execute(resolved)
+
 			// ENH-130: Validate script-written contracts at the Tier 2 read boundary.
 			// Tier 2 adapters write contracts via heredoc, bypassing result.Update validation.
 			if validateErr := result.Validate(rc); validateErr != nil {
 				// Script produced a malformed contract -- treat as adapter error.
 				now := time.Now().UTC().Format(time.RFC3339)
 				originalContent := fmt.Sprintf("status: %s, result: %s, summary: %s", rc.Status, rc.Result, rc.Summary)
+				summary := fmt.Sprintf("adapter wrote invalid contract: %v", validateErr)
 				recoveryUpdate := map[string]interface{}{
 					"status":    "error",
 					"result":    "",
-					"summary":   fmt.Sprintf("adapter wrote invalid contract: %v", validateErr),
+					"summary":   summary,
 					"log":       originalContent,
 					"completed": now,
 				}
-				if updateErr := result.Update(resultPath, recoveryUpdate); updateErr != nil {
-					return nil, fmt.Errorf("recovery contract write failed: %w", updateErr)
+				if reservedMode3 {
+					// REV-273 CLAUDE-002 / CODEX-001: framework and mode are GTMS-owned
+					// and the recovery write is FAIL-CLOSED. (The earlier "already fail
+					// closed" claim was wrong: a plain result.Update returned on failure
+					// without attempting Reconstruct and left the task in-progress, so a
+					// read-only handoff kept framework: fx and replaced a real fx pass.)
+					// Canonicalise framework/mode into the merge, then persist through
+					// persistReservedMode3Handoff: Update, else Reconstruct from a
+					// COMPLETE canonical error contract built from GTMS-held identity.
+					// Route the task to error on every outcome where possible. Only a
+					// double persistence failure returns the combined error with no
+					// pipeline record -- the documented BUG-218 total-persistence limit.
+					recoveryUpdate["framework"] = "manual"
+					recoveryUpdate["mode"] = "sync"
+					canonical := canonicalReservedExecuteErrorContract(ctx, projectRoot, tf, resolved, summary, originalContent, now)
+					if perr := persistReservedMode3Handoff(resultPath, recoveryUpdate, canonical); perr != nil {
+						// REV-274 CLAUDE-001: mirror the valid-terminal branch's
+						// combined-error handling. The task is still routed to error
+						// where possible; if that move ALSO fails, the returned error
+						// carries both the persistence failure and the move failure so
+						// the operator is not left with a silently stranded task. No
+						// pipeline record is written on either path.
+						return nil, failAfterInvocation(projectRoot, tf, perr)
+					}
+					tf.Error = summary
+					if moveErr := task.Move(projectRoot, tf, "error"); moveErr != nil {
+						return nil, fmt.Errorf("moving task file: %w", moveErr)
+					}
+					return &InvokeResult{
+						TaskID:   tf.ID,
+						Adapter:  resolved.Name,
+						Mode:     resolved.Mode,
+						Branch:   tf.Branch,
+						Status:   "error",
+						Summary:  tf.Error,
+						Filename: tf.Filename(),
+						Target:   tf.Target,
+					}, nil
 				}
-				tf.Error = fmt.Sprintf("adapter wrote invalid contract: %v", validateErr)
+				// Non-reserved adapters: a hard error on write failure with NO reconstruct
+				// attempt. BUG-209 section 9: the task goes to error/, so it cannot be left
+				// active to block the next run.
+				if updateErr := persistTerminal(resultPath, recoveryUpdate, nil); updateErr != nil {
+					return nil, failAfterInvocation(projectRoot, tf, fmt.Errorf("recovery contract write failed: %w", updateErr))
+				}
+				tf.Error = summary
 				if moveErr := task.Move(projectRoot, tf, "error"); moveErr != nil {
 					return nil, fmt.Errorf("moving task file: %w", moveErr)
 				}
@@ -913,7 +1262,20 @@ func handleSyncResult(ctx context.Context, projectRoot string, cfg *config.Confi
 				rc.ArtefactHash = artefactHash
 				restoreUpdates["artefact-hash"] = artefactHash
 			}
-			if rc.Framework == "" && tf.Framework != "" {
+			if reservedMode3 {
+				// BUG-210: framework AND mode are GTMS-owned for a reserved Mode 3
+				// execute adapter. The scaffolded scripts are user-editable, so a
+				// script can write framework: fx (or drop it) or mode: async into its
+				// own contract; GTMS overwrites both so no reader attributes the run to
+				// a wired framework and the handoff stays synchronous. Admission
+				// already refused a non-manual --framework/configured framework and a
+				// configured mode: async, so this normalisation only catches the one
+				// route admission cannot: an edited script body. REV-272 CODEX-002
+				// makes the persistence of these two fields fail closed below.
+				for k, v := range normalizeReservedMode3Runtime(rc) {
+					restoreUpdates[k] = v
+				}
+			} else if rc.Framework == "" && tf.Framework != "" {
 				rc.Framework = tf.Framework
 				restoreUpdates["framework"] = tf.Framework
 			}
@@ -976,21 +1338,58 @@ func handleSyncResult(ctx context.Context, projectRoot string, cfg *config.Confi
 				restoreUpdates["summary"] = capped
 				rc.Summary = capped
 			}
-			if len(restoreUpdates) > 0 {
-				_ = result.Update(resultPath, restoreUpdates)
+			// ENH-188 (seventh owner approval): GTMS stamps `completed` on a
+			// VALID TERMINAL Tier 2 EXECUTE contract only when the adapter omitted
+			// it. This is reached only after terminal-contract validation
+			// (result.Validate passed above), so it never rescues a missing,
+			// unreadable, malformed or non-terminal contract -- those were already
+			// routed to recovery or to recordNonTerminalExecuteError. Without this,
+			// a conforming adapter that reports status+result but no completed
+			// would never satisfy isAlreadyPassing (it reads completed), so bulk
+			// execute would rerun it forever once the exit-code fallback (which
+			// stamped completed) was retired. An adapter-provided completed value
+			// is authoritative and left unchanged. Applies to terminal complete,
+			// error and skip alike (all pass through this block).
+			if resolved.Command == "execute" && rc.Completed == "" {
+				rc.Completed = now
+				restoreUpdates["completed"] = now
 			}
 			// Normalise rc.Artefact to a project-relative forward-slash path
 			// so records are portable across machines and worktrees. Tier 2
 			// scripts typically interpolate $GTMS_OUTPUT_FILE (an absolute
 			// path) into the contract; mirror the same normalisation applied
-			// to streaming-captured SavedFiles below.
+			// to streaming-captured SavedFiles below. It is part of the one
+			// restore write, so it lands or fails with the rest.
 			if rc.Artefact != "" && filepath.IsAbs(rc.Artefact) {
-				if rel, relErr := filepath.Rel(projectRoot, rc.Artefact); relErr == nil && !strings.HasPrefix(rel, "..") {
-					relSlash := filepath.ToSlash(rel)
+				if relSlash, relErr := canonicalProjectRel(projectRoot, rc.Artefact); relErr == nil && !strings.HasPrefix(relSlash, "..") {
 					if relSlash != rc.Artefact {
 						rc.Artefact = relSlash
-						_ = result.Update(resultPath, map[string]interface{}{"artefact": relSlash})
+						restoreUpdates["artefact"] = relSlash
 					}
+				}
+			}
+			// BUG-209 section 9: the restore carries GTMS-owned fields including the
+			// ENH-188 `completed` stamp, so this outcome is final only once it lands.
+			// A failure routes the task to error/ before anything reports a pass, moves
+			// it to complete/ or writes an execution record.
+			if len(restoreUpdates) > 0 {
+				if reservedMode3 {
+					// REV-272 CODEX-002: for a reserved Mode 3 execute adapter the
+					// GTMS-owned framework/mode (and the rest of the restored fields)
+					// MUST reach disk before this run is treated as authoritative --
+					// the task completed and a pipeline execution record written.
+					// persistReservedMode3Handoff applies the field merge, then fails
+					// CLOSED by rewriting the whole canonical contract if the merge
+					// fails; it errors only if BOTH writes fail. On that residual
+					// double failure -- the documented BUG-218 total-persistence limit
+					// -- route the task to error and return without completing it or
+					// writing a pipeline record. Every other adapter keeps the
+					// warn-and-continue behaviour below.
+					if perr := persistReservedMode3Handoff(resultPath, restoreUpdates, rc); perr != nil {
+						return nil, failAfterInvocation(projectRoot, tf, perr)
+					}
+				} else if perr := persistTerminal(resultPath, restoreUpdates, rc); perr != nil {
+					return nil, failAfterInvocation(projectRoot, tf, fmt.Errorf("contract restore write failed: %w", perr))
 				}
 			}
 			// ENH-130: task movement decoupled from test outcome.
@@ -1040,11 +1439,13 @@ func handleSyncResult(ctx context.Context, projectRoot string, cfg *config.Confi
 				warnings = append(warnings, "Adapter produced no output.")
 			}
 
-			// Populate artifact data from streaming parser output (if any)
+			// Populate artifact data from streaming parser output (if any).
+			// REV-245: relativise canonically so a linked-project output dir does not
+			// produce "../" artefact paths.
 			relPaths := make([]string, len(invResult.SavedFiles))
 			for i, p := range invResult.SavedFiles {
-				if rel, relErr := filepath.Rel(projectRoot, p); relErr == nil {
-					relPaths[i] = filepath.ToSlash(rel)
+				if rel, relErr := canonicalProjectRel(projectRoot, p); relErr == nil {
+					relPaths[i] = rel
 				} else {
 					relPaths[i] = p
 				}
@@ -1092,13 +1493,30 @@ func handleSyncResult(ctx context.Context, projectRoot string, cfg *config.Confi
 		// and non-zero adapter-exit paths (they share this Tier 2 block); the
 		// diagnostic folds in the process exit code when it is non-zero. A
 		// readable but non-terminal (pending/in-progress/empty-status) handoff
-		// does NOT reach here -- err is nil for it -- so it keeps falling through
-		// to exit-code handling (tc-7d284f41 and the BUG-111 empty-status
-		// diagnostic are preserved).
+		// does NOT reach here -- err is nil for it.
 		if err != nil {
-			return recoverUnusableContract(ctx, projectRoot, tf, resultPath, resolved, invResult, artefactHash, artefactPath, err, "")
+			return recoverUnusableContract(ctx, projectRoot, tf, resultPath, resolved, invResult, priorState, artefactHash, artefactPath, err, "")
 		}
-		// Fall through to exit code handling if status is still pending
+		// ENH-188 Option A: a synchronous Tier 2 EXECUTE adapter must leave a
+		// VALID TERMINAL contract. A readable but non-terminal contract
+		// (empty/pending/in-progress) after the adapter exits is an
+		// execution-integrity error, not a pass -- exit 0 here used to fall
+		// through to the exit-code handler and record status: complete, result:
+		// pass (a false green; the rewritten tc-7d284f41 pins the new behaviour).
+		// This prevents that false pass in normal operation. It does not cover a
+		// total persistence failure, tracked by BUG-218: if both handoff repair
+		// writes fail and the execution record cannot be written or inspected, a
+		// later bulk run may still rely on an older pass. BUG-217 covers the
+		// related stale display. The command dimension lives here, in the invoker, not
+		// in internal/cli/ (CLAUDE rule 2); handleSyncResult is sync-only (its
+		// sole caller gates on resolved.Mode == "sync"), so no mode check is
+		// needed. create/automate/prime keep the exit-code fallback (Owner
+		// Decision 1; tc-09d37e80 is the create regression control).
+		if resolved.Command == "execute" {
+			return recordNonTerminalExecuteError(ctx, projectRoot, cfg, tf, resultPath, resolved, invResult, rc, artefactHash, owner)
+		}
+		// Fall through to exit code handling if status is still non-terminal
+		// (create/automate/prime only).
 	}
 
 	// For Tier 1 (or Tier 2 fallback): use exit code to determine result
@@ -1129,11 +1547,13 @@ func handleSyncResult(ctx context.Context, projectRoot string, cfg *config.Confi
 			"summary":   invResult.Stdout,
 		}
 
-		// Convert SavedFiles to relative paths (always compute, even if empty)
+		// Convert SavedFiles to relative paths (always compute, even if empty).
+		// REV-245: canonical relativisation keeps artefact paths project-relative
+		// when the project root is reached through a symlink or junction.
 		relPaths := make([]string, len(invResult.SavedFiles))
 		for i, p := range invResult.SavedFiles {
-			if rel, err := filepath.Rel(projectRoot, p); err == nil {
-				relPaths[i] = filepath.ToSlash(rel)
+			if rel, err := canonicalProjectRel(projectRoot, p); err == nil {
+				relPaths[i] = rel
 			} else {
 				relPaths[i] = p
 			}
@@ -1173,8 +1593,8 @@ func handleSyncResult(ctx context.Context, projectRoot string, cfg *config.Confi
 		// authoritatively.
 		if invResult.ArtefactOverride != "" {
 			artefactRel := invResult.ArtefactOverride
-			if rel, err := filepath.Rel(projectRoot, invResult.ArtefactOverride); err == nil {
-				artefactRel = filepath.ToSlash(rel)
+			if rel, err := canonicalProjectRel(projectRoot, invResult.ArtefactOverride); err == nil {
+				artefactRel = rel
 			}
 			updates["artefact"] = artefactRel
 			artifactCount = 1
@@ -1206,8 +1626,14 @@ func handleSyncResult(ctx context.Context, projectRoot string, cfg *config.Confi
 		}
 
 		// ENH-130: check result.Update errors at terminal write sites.
-		if updateErr := result.Update(resultPath, updates); updateErr != nil {
-			warnings = append(warnings, fmt.Sprintf("contract update failed: %v", updateErr))
+		// BUG-209 section 9: Tier 1 has no other record of the outcome, so a run whose
+		// terminal write did not land is never a pass, whatever the adapter's exit code,
+		// whether the handoff was refused, kept being replaced or could not be written.
+		if updateErr := persistTerminal(resultPath, updates, nil); updateErr != nil {
+			if blocksReconstruct(updateErr) {
+				return nil, failAfterInvocation(projectRoot, tf, updateErr)
+			}
+			return nil, failAfterInvocation(projectRoot, tf, fmt.Errorf("contract update failed: %w", updateErr))
 		}
 
 		if err := task.Move(projectRoot, tf, "complete"); err != nil {
@@ -1317,8 +1743,13 @@ func handleSyncResult(ctx context.Context, projectRoot string, cfg *config.Confi
 		updates["summary"] = result.CapSummary(summaryText)
 	}
 
-	if updateErr := result.Update(resultPath, updates); updateErr != nil {
-		warnings = append(warnings, fmt.Sprintf("contract update failed: %v", updateErr))
+	// BUG-209 section 9: as on the exit-0 branch above, including for a fail-exit-code
+	// run, which would otherwise route to complete/.
+	if updateErr := persistTerminal(resultPath, updates, nil); updateErr != nil {
+		if blocksReconstruct(updateErr) {
+			return nil, failAfterInvocation(projectRoot, tf, updateErr)
+		}
+		return nil, failAfterInvocation(projectRoot, tf, fmt.Errorf("contract update failed: %w", updateErr))
 	}
 
 	// ENH-130: task movement decoupled from test outcome. A clean adapter
@@ -1358,6 +1789,257 @@ func handleSyncResult(ctx context.Context, projectRoot string, cfg *config.Confi
 	}, nil
 }
 
+// asInvocationError reports whether err wraps an *invocationError.
+func asInvocationError(err error, target **invocationError) bool {
+	return errors.As(err, target)
+}
+
+// ENH-188 Option A: the bound remediation line shown under the first diagnostic
+// line. It must not demand a result unconditionally (a terminal status: error
+// contract without a result is valid), hence "a result when status is complete".
+const nonTerminalExecuteRemediation = "A Tier 2 execute adapter must write a terminal status to $GTMS_RESULT_FILE before it exits, and a result when status is complete"
+
+// recordNonTerminalExecuteError implements ENH-188 Option A for the synchronous
+// Tier 2 EXECUTE path: an adapter that exited leaving a readable but
+// non-terminal result contract (empty / pending / in-progress status) has not
+// reported an outcome. Rather than falling through to the exit-code handler --
+// which on exit 0 records a false status: complete, result: pass -- GTMS records
+// status: error with no result, routes the task to error/, writes a pipeline
+// record so the dashboard shows the error, and returns the bound diagnostic.
+//
+// It is reached only for resolved.Command == "execute" and only from
+// handleSyncResult (sync mode). rc is the readable, parsed contract. The handoff
+// `summary` carries the first diagnostic line; on a non-zero exit the adapter's
+// stderr follows it, so missing-tooling diagnostics stay visible. The second
+// (remediation) line is CLI-only, carried on InvokeResult.Remediation.
+func recordNonTerminalExecuteError(ctx context.Context, projectRoot string, cfg *config.Config, tf *task.TaskFile, resultPath string, resolved *ResolvedAdapter, invResult *InvocationResult, rc *result.ResultContract, artefactHash string, owner *testcase.Owner) (*InvokeResult, error) {
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	// <status> renders the contract status, "empty" when blank (ENH-188).
+	statusWord := rc.Status
+	if statusWord == "" {
+		statusWord = "empty"
+	}
+
+	var firstLine string
+	if invResult.ExitCode == 0 {
+		firstLine = fmt.Sprintf("Execution result was not recorded: the adapter exited 0 without reporting a terminal outcome (result contract status: %s)", statusWord)
+	} else {
+		firstLine = fmt.Sprintf("Execution result was not recorded: the adapter exited with code %d without reporting a terminal outcome (result contract status: %s)", invResult.ExitCode, statusWord)
+	}
+
+	// Handoff summary = first line; on a non-zero exit the stderr follows (as it
+	// does on the exit-code error path today) so the missing-tooling diagnostic
+	// is preserved (ENH-188; tc-84b2389f).
+	summary := firstLine
+	if invResult.ExitCode != 0 {
+		if stderr := strings.TrimRight(invResult.Stderr, "\n"); stderr != "" {
+			summary = firstLine + "\n" + stderr
+		}
+	}
+
+	updates := map[string]interface{}{
+		"status":    "error",
+		"result":    "", // ENH-130: no test outcome; clears any the adapter wrote
+		"summary":   summary,
+		"completed": now,
+		"attempts":  1,
+	}
+	// Preserve the adapter's stdout+stderr in the log so a diagnostic is not lost.
+	if logText := buildFailureLog(invResult.Stdout, invResult.Stderr); logText != "" {
+		updates["log"] = logText
+	}
+	// Restore GTMS-owned fields the adapter may have dropped or corrupted when it
+	// overwrote the handoff, so the reader overlay can join this error to its
+	// framework (mirrors the terminal branch above).
+	//
+	// REV-264 CODEX-001: restore the trusted tf.Framework whenever it DIFFERS, not
+	// only when the adapter left it empty. A non-terminal adapter contract carrying
+	// a stale or wrong non-empty framework would otherwise keep that value on the
+	// durable error, and isAlreadyPassing -- which filters by framework -- would
+	// drop this newest error for the selected framework and fall back to an older
+	// pass. Same for target.
+	if tf.Framework != "" && rc.Framework != tf.Framework {
+		updates["framework"] = tf.Framework
+	}
+	if rc.Target != tf.Target {
+		updates["target"] = tf.Target
+	}
+	if artefactHash != "" && rc.ArtefactHash != artefactHash {
+		updates["artefact-hash"] = artefactHash
+	}
+	if commit, gErr := gitpkg.HeadCommit(ctx, projectRoot); gErr == nil && commit != rc.GitCommit {
+		updates["git-commit"] = commit
+	}
+	if branch, gErr := gitpkg.CurrentBranch(ctx, projectRoot); gErr == nil && branch != rc.GitBranch {
+		updates["git-branch"] = branch
+	}
+	if dirty, gErr := gitpkg.IsDirty(ctx, projectRoot); gErr == nil && (rc.GitDirty == nil || *rc.GitDirty != dirty) {
+		updates["git-dirty"] = dirty
+	}
+	// CLAUDE-001 / CODEX-003 (REV-262): restore the GTMS-held identity and
+	// provenance fields. A `>`-truncated or all-whitespace handoff -- the
+	// empty-status case the invoker comment names -- decodes to a zero-valued
+	// contract, so result.Update would otherwise write an error document with NO
+	// `command: execute`. That breaks result.IsTerminalExecuteContract:
+	// isAlreadyPassing (internal/cli/execute.go) would ignore this newest error
+	// and skip the test case on the earlier pass -- the false green ENH-188 closes
+	// -- and `gtms delete` could not attribute the handoff via
+	// TargetIsTestCaseScoped. The same gap hits an adapter that overwrites the
+	// handoff with a minimal pending/empty document lacking command. These fields
+	// are GTMS-owned, not the adapter's, and match recoverUnusableContract.
+	updates["command"] = resolved.Command
+	updates["task"] = tf.ID
+	updates["adapter"] = resolved.Name
+	updates["mode"] = resolved.Mode
+	if tf.Created != "" {
+		updates["created"] = tf.Created
+	}
+	if tf.ExecutedBy != "" {
+		updates["executed_by"] = tf.ExecutedBy
+	}
+	if tf.Environment != "" {
+		updates["environment"] = tf.Environment
+	}
+
+	var warnings []string
+	// BUG-084 caps so the contract stays bounded.
+	if logText, ok := updates["log"].(string); ok && len(logText) > result.NotesSizeCapBytes {
+		truncated, spill, capErr := result.ApplyLogCap(projectRoot, tf.ID, logText)
+		updates["log"] = truncated
+		if spill != "" {
+			updates["notes-spill"] = spill
+		}
+		if capErr != nil {
+			warnings = append(warnings, fmt.Sprintf("log spill write failed: %v", capErr))
+		}
+	}
+	if summaryText, ok := updates["summary"].(string); ok && len(summaryText) > result.SummarySizeCapBytes {
+		updates["summary"] = result.CapSummary(summaryText)
+	}
+
+	// REV-263 CLAUDE-001 / CODEX-001 fix (b): build the terminal error contract in
+	// memory from GTMS-held state. It is the single source of truth for BOTH the
+	// Reconstruct fallback below AND the pipeline record -- the pipeline record is
+	// NEVER built by re-reading the handoff, so a rejected run can never emit
+	// `outcome: pass` from the adapter's stale document (an adapter that wrote
+	// `status: pending, result: pass` and then made the file unwritable).
+	errRC := &result.ResultContract{
+		Task:      tf.ID,
+		Command:   resolved.Command,
+		Target:    tf.Target,
+		Adapter:   resolved.Name,
+		Mode:      resolved.Mode,
+		Created:   tf.Created,
+		Status:    "error",
+		Framework: tf.Framework,
+		Attempts:  1,
+		Completed: now,
+	}
+	if s, ok := updates["summary"].(string); ok {
+		errRC.Summary = s
+	}
+	if l, ok := updates["log"].(string); ok {
+		errRC.Log = l
+	}
+	if ns, ok := updates["notes-spill"].(string); ok {
+		errRC.NotesSpill = ns
+	}
+	if tf.ExecutedBy != "" {
+		errRC.ExecutedBy = tf.ExecutedBy
+	}
+	if tf.Environment != "" {
+		errRC.Environment = tf.Environment
+	}
+	if artefactHash != "" {
+		errRC.ArtefactHash = artefactHash
+	}
+	stampGitContext(ctx, projectRoot, errRC)
+
+	// Primary write merges the error onto the readable handoff. REV-263
+	// CLAUDE-001 / CODEX-001 fix (a): if that fails, the durable handoff is still
+	// the adapter's non-terminal document, so fall back to result.Reconstruct --
+	// the same safe temp+rename replacement recoverUnusableContract uses, which
+	// replaces even a read-only target through the writable parent dir -- so the
+	// failed run leaves a durable TERMINAL error whenever the file can be
+	// replaced, and isAlreadyPassing sees that error rather than an older pass.
+	//
+	// BUG-209 section 9: through the shared rule. A refusal or a concurrency error fails
+	// the run with no reconstruct and no execution record. A reconstruct refused because
+	// the file changed does the same. After an ordinary failure of both writes, the
+	// trusted error record below is still written: it is the fail-closed veto ENH-188
+	// exists for, and it can only ever record an error.
+	updateErr, reconstructErr := persistTerminalDetail(resultPath, updates, errRC)
+	if blocksReconstruct(updateErr) {
+		return nil, failAfterInvocation(projectRoot, tf, updateErr)
+	}
+	if blocksReconstruct(reconstructErr) {
+		return nil, failAfterInvocation(projectRoot, tf, reconstructErr)
+	}
+	if updateErr != nil {
+		warnings = append(warnings, fmt.Sprintf("contract update failed: %v", updateErr))
+		if reconstructErr != nil {
+			warnings = append(warnings, fmt.Sprintf("contract reconstruct failed: %v", reconstructErr))
+		}
+	}
+
+	// CLAUDE-002 / CODEX-001 (REV-262): the task move is unconditional so a
+	// readable-but-unwritable handoff never strands the task in in-progress and
+	// blocks the next run.
+	tf.Error = firstLine
+	moveErr := task.Move(projectRoot, tf, "error")
+
+	// REV-263 fix (b) / REV-264 CODEX-002: ALWAYS write the trusted execution
+	// record from the in-memory error contract (never re-read the handoff). It
+	// carries tf.Target + tf.Framework + outcome error independently of the
+	// adapter's possibly-damaged handoff, so it survives even when BOTH handoff
+	// writes failed (a read-only target on Windows, where rename cannot replace
+	// it). isAlreadyPassing consults this record and fails closed on it, so a
+	// rejected run can never be masked by an older pass even with an identity-free
+	// leftover handoff. WriteExecuteResultsFile keys on tf.Type.
+	_, pWarn, pErr := buildPipelineRecords(projectRoot, cfg, tf, errRC, owner)
+	warnings = append(warnings, pWarn...)
+	if pErr != nil {
+		warnings = append(warnings, fmt.Sprintf("Pipeline record could not be written: %v", pErr))
+	}
+
+	// A hard Go error only when GTMS could leave NO durable, attributable error
+	// signal: the task could not be routed to error/, OR both handoff writes AND
+	// the trusted execution record failed (REV-264: "if that record also cannot
+	// be written, return non-zero reporting both failures"). Otherwise return an
+	// error-status InvokeResult so the CLI shows the BOUND diagnostic alongside the
+	// persistence warnings and still exits non-zero -- not a raw Go error.
+	//
+	// REV-265 CLAUDE-002 / CODEX-002: both hard-error returns carry the COMPLETE
+	// bound diagnostic -- the first line, the remediation, and every persistence
+	// cause -- so single and bulk callers show it in full (the owner's eighth
+	// approval). firstLine already folds in the exit code, the contract status and
+	// (non-zero) the adapter's stderr.
+	handoffUnwritten := updateErr != nil && reconstructErr != nil
+	if moveErr != nil {
+		return nil, fmt.Errorf("%s\n    %s\n    moving task file: %v (contract update: %v; reconstruct: %v; execution record: %v)",
+			firstLine, nonTerminalExecuteRemediation, moveErr, updateErr, reconstructErr, pErr)
+	}
+	if handoffUnwritten && pErr != nil {
+		return nil, fmt.Errorf("%s\n    %s\n    could not persist a durable error (contract update failed: %v; reconstruct failed: %v; execution record failed: %v)",
+			firstLine, nonTerminalExecuteRemediation, updateErr, reconstructErr, pErr)
+	}
+
+	return &InvokeResult{
+		TaskID:      tf.ID,
+		Adapter:     resolved.Name,
+		Mode:        resolved.Mode,
+		Branch:      tf.Branch,
+		Status:      "error",
+		Result:      "",
+		Summary:     summary,
+		Remediation: nonTerminalExecuteRemediation,
+		Filename:    tf.Filename(),
+		Warnings:    warnings,
+		Target:      tf.Target,
+	}, nil
+}
+
 // recoverUnusableContract handles the BUG-191 fail-closed path: a synchronous
 // Tier 2 adapter finished but left its result handoff unusable (unparseable,
 // missing, or unreadable). It reconstructs a valid error handoff from GTMS-held
@@ -1387,7 +2069,13 @@ func handleSyncResult(ctx context.Context, projectRoot string, cfg *config.Confi
 // are reported to the operator and both are persisted, and the violations are
 // also kept under the contract's own validation-error key so the durable record
 // keeps the shape BUG-038 specifies.
-func recoverUnusableContract(ctx context.Context, projectRoot string, tf *task.TaskFile, resultPath string, resolved *ResolvedAdapter, invResult *InvocationResult, artefactHash, artefactPath string, readErr error, validationSummary string) (*InvokeResult, error) {
+func recoverUnusableContract(ctx context.Context, projectRoot string, tf *task.TaskFile, resultPath string, resolved *ResolvedAdapter, invResult *InvocationResult, prior result.HandoffState, artefactHash, artefactPath string, readErr error, validationSummary string) (*InvokeResult, error) {
+	// BUG-209 section 9: never reconstruct after a safety refusal or a concurrency error,
+	// because that could overwrite the newer writer. No record is written.
+	if blocksReconstruct(readErr) {
+		return nil, failAfterInvocation(projectRoot, tf, readErr)
+	}
+
 	// readErr already carries "parsing result contract: ..." for malformed YAML
 	// and "reading result contract: ..." for a missing or unreadable file, so
 	// the operator- and handoff-facing diagnostic names the failure precisely.
@@ -1504,7 +2192,8 @@ func recoverUnusableContract(ctx context.Context, projectRoot string, tf *task.T
 		}
 	}
 
-	reconstructErr := result.Reconstruct(resultPath, rc)
+	// BUG-209 section 9: only over the file that was found unusable.
+	reconstructErr := persistReconstruct(resultPath, rc, prior)
 
 	// REV-164 CLAUDE-003 / CODEX-001: route the task to error/ even when the
 	// handoff rewrite failed. BUG-191's Expected Behavior requires the task to
@@ -1728,8 +2417,10 @@ func scanOutputDir(projectRoot, outputDir string, exclude map[string]struct{}) [
 			}
 		}
 		absPath := filepath.Join(outputDir, name)
-		if rel, relErr := filepath.Rel(projectRoot, absPath); relErr == nil {
-			paths = append(paths, filepath.ToSlash(rel))
+		// REV-245: canonical relativisation so a direct write under a linked-project
+		// output dir is recorded as a normal project-relative path, not "../".
+		if rel, relErr := canonicalProjectRel(projectRoot, absPath); relErr == nil {
+			paths = append(paths, rel)
 		}
 	}
 
@@ -1752,12 +2443,20 @@ func rejectMultiFileAutomate(projectRoot string, tf *task.TaskFile, resultPath s
 	now := time.Now().UTC().Format(time.RFC3339)
 	summary := multiFileAutomateSummary(invResult.SavedFiles)
 
-	_ = result.Update(resultPath, map[string]interface{}{
+	// BUG-209 section 9: surface a handoff-write failure as a warning, keeping the
+	// rejection, rather than discarding it.
+	var warnings []string
+	if updErr := persistTerminal(resultPath, map[string]interface{}{
 		"status":    "error",
 		"completed": now,
 		"attempts":  1,
 		"summary":   summary,
-	})
+	}, nil); updErr != nil {
+		if blocksReconstruct(updErr) {
+			return nil, failAfterInvocation(projectRoot, tf, updErr)
+		}
+		warnings = append(warnings, fmt.Sprintf("contract update failed: %v", updErr))
+	}
 
 	tf.Error = summary
 	if err := task.Move(projectRoot, tf, "error"); err != nil {
@@ -1777,6 +2476,7 @@ func rejectMultiFileAutomate(projectRoot string, tf *task.TaskFile, resultPath s
 		Summary:  summary,
 		Filename: tf.Filename(),
 		Target:   tf.Target,
+		Warnings: warnings,
 	}, nil
 }
 
@@ -2082,6 +2782,308 @@ func cleanupExistingOutputForOwner(claims *ArtefactClaimSet, dir, target string)
 		_ = removeArtefactFile(path)
 	}
 	return retained, nil
+}
+
+// quarantineFailure records a rejected spec whose move failed: it is still at path, and
+// err explains why the quarantine could not complete (REV-209 CODEX-002/CLAUDE-004).
+type quarantineFailure struct {
+	path string
+	err  error
+}
+
+// projectRelSlash renders abs as a project-relative, forward-slash path (the stable form
+// used in every create-failure diagnostic). Falls back to the forward-slashed absolute
+// path if it cannot be made relative.
+func projectRelSlash(projectRoot, abs string) string {
+	if rel, err := filepath.Rel(projectRoot, abs); err == nil {
+		return filepath.ToSlash(rel)
+	}
+	return filepath.ToSlash(abs)
+}
+
+// canonicalProjectRel renders abs as a stable, project-relative forward-slash path that
+// stays inside the project even when the project root is reached through a symlink or
+// junction (REV-245; BUG-214 Owner Decision 13 / AC16).
+//
+// BUG-214 made create's ctx.OutputDir the symlink-resolved (canonical) directory, so the
+// artefact files written under it are canonical while the invocation's projectRoot is
+// still the uncanonicalised link form (filepath.Abs of the cwd). A plain
+// filepath.Rel(projectRoot, canonicalFile) then yields "../project/..." for a
+// linked-project create.
+//
+// The algorithm (REV-245 delta round 2, D2-CLAUDE-001 / D2-CODEX-001):
+//
+//  1. Try the plain lexical filepath.Rel(projectRoot, abs). If it succeeds and the result
+//     is neither absolute nor "..."-escaping, return it UNCHANGED. Every path today --
+//     automate included, and in particular an output-dir that runs through an in-project
+//     symlinked folder -- is preserved exactly, so the BuiltinAutomate pending-wiring
+//     comparison (plain filepath.Rel at builtin_action.go) still matches and AC15 / Owner
+//     Decision 11 hold.
+//  2. Only when that fails or escapes (the linked-project-root case) reconcile the two
+//     spellings of the root: resolve the root with pathsafe.CanonicalRoot, resolve ONLY
+//     the artefact's PARENT directory with EvalSymlinks, re-attach the original base name,
+//     and relativise. The final component is never resolved, so a symlink artefact in the
+//     output dir is recorded as the entry that was created, not its target -- an in-project
+//     target is not misidentified and an external target cannot produce a "../" path (AC16).
+//
+// The Rel error from the fallback is returned unchanged so callers keep their existing
+// fallback behaviour.
+func canonicalProjectRel(projectRoot, abs string) (string, error) {
+	// REV-245 D3-CODEX-001: a real parent-traversal test, not a HasPrefix(rel, "..").
+	// A valid artefact whose name merely begins with two dots (e.g. "..link-specs/x")
+	// is NOT an escape and must take the plain lexical branch unchanged.
+	if rel, err := filepath.Rel(projectRoot, abs); err == nil &&
+		!filepath.IsAbs(rel) && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return filepath.ToSlash(rel), nil
+	}
+
+	// Fallback: reconcile only the root spelling, never the artefact leaf.
+	root := pathsafe.CanonicalRoot(projectRoot)
+	parent := filepath.Dir(abs)
+	if resolvedParent, err := filepath.EvalSymlinks(parent); err == nil {
+		parent = resolvedParent
+	}
+	file := filepath.Join(parent, filepath.Base(abs))
+	rel, err := filepath.Rel(root, file)
+	if err != nil {
+		return "", err
+	}
+	return filepath.ToSlash(rel), nil
+}
+
+// ownedByBatch reports whether a rejected spec's canonical filename ID is one of the IDs
+// GTMS generated for this invocation (REV-209 CODEX-001/CLAUDE-001). Only a valid-shape
+// filename (tc-{8hex}.md or tc-{8hex}-slug.md) yields a canonical ID; a malformed filename
+// has none and is therefore never attributable, so it is never moved.
+func ownedByBatch(file string, batchSet map[string]struct{}) bool {
+	m := validShapePattern.FindStringSubmatch(file)
+	if m == nil {
+		return false
+	}
+	_, ok := batchSet[m[1]]
+	return ok
+}
+
+// quarantineRejectedSpec moves one rejected spec out of the cases tree into the task's
+// error artefacts folder (gtms/tasks/error/<task-id>/artifacts/<original-filename>),
+// byte-for-byte (BUG-203 Owner Decision 4). file is a basename inside outputDir. A rename
+// is preferred; a cross-device rename falls back to copy+remove.
+//
+// REV-209 CODEX-002/CLAUDE-004 (honest reporting): every step is checked (MkdirAll,
+// rename, copy, source removal), and the quarantine is only reported as successful once
+// the artefact exists AND the source is gone. It returns (destRel, true, nil) on a proven
+// quarantine, or ("", false, err) when the move did not complete -- the caller then
+// reports the file's actual (unchanged) location, never claiming preservation.
+// REV-209 R3-CODEX-003 (partial): src and dest are the paths pathsafe.ResolveUnderRoot
+// returned from the caller's containment check, and the move is performed on those checked
+// resolved paths rather than re-deriving lexical ones. Fully eliminating the remaining
+// parent-swap race (a directory component swapped for an escaping symlink BETWEEN the check
+// and the rename/copy) would require handle-relative filesystem operations (openat/renameat
+// with O_NOFOLLOW, or an os.Root-style rooted FS), which Go's stdlib does not portably
+// expose here; that residual race is outside GTMS's local-user threat model and is
+// documented as a dismissed remainder in REV-209.
+func quarantineRejectedSpec(projectRoot, src, dest string) (string, bool, error) {
+	if fi, err := os.Lstat(src); err != nil {
+		return "", false, err // already gone or unreadable -- nothing to preserve
+	} else if !fi.Mode().IsRegular() {
+		// Defence in depth: the caller already rejected non-regular sources; never move one.
+		return "", false, fmt.Errorf("source is not a regular file")
+	}
+	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+		return "", false, err
+	}
+	if err := os.Rename(src, dest); err != nil {
+		// Cross-device or other rename failure: copy the bytes, then remove the source.
+		data, rerr := os.ReadFile(src)
+		if rerr != nil {
+			return "", false, rerr
+		}
+		if werr := os.WriteFile(dest, data, 0o644); werr != nil {
+			return "", false, werr
+		}
+		if rmErr := os.Remove(src); rmErr != nil {
+			// Bytes were copied but the source could not be removed: NOT quarantined --
+			// the invalid spec is still in the cases tree.
+			return "", false, fmt.Errorf("copied to %s but could not remove the source: %w", filepath.ToSlash(dest), rmErr)
+		}
+	}
+	// Prove the quarantine: the artefact must exist and the source must be gone.
+	if _, err := os.Stat(dest); err != nil {
+		return "", false, fmt.Errorf("artefact missing after move: %w", err)
+	}
+	if _, err := os.Stat(src); err == nil {
+		return "", false, fmt.Errorf("source still present after move")
+	} else if !os.IsNotExist(err) {
+		return "", false, err
+	}
+	// REV-209 R4-CLAUDE-001 / R4-CODEX-002: report dest relative to the RESOLVED project
+	// root. ResolveUnderRoot resolves both the (now existing) artefact and the root (all
+	// symlinks followed, Windows 8.3 short names expanded), so the relative path is
+	// layout-relative whichever spelling dest or projectRoot uses. Relativising a resolved
+	// path against the unresolved root produced a spurious ../private/... or absolute path
+	// in the "preserved at" line.
+	if _, rel, err := pathsafe.ResolveUnderRoot(projectRoot, dest); err == nil {
+		return rel, true, nil
+	}
+	return projectRelSlash(pathsafe.CanonicalRoot(projectRoot), dest), true, nil
+}
+
+// quarantineCreateFailureSummary builds the error summary for a create whose output
+// failed validation under the quarantine + ownership contract (BUG-203 AC10/AC11): the
+// fixed headline, one line per quarantined artefact, one line per unattributable file
+// left in place (with the fixed inspection guidance), one line per failed move (reporting
+// the file's actual location), then the established FormatValidationErrors detail block
+// (kept verbatim so the "spec validation failed" preamble and the per-file reasons still
+// surface for every validation failure). The AC6 producer hint is appended by the caller.
+// REV-209 R3-CLAUDE-001: every path printed here is adapter-controlled (the filename the
+// adapter wrote), so it is rendered through testcase.SanitizeIdentityString -- matching the
+// FormatValidationErrors block below -- so a filename carrying ANSI escapes or other control
+// characters (legal on Linux) cannot reach the terminal, the task Error field or the handoff
+// summary unsanitised. The raw paths are used for the filesystem operations in the caller;
+// only the RENDERING is sanitised.
+func quarantineCreateFailureSummary(violations []SpecValidationError, preserved, unattributable, notRegular, pathUnsafe []string, moveFailed []quarantineFailure) string {
+	var b strings.Builder
+	b.WriteString("Created spec failed validation.")
+	for _, p := range preserved {
+		fmt.Fprintf(&b, "\n    Rejected output preserved at: %s", testcase.SanitizeIdentityString(p))
+	}
+	for _, p := range unattributable {
+		fmt.Fprintf(&b, "\n    Rejected output was left in place because GTMS could not prove this create owns it: %s. Inspect concurrent create activity, then repair or remove the file if appropriate.", testcase.SanitizeIdentityString(p))
+	}
+	for _, p := range notRegular {
+		fmt.Fprintf(&b, "\n    Rejected output was left in place because it is not a regular file: %s.", testcase.SanitizeIdentityString(p))
+	}
+	for _, p := range pathUnsafe {
+		fmt.Fprintf(&b, "\n    Rejected output was left in place because its path is outside the project or cannot be safely resolved: %s.", testcase.SanitizeIdentityString(p))
+	}
+	for _, mf := range moveFailed {
+		reason := ""
+		if mf.err != nil {
+			reason = " (" + testcase.SanitizeIdentityString(mf.err.Error()) + ")"
+		}
+		fmt.Fprintf(&b, "\n    Rejected output could not be preserved and remains at: %s%s", testcase.SanitizeIdentityString(mf.path), reason)
+	}
+	if detail := FormatValidationErrors(violations); detail != "" {
+		b.WriteString("\n")
+		b.WriteString(detail)
+	}
+	return b.String()
+}
+
+// staleHeaderSignatures are the SpecValidationError reason substrings that mark a
+// pre-v2 header a stale v0.3.x scaffolded producer emitted (BUG-203 AC6). They are the
+// rendered forms of the testcase schema-discriminator failures (internal/testcase
+// SchemaFailureMissingSchemaDiscriminator / MalformedSchemaDiscriminator /
+// UnsupportedSchemaVersion / NoFrontmatterBlock). Other create validation failures
+// (duplicate / mismatched / invented id) are NOT refreshable via gtms init --force and
+// get no hint.
+var staleHeaderSignatures = []string{
+	"missing schema discriminator",
+	"malformed or empty schema discriminator",
+	"unsupported schema version",
+	"no frontmatter block",
+}
+
+// shippedPresetProducerSuffixes are the create producers that gtms init --force --preset
+// upgrades, keyed by their path BELOW the GTMS parent folder (the Tier 0 built-in's role
+// testcase templates and the standard scaffolded create scripts). A producer is recognised
+// only when its first path segment is the project's ACTIVE parent folder (layout.ParentDir),
+// so a renamed-parent project (ENH-098, e.g. testing/test/templates/...) is still recognised
+// as shipped, while an unrelated folder that happens to hold a same-named file is not
+// (REV-209 R4-CODEX-002).
+var shippedPresetProducerSuffixes = map[string]struct{}{
+	"test/templates/manual-testcase.template.md": {},
+	"test/templates/agent-testcase.template.md":  {},
+	"adapters/manual-create-script.sh":           {},
+	"adapters/agent-create-script.sh":            {},
+}
+
+// shippedDemoCreateProducer is the demo create adapter, refreshed by gtms init --force --demo.
+const shippedDemoCreateProducer = "_demo/adapters/create-demo.sh"
+
+// presetRefreshSentence is the exact actionable command for a non-demo shipped producer.
+// Plain `gtms init --force` is a no-op in an existing project (it lists presets and exits),
+// so the hint must name the preset form (REV-209 R2-CLAUDE-001 / R2-CODEX-002). ASCII `--`.
+const presetRefreshSentence = "Run gtms init --force --preset <preset>, replacing <preset> with manual, bats, or playwright -- use the preset originally used for this project."
+
+// staleScaffoldProducerHint returns a one-line hint for a create whose output failed with a
+// stale pre-v2 header (BUG-203 AC6), or "" when the failure is not a stale-header failure.
+//
+// REV-209 R2-CODEX-003 (correct attribution): scaffold-refresh guidance is offered ONLY
+// when the producer is an exact shipped, upgradeable source -- the Tier 0 built-in's role
+// template (attributed to the built-in only), the standard scaffolded create scripts, or
+// the demo create script. For any other command or script adapter (custom code), the hint
+// names the adapter and its script path and tells the user to fix the v2 header it emits;
+// it never blames a scaffold template and never suggests init can repair custom code.
+func staleScaffoldProducerHint(resolved *ResolvedAdapter, ac *AdapterContext, projectRoot string, violations []SpecValidationError) string {
+	stale := false
+	for _, v := range violations {
+		for _, sig := range staleHeaderSignatures {
+			if strings.Contains(v.Reason, sig) {
+				stale = true
+			}
+		}
+	}
+	if !stale {
+		return ""
+	}
+
+	// Resolve the producer. The role template is attributed ONLY to the Tier 0 built-in
+	// (a configured command adapter receives a TemplateFile too but may never read it).
+	// REV-209 R4-CODEX-002: relativise the template through ResolveUnderRoot, whose
+	// relative return is computed against the RESOLVED project root, so recognition is
+	// correct even when the root is a symlink or a Windows 8.3 short path.
+	script := ""
+	producer := ""
+	if resolved != nil && resolved.Config != nil && resolved.Config.Script != "" {
+		script = filepath.ToSlash(resolved.Config.Script)
+		producer = script
+	} else if resolved != nil && resolved.Tier == 0 && ac != nil && ac.TemplateFile != "" {
+		if _, rel, err := pathsafe.ResolveUnderRoot(projectRoot, ac.TemplateFile); err == nil {
+			producer = rel
+		} else {
+			producer = projectRelSlash(projectRoot, ac.TemplateFile)
+		}
+	}
+
+	parent := layout.ParentDir()
+
+	// BUG-207 Owner Decision 7: `gtms init --force --preset` is now layout-aware and
+	// refreshes a renamed GTMS folder in place, so a shipped producer in a renamed
+	// project gets the same normal preset-refresh guidance as the default layout.
+	// isShippedPresetCreateProducer is already scoped to the active parent, so a
+	// renamed producer (e.g. testing/test/templates/...) is recognised as shipped.
+	// No user-facing string names BUG-207 (ENH-214).
+	switch {
+	case producer == shippedDemoCreateProducer:
+		return fmt.Sprintf("the invalid header was produced by %s; refresh it with gtms init --force --demo.", producer)
+	case isShippedPresetCreateProducer(producer, parent):
+		return fmt.Sprintf("the invalid header was produced by %s. %s", producer, presetRefreshSentence)
+	default:
+		// Custom command or custom script adapter: do not blame a scaffold asset and do
+		// not suggest init. Name the adapter and direct the user to fix its output.
+		name := "the create"
+		if resolved != nil && resolved.Name != "" {
+			name = "the " + resolved.Name
+		}
+		if script != "" {
+			return fmt.Sprintf("%s create adapter (script %s) wrote a spec without a valid test-case/v2 header; update the adapter so its output declares gtms_schema: \"test-case/v2\".", name, script)
+		}
+		return fmt.Sprintf("%s create adapter wrote a spec without a valid test-case/v2 header; update the adapter so its output declares gtms_schema: \"test-case/v2\".", name)
+	}
+}
+
+// isShippedPresetCreateProducer reports whether producer (a project-relative, forward-slash
+// path) is one of the preset-upgradeable shipped create producers under the active GTMS
+// parent folder parent (REV-209 R4-CODEX-002).
+func isShippedPresetCreateProducer(producer, parent string) bool {
+	producer = strings.TrimPrefix(path.Clean(producer), "./")
+	rest, ok := strings.CutPrefix(producer, parent+"/")
+	if !ok {
+		return false
+	}
+	_, ok = shippedPresetProducerSuffixes[rest]
+	return ok
 }
 
 // findProjectRoot locates the project root by walking up from CWD.

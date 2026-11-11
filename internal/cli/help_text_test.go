@@ -845,6 +845,7 @@ func TestENH180_SkillsTopicPrintsOverview(t *testing.T) {
 		"gtms-tests-execute",
 		"gtms-tests-prime",
 		"gtms-tests-verify-intent",
+		"gtms-okf-index",
 		"gtms/skills/",
 		".claude/skills/",
 	}
@@ -937,6 +938,7 @@ func TestENH180_SkillFencedBlocksResolveAgainstCobraTree(t *testing.T) {
 		{"gtms-tests-execute", readEmbeddedSkill(t, "skills/gtms-tests-execute/SKILL.md")},
 		{"gtms-tests-prime", readEmbeddedSkill(t, "skills/gtms-tests-prime/SKILL.md")},
 		{"gtms-tests-verify-intent", readEmbeddedSkill(t, "skills/gtms-tests-verify-intent/SKILL.md")},
+		{"gtms-okf-index", readEmbeddedSkill(t, "skills/gtms-okf-index/SKILL.md")},
 	}
 
 	for _, sf := range skillFiles {

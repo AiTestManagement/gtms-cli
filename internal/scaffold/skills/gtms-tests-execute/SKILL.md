@@ -46,7 +46,7 @@ the default -- the evidence trail is the point.
    gtms execute <folder> --framework <framework>
    ```
 
-   A bulk run exits non-zero if ANY test case fails or errors -- that is an
+   A bulk run exits non-zero if any test case is not run, fails, or errors -- that is an
    aggregate exit code, not a tooling problem. Read the results before
    concluding anything.
 3. Read the outcome on `gtms status <tc-id>`. Keep the two axes separate:
@@ -57,9 +57,11 @@ the default -- the evidence trail is the point.
    script, find the gap -- then classify and report, do not fix.
    - Script does not match spec: report the exact gap and the remediation
      (the `gtms-tests-verify-intent` skill for a full sweep, or a
-     user-triggered fix step). Note in the report that after any script
-     fix, the wiring must be refreshed with `gtms link --refresh <tc-id>`
-     before re-executing.
+     user-triggered fix step). Note in the report that after a script fix,
+     re-running `gtms execute` accepts the changed script by default. A
+     refresh (`gtms link --refresh <tc-id> --framework <framework>`) is
+     needed only after a spec change, or after a script fix in a project
+     that sets `execute.on-script-change: refuse`.
    - Spec is wrong: flag it to the user; do not silently rewrite the spec.
    - Script matches spec and the subject fails: record the triage:
 
@@ -69,8 +71,10 @@ the default -- the evidence trail is the point.
 
    Never re-execute blindly -- the same cause produces the same failure.
 5. Verify the end state with `gtms status <folder>` and `gtms gaps <folder>`.
-   Treat any stale-wiring warning as a wiring problem to resolve, never as a
-   pass.
+   Treat any changed-spec or changed-script warning as a problem to resolve,
+   never as a pass. A changed script clears on the next `gtms execute` unless
+   the project sets `execute.on-script-change: refuse`; a changed spec needs
+   review and a per-test-case refresh.
 
 ## Report
 

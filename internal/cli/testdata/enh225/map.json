@@ -1,0 +1,128 @@
+{
+  "groups": [
+    {
+      "requirement": "ENH-225-FIXTURE",
+      "test_cases": [
+        {
+          "test_case_id": "tc-11111111",
+          "slug": "spec-drift",
+          "title": "Spec drift fixture",
+          "create_status": "complete",
+          "automate_status": "complete",
+          "execute_status": "none",
+          "last_result": "none",
+          "artefact_path": "test/acceptance/tc-11111111.bats",
+          "stale": true,
+          "available_frameworks": [
+            "bats"
+          ],
+          "wired": true,
+          "manual_ready": false,
+          "frameworks": [
+            {
+              "framework": "bats",
+              "wired": true,
+              "wiring_drift": "testcase",
+              "artefact_present": true,
+              "artefact": "test/acceptance/tc-11111111.bats",
+              "wired_adapter": "bats-runner",
+              "wiring_bootstrap": "ready"
+            }
+          ],
+          "selected_framework": "bats"
+        },
+        {
+          "test_case_id": "tc-22222222",
+          "slug": "script-drift",
+          "title": "Script drift fixture",
+          "create_status": "complete",
+          "automate_status": "complete",
+          "execute_status": "none",
+          "last_result": "none",
+          "artefact_path": "test/acceptance/tc-22222222.bats",
+          "stale": true,
+          "available_frameworks": [
+            "bats"
+          ],
+          "wired": true,
+          "manual_ready": false,
+          "frameworks": [
+            {
+              "framework": "bats",
+              "wired": true,
+              "wiring_drift": "artefact",
+              "artefact_present": true,
+              "artefact": "test/acceptance/tc-22222222.bats",
+              "wired_adapter": "bats-runner",
+              "wiring_bootstrap": "ready"
+            }
+          ],
+          "selected_framework": "bats"
+        },
+        {
+          "test_case_id": "tc-33333333",
+          "slug": "both-drift",
+          "title": "Both drift fixture",
+          "create_status": "complete",
+          "automate_status": "complete",
+          "execute_status": "none",
+          "last_result": "none",
+          "artefact_path": "test/acceptance/tc-33333333.bats",
+          "stale": true,
+          "available_frameworks": [
+            "bats"
+          ],
+          "wired": true,
+          "manual_ready": false,
+          "frameworks": [
+            {
+              "framework": "bats",
+              "wired": true,
+              "wiring_drift": "both",
+              "artefact_present": true,
+              "artefact": "test/acceptance/tc-33333333.bats",
+              "wired_adapter": "bats-runner",
+              "wiring_bootstrap": "ready"
+            }
+          ],
+          "selected_framework": "bats"
+        },
+        {
+          "test_case_id": "tc-44444444",
+          "slug": "no-drift",
+          "title": "No drift control",
+          "create_status": "complete",
+          "automate_status": "complete",
+          "execute_status": "none",
+          "last_result": "none",
+          "artefact_path": "test/acceptance/tc-44444444.bats",
+          "available_frameworks": [
+            "bats"
+          ],
+          "wired": true,
+          "manual_ready": false,
+          "frameworks": [
+            {
+              "framework": "bats",
+              "wired": true,
+              "wiring_drift": "",
+              "artefact_present": true,
+              "artefact": "test/acceptance/tc-44444444.bats",
+              "wired_adapter": "bats-runner",
+              "wiring_bootstrap": "ready"
+            }
+          ],
+          "selected_framework": "bats"
+        }
+      ]
+    }
+  ],
+  "unlinked": [],
+  "summary": {
+    "total_requirements": 1,
+    "total_test_cases": 4,
+    "automated": 4,
+    "executed": 0,
+    "unlinked_count": 0
+  }
+}

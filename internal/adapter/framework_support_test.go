@@ -75,11 +75,16 @@ func TestBATSSupport_GenerateSkeleton_Content(t *testing.T) {
 	// Verify BATS-specific content is present
 	assert.Contains(t, content, "#!/usr/bin/env bats")
 	assert.Contains(t, content, "setup_file()")
-	assert.Contains(t, content, "_common_setup")
 	assert.Contains(t, content, "@test")
 	assert.Contains(t, content, "tc-abcd1234")
-	assert.Contains(t, content, "teardown()")
-	assert.Contains(t, content, "common-setup.bash")
+
+	// BUG-202: the shipped skeleton is self-contained. setup_file is kept,
+	// reduced to the PROJECT_ROOT export; the helper load, the _common_setup
+	// call, and the empty setup()/teardown() blocks were removed.
+	assert.Contains(t, content, "export PROJECT_ROOT=")
+	assert.NotContains(t, content, "_common_setup")
+	assert.NotContains(t, content, "teardown()")
+	assert.NotContains(t, content, "common-setup.bash")
 
 	// No unsubstituted placeholders remain
 	assert.NotContains(t, content, "${TESTCASE_ID}")

@@ -197,7 +197,9 @@ func TestSourceShape_TriageUsesSharedResultScanner(t *testing.T) {
 	code := stripGoComments(t, "triage.go", string(src))
 
 	// Positive: triage selects results through the shared scanner.
-	assert.Contains(t, code, "scanTerminalResultsForTC(",
+	// BUG-209 REV-277 CODEX-006: overlayForTCFromScan is the same shared join, run against
+	// the one scan the command already holds.
+	assert.Contains(t, code, "overlayForTCFromScan(",
 		"triage.go must select the latest terminal result through the shared "+
 			"scanner so it inherits the ENH-146 join-precedence and ambiguity rules")
 

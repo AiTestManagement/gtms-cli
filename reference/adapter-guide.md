@@ -156,7 +156,7 @@ gtms execute tc-a1b2c3d
 
 > **Prerequisite:** `gtms execute` requires a wiring record for the TC and framework (written by `gtms automate` or `gtms link`). The wiring record has no lifecycle status -- if none exists, execute fails with `No wiring record found for 'tc-XXX' (framework: bats)`.
 
-> **`artefact:` is a cache, not the source of truth.** The stored path is an opportunistic pointer to the spec file; the canonical identity is the **TC ID plus framework**. `gtms execute` reads the artefact path straight from the wiring record and runs it -- filenames need not contain the TC ID (that rule was dropped to support shared-file frameworks like Playwright grouped tests, where the TC ID lives only in the test name). It does **not** glob the project tree for `tc-{id}`, and it does **not** rewrite or auto-heal the record. If the stored path is missing from disk, execute surfaces that failure rather than searching for a replacement -- relink the record at the right file with `gtms link ... --artefact <path> --force` (or refresh it with `gtms link --refresh`), do not rely on a glob. (Changing which ADAPTER the record names is the third repair, repoint: `gtms link <tc-id> --adapter <name>` -- see Useful flags below.) Adapter authors should write the `artefact:` field accurately on automate so the pointer stays valid and the record remains a reliable human breadcrumb.
+> **`artefact:` is a cache, not the source of truth.** The stored path is an opportunistic pointer to the spec file; the canonical identity is the **TC ID plus framework**. `gtms execute` reads the artefact path straight from the wiring record and runs it -- filenames need not contain the TC ID (that rule was dropped to support shared-file frameworks like Playwright grouped tests, where the TC ID lives only in the test name). It does **not** glob the project tree for `tc-{id}`, and it does **not** rewrite the `artefact:` path or auto-heal the record. (Its only wiring writes are to `artefact-hash`: settling `pending` on first run and, under the default `execute.on-script-change: accept`, recording the hash of a changed script it accepts.) If the stored path is missing from disk, execute reports the missing script and suggests restoring it or regenerating it with `gtms automate <tc-id> --framework <fw> --force`; it never searches for a replacement. To point the record at a different file, relink it with `gtms link ... --artefact <path> --force`; do not rely on a glob. A refresh cannot fix a missing script. (Changing which ADAPTER the record names is the third repair, repoint: `gtms link <tc-id> --adapter <name>` -- see Useful flags below.) Adapter authors should write the `artefact:` field accurately on automate so the pointer stays valid and the record remains a reliable human breadcrumb.
 
 ### Full pipeline at a glance
 
@@ -183,6 +183,13 @@ substrate. Dashboards join the handoff onto wiring (by testcase + framework)
 and surface per-framework state via `frameworks[].last_executed_here` /
 `frameworks[].last_result_here` / `frameworks[].last_status_here` in
 `gtms status --json`.
+
+A manual result file adds a `frameworks[]` entry with `framework: "manual"`
+and `wired: false` -- on a wired test case and on a manual-only one alike, so a
+manual-only test case no longer has an empty `frameworks[]`. That entry carries
+`last_result_here` / `last_status_here` once a result is recorded, but never
+`last_executed_here`, `wired_adapter` or `last_run_adapter`. To test whether a
+test case has automation wiring, read its top-level `wired` field.
 
 ---
 
@@ -250,7 +257,7 @@ The dashboard renders linked TCs identically to automate-produced TCs (`✓ ✓ 
 ### Useful flags
 
 - `--check` — read-only validation. Reports artefact existence and record state, exits non-zero on missing artefact or absent record. Does not write.
-- `--refresh` -- re-acknowledge existing wiring after you have reviewed a spec or artefact edit, without relinking or regenerating. It recomputes `testcase-hash` and `artefact-hash` in place, preserves the `framework` / `adapter` / `artefact` identity fields, runs no automate adapter, and never touches the artefact file. This is the safest of the three stale-wiring recovery paths (see the drift lesson below); reach for it when only the spec changed and the artefact still asserts the current intent. `gtms link --refresh tc-XXXXXXXX` refreshes every framework wiring for that TC (narrow with `--framework <fw>`); `gtms link --refresh <folder>` refreshes only the stale records under the folder (`-r` / `--recursive` descends, mirroring `gtms status` / `gtms execute`). Writes are per-record, not atomic across a batch: a record whose artefact was deleted or moved outside the project-owned allowlist fails with a diagnostic while the rest complete, and the command exits non-zero if any failed. A wiring record still carrying `artefact-hash: pending` (the bootstrap shape) keeps `pending` -- only `testcase-hash` is refreshed -- so it stays first-executeable. The other link flags do not combine with `--refresh`: `--artefact` (that is a relink), `--check` (use `gtms status`), and `--force` (`--refresh` is itself the acknowledgement) are each rejected with a diagnostic pointing at the right form. (`--env` and `--executed-by` were never wiring fields and were removed from `gtms link` entirely; passing them to any `link` form now fails with Cobra's `unknown flag` error.)
+- `--refresh` -- re-acknowledge existing wiring after you have reviewed a spec or artefact edit, without relinking or regenerating. It recomputes `testcase-hash` and `artefact-hash` in place, preserves the `framework` / `adapter` / `artefact` identity fields, runs no automate adapter, and never touches the artefact file. This is the safest of the three stale-wiring recovery paths (see the drift lesson below); reach for it when only the spec changed and the artefact still asserts the current intent. After `gtms execute` refuses a test case, confirm that one test case with `gtms link --refresh <tc> --framework <fw>`: GTMS asks for changed specs to be confirmed one test case at a time and never suggests a folder refresh for them. Under the default `execute.on-script-change: accept`, a script-only edit needs no refresh at all -- execute accepts it. `gtms link --refresh tc-XXXXXXXX` refreshes every framework wiring for that TC (narrow with `--framework <fw>`); `gtms link --refresh <folder>` refreshes only the stale records under the folder (`-r` / `--recursive` descends, mirroring `gtms status` / `gtms execute`). Writes are per-record, not atomic across a batch: a record whose artefact was deleted or moved outside the project-owned allowlist fails with a diagnostic while the rest complete, and the command exits non-zero if any failed. A wiring record still carrying `artefact-hash: pending` (the bootstrap shape) keeps `pending` -- only `testcase-hash` is refreshed -- so it stays first-executeable. The other link flags do not combine with `--refresh`: `--artefact` (that is a relink), `--check` (use `gtms status`), and `--force` (`--refresh` is itself the acknowledgement) are each rejected with a diagnostic pointing at the right form. (`--env` and `--executed-by` were never wiring fields and were removed from `gtms link` entirely; passing them to any `link` form now fails with Cobra's `unknown flag` error.)
 - `--force` -- overwrite an existing record (and refresh the paired wiring at `gtms/automation/wiring/<tc>--<framework>.wiring.yaml`, including `artefact-hash`). Writes fresh fields from the new flag values. Reach for `--force` only when you are relinking to a different artefact; when only the spec changed and you just want to acknowledge the current artefact, prefer `--refresh` above (it preserves the artefact and recomputes hashes without a relink). Per-run execute state lives on `.gtms/results/<task>.handoff.yaml`; existing handoffs are not deleted by `gtms link --force`, but the next `gtms execute` will write a fresh one alongside (or replace the prior one when the task-id collides).
 - `--strict` -- opt-in TC-spec preflight. Rejects link calls whose TC ID has no matching spec under `gtms/test/cases/`, with `test case 'tc-XXXXXXXX' not found in gtms/test/cases/`. Off by default — the brownfield contract (link the artefact first, write the spec later) is preserved exactly as it was. Combine with `--check` (`gtms link --check --strict`) for a read-only validation that also catches phantom TC IDs. Use it when scripting bulk imports from a list of TC IDs and you want to fail fast on typos. Supports folder-qualified targets: `gtms link folder/tc-abc12345 --strict ...` requires the spec to live under `gtms/test/cases/folder/`.
 
@@ -568,6 +575,17 @@ defaults:
 (default) prints onboarding hint output after commands; set `guidance: false` to
 silence it. Every shipped preset sets `guidance: true`. `demo_seeded` is a reserved
 internal flag written by `gtms init --demo` -- do not set it by hand.
+`execute.on-script-change` (`accept`, the default, or `refuse`) decides whether
+`gtms execute` accepts and runs a wired test case whose automation script alone
+changed (`accept`), or refuses it until `gtms link --refresh <tc> --framework <fw>`
+(`refuse`). Any other value is a config error. A changed spec refuses under both
+values, and manual and agent execution ignore the setting. A project without the
+block gets `accept`; every preset scaffolds the block commented out:
+
+```yaml
+execute:
+  on-script-change: refuse
+```
 
 **Required:**
 
@@ -590,7 +608,7 @@ internal flag written by `gtms init --demo` -- do not set it by hand.
 | `prompt-template` | Path to a prompt template file (relative to project root). GTMS reads the template, injects context variables, writes the assembled prompt to `.gtms/tmp/{task-id}-prompt.md`, and pipes it via stdin. For Tier 1: the file path is available as `{prompt_file}` and the content as `{prompt}` (deprecated). For Tier 2: the file path is available as `$GTMS_PROMPT_FILE`. |
 | `guide-dir` | Path to a directory of `.md` guide files (relative to project root). GTMS reads all `.md` files alphabetically, wraps each in `<guide name="filename.md">` XML tags, and makes the content available as `{guides}` (Tier 1) or `$GTMS_GUIDES` (Tier 2). Guides resolve from ONE directory: `guide-dir` if set, otherwise the default `gtms/test/guides/`. A custom `guide-dir` **replaces** the default -- it does not augment it, so the shipped `gtms/test/guides/gtms-test-case-authoring-guide.md` is no longer read unless you leave `guide-dir` unset or include that guide's content in your directory. There is no CLI flag for guides -- it is config-only. If the resolved directory doesn't exist, the value is empty (no error). |
 | `status-script` | Path to a script that checks async adapter progress. Called during `gtms {command} status`. Must update `$GTMS_RESULT_FILE` when the remote work completes. Requires `mode: async` and `script` to be set. |
-| `output-dir` | **Dual-role: write target + read root for discovery.** Where adapter output files are written (relative to project root). Must be a relative path -- absolute paths are rejected. An explicit `output-dir` always wins, for every tier including the built-in automate adapters. If not set, GTMS uses the standard default for the command and adapter class: create -> `gtms/test/cases/<folder>/`; automate on a **command/script (Tier 1/2)** adapter -> `gtms/automation/specs/<adapter>/`; automate on the **built-in `agent-automate`/`manual-automate`** -> the framework-native dir (`test/acceptance/` for BATS, `gtms/scripts/playwright/` for Playwright); execute -> `results/`. The same value also tells GTMS's runtime artefact discovery where to look when the stored `artefact:` cache is stale, so **declare it accurately even for read-only pipeline stages** (e.g. execute adapters that read pre-generated spec files). Brownfield: point `output-dir` at the directory your framework already scans (its `testDir`) so the built-in automate writes there and the framework discovers the spec. |
+| `output-dir` | **Dual-role: write target + read root for discovery.** Where adapter output files are written (relative to project root). Must be a relative path -- absolute paths are rejected. For a **create** adapter it must also resolve inside the project, including through any symlink or junction: `gtms create` refuses a value that escapes with `..`, through a link, or through a broken link (`create target "<value>" resolves outside the project`) before it writes anything or starts the adapter. The `output-dir` rules for automate, execute and prime adapters are unchanged. An explicit `output-dir` always wins, for every tier including the built-in automate adapters. If not set, GTMS uses the standard default for the command and adapter class: create -> `gtms/test/cases/<folder>/`; automate on a **command/script (Tier 1/2)** adapter -> `gtms/automation/specs/<adapter>/`; automate on the **built-in `agent-automate`/`manual-automate`** -> the framework-native dir (`test/acceptance/` for BATS, `gtms/scripts/playwright/` for Playwright); execute -> `results/`. The same value also tells GTMS's runtime artefact discovery where to look when the stored `artefact:` cache is stale, so **declare it accurately even for read-only pipeline stages** (e.g. execute adapters that read pre-generated spec files). Brownfield: point `output-dir` at the directory your framework already scans (its `testDir`) so the built-in automate writes there and the framework discovers the spec. |
 | `timeout` | Maximum duration for adapter execution (e.g. `30s`, `5m`, `1h`). Uses Go duration format. If the adapter exceeds this time, GTMS cancels it and reports an error. **Default: 30 minutes for sync adapters**. Set an explicit value to override. On cancellation, GTMS terminates the full process tree (not just the immediate child). The default can also be overridden at runtime via the `GTMS_DEFAULT_EXECUTE_TIMEOUT` env var (Go duration format); intended for acceptance-test harnesses so they don't have to wait for the 30-minute production default. Empty, unparseable, or non-positive values are ignored and the 30-minute default is used. |
 | `framework` | Framework name for this adapter (e.g. `bats`, `playwright`, `pw-mobile`). Used to qualify wiring records: `tc-xxx--{framework}.wiring.yaml`. Sharing is command-specific: same-framework EXECUTE adapters are supported alternative runners for one result slot (the fleet pattern); same-framework AUTOMATE adapters are alternative producers of one shared (TC, framework) wiring identity, not coexisting variants. Use DISTINCT framework labels only when results must coexist independently. See [Multi-Framework Adapters](#multi-framework-adapters) below. |
 | `working-dir` | Project-relative directory the adapter process runs in (its current working directory). Applies to Tier 1 (`command:`) and Tier 2 (`script:`) adapters only -- setting it on a built-in (Tier 0) adapter emits a `⚠` load-time warning and is ignored. Must be a relative path (absolute rejected) and may not escape the project root with `..`. Unset: the adapter runs from the project root. Distinct from `output-dir` (where output goes) and from `{work_dir}` / `$GTMS_WORK_DIR` (the worktree base handed to the adapter for reference), neither of which `working-dir` changes. Brownfield use: point it at a harness subdirectory (its own `node_modules/` and config) so a shipped runner works unedited. |
@@ -605,7 +623,7 @@ Create-stage stamped templates and prompt guides are separate artefact families.
 - `timeout` must be a valid Go duration (e.g. `5m`, `30s`, `2m30s`)
 - `artefact-glob` must contain `{testcase}`, be project-relative (no absolute paths or `..`)
 - `framework` must match `^[a-z0-9][a-z0-9-]*$` (lowercase letters, digits, hyphens only)
-- `output-dir` must be a relative path (absolute paths are rejected)
+- `output-dir` must be a relative path (absolute paths are rejected); on a create adapter it must also resolve inside the project, or `gtms create` refuses it. Automate, execute and prime are unchanged
 - `working-dir` must be a relative path and must not contain `..` (parent-escape rejected); on a built-in adapter it warns and is ignored
 - Defaults must reference an adapter registered under the same command
 
@@ -913,7 +931,7 @@ A Tier 2 adapter is a script (any language) that GTMS executes. The script recei
 5. The script does its work (any number of steps, API calls, etc.)
 6. **Sync scripts:** update `$GTMS_RESULT_FILE` with outcome fields, then exit
 7. **Async scripts:** trigger the remote work, optionally update the result contract with a reference (run ID, issue URL), then exit
-8. GTMS reads the result contract. If `status` was updated by the script, GTMS uses it. Otherwise, GTMS falls back to exit code (same as Tier 1).
+8. GTMS reads the result contract. If `status` was updated by the script, GTMS uses it. Otherwise GTMS falls back to the exit code (same as Tier 1) -- **except for a synchronous Tier 2 `execute` adapter.** There a readable but non-terminal contract (`pending`, `in-progress`, or empty status) is NOT a fallback to the exit code: GTMS records `status: error` with no `result`, because an execute adapter exists to report a structured outcome, and this prevents an unreported run becoming a false pass in normal operation (for the narrow persistence exceptions, see [A synchronous Tier 2 `execute` adapter must leave a terminal contract](#a-synchronous-tier-2-execute-adapter-must-leave-a-terminal-contract) below). Tier 1, and Tier 2 `create` / `automate` / `prime`, keep the exit-code fallback. See the result-contract section below.
 
 > **Shell invocation:** GTMS runs scripts as `sh <path>` (`internal/adapter/tier2.go:90`), not by executing them directly. The shebang line (`#!/usr/bin/env bash`) and the executable bit are both **ignored** -- `chmod +x` does nothing, and the script is always interpreted by whichever `sh` is on PATH. On MINGW (Windows) and macOS, `sh` is typically bash or bash-compatible, so bashisms silently work. **On Ubuntu/Debian/Alpine CI runners `sh` is dash**, and bashisms fail -- commonly with `Syntax error: redirection unexpected` or `Syntax error: "(" unexpected`. Author Tier 2 scripts (including BATS-fixture mocks that use `script:`) in POSIX sh only.
 >
@@ -1028,7 +1046,7 @@ GTMS sets `GTMS_OUTPUT_DIR` (and `{output_dir}`) based on the command. Each adap
 
 | Command | Default output directory | Override with |
 |---------|-------------------------|---------------|
-| `create` | `{project_root}/gtms/test/cases` | `output-dir` on create adapter |
+| `create` | `{project_root}/gtms/test/cases/<folder>` (in a renamed layout, `<folder>` under the active test cases directory) | `output-dir` on create adapter. Create passes the checked, link-resolved folder, so the value can differ from the path you wrote when a link is involved |
 | `automate` (command/script adapter) | `{project_root}/gtms/automation/specs/{adapter-name}/` | `output-dir` on automate adapter |
 | `automate` (built-in `agent-automate`/`manual-automate`) | framework-native: `test/acceptance/` for BATS, `gtms/scripts/playwright/` for Playwright | `output-dir` on the automate adapter |
 | `execute` | `{project_root}/results` | `output-dir` on execute adapter |
@@ -1088,9 +1106,9 @@ EOF
 
 > **Note:** `status: complete` requires a `result:` field. For a create/automate adapter that completed its stage, write `result: pass`; the orthogonal `result:` axis carries the outcome while `status:` carries adapter execution state. The `created` field is the timestamp when GTMS originally invoked the adapter. If you overwrite the full file, carry this value through rather than replacing it. The `completed` field is the one your script should set to the current time.
 
-If your script doesn't update the result contract, GTMS falls back to exit code handling (exit 0 = complete, non-zero = error). This means simple scripts that just need pass/fail don't need to touch the result contract at all.
+If your script doesn't update the result contract, GTMS falls back to exit code handling (exit 0 = complete, non-zero = error) **for `create`, `automate` and `prime`**. This means simple create/automate/prime scripts that just need pass/fail don't need to touch the result contract at all. **A synchronous Tier 2 `execute` adapter is different: it MUST write a terminal status** -- see the execute rule below.
 
-That fallback applies only while the contract is still readable. GTMS reads the handoff after the script exits and acts on what it finds. A readable contract still in its initial `pending` state means the script did not report, so the exit code decides. A contract GTMS cannot use at all is different: if the file is not valid YAML, is missing, or cannot be read, the outcome is unknown, and GTMS resolves unknown to error, never to pass. It writes a valid replacement handoff carrying `status: error` and no `result:`, files the task under `gtms/tasks/error/`, and names the contract failure in the diagnostic. Bulk `gtms execute` counts the test case as errored rather than passed. This fail-closed handling applies to Tier 2 `execute`, `automate`, `create` and `prime` alike; Tier 1 adapters are unaffected. The process exit code stays per command and did not change:
+That fallback applies only while the contract is still readable. GTMS reads the handoff after the script exits and acts on what it finds. For `create`, `automate` and `prime`, a readable contract still in its initial `pending` state means the script did not report, so the exit code decides. A contract GTMS cannot use at all is different: if the file is not valid YAML, is missing, or cannot be read, the outcome is unknown, and GTMS resolves unknown to error, never to pass. It writes a valid replacement handoff carrying `status: error` and no `result:`, files the task under `gtms/tasks/error/`, and names the contract failure in the diagnostic. If GTMS cannot save that replacement -- the handoff is refused, other writers keep replacing it, or both write attempts fail -- the run fails instead of completing (see [How GTMS writes and reads handoffs](#how-gtms-writes-and-reads-handoffs)). Bulk `gtms execute` counts the test case as errored rather than passed. This fail-closed handling applies to Tier 2 `execute`, `automate`, `create` and `prime` alike; Tier 1 adapters are unaffected. The process exit code stays per command and did not change:
 
 | Command | Exit on an unusable contract |
 |---------|------------------------------|
@@ -1099,6 +1117,30 @@ That fallback applies only while the contract is still readable. GTMS reads the 
 | `automate`, bulk | counts the item as failed, exits non-zero |
 
 The most common way a contract becomes unusable is a `log:` block whose indentation YAML infers from the tool's own output. See [Diagnostic log payload](#diagnostic-log-payload) for the `log: |2` form that avoids it.
+
+#### A synchronous Tier 2 `execute` adapter must leave a terminal contract
+
+The exit-code fallback above is retired for one case: a **synchronous Tier 2 `execute`** adapter. An execute adapter exists to report a structured test outcome, so if it exits (any code) leaving a contract GTMS can read but that is still non-terminal -- `status: pending`, `status: in-progress`, or an empty status (a write that failed partway) -- GTMS does NOT fall back to the exit code. Instead it records `status: error` with no `result:`, files the task under `gtms/tasks/error/`, exits non-zero (single and bulk, where the test case is counted as errored), and surfaces this diagnostic:
+
+```text
+✗ Execution result was not recorded: the adapter exited 0 without reporting a terminal outcome (result contract status: pending)
+    A Tier 2 execute adapter must write a terminal status to $GTMS_RESULT_FILE before it exits, and a result when status is complete
+```
+
+On a non-zero exit the first line names the exit code ("exited with code N") and the adapter's stderr follows in the summary, so a missing-tooling message stays visible. The contract status in brackets is whatever the adapter left: `in-progress` if it never touched the file (GTMS stamps that before invoking a synchronous adapter), `pending` if it wrote that, and `empty` for a blank status. Write a terminal `status: complete` with a `result:` (pass/fail/skip), or `status: error` (no `result:` required), before the script exits. The rule is `execute`-specific: Tier 1, and Tier 2 `create` / `automate` / `prime`, keep the exit-code fallback described above. A rejected run writes no wiring: it leaves wiring exactly as the pre-invocation gates set it.
+
+GTMS also writes an error execution record for the rejected run under `gtms/execution/`. It does so even when both attempts to rewrite the handoff fail for an ordinary reason, so an older pass cannot make a later bulk run skip the test case. That record only ever says `error`; it never stands in for the adapter's outcome.
+
+This diagnostic is the normal one, not the only one. If the handoff or `.gtms/results/` is refused, or other GTMS writers keep replacing the handoff, GTMS reports that refusal or concurrency message instead, writes no execution record, and fails the run (see [How GTMS writes and reads handoffs](#how-gtms-writes-and-reads-handoffs)).
+
+In normal operation this prevents the false pass where an execute adapter that exited 0 without reporting was silently recorded as a pass. Two narrow exceptions remain, both after GTMS fails to save:
+
+- **A pass left in the handoff.** If a terminal write fails after the adapter left `result: pass` in its handoff, that pass can stay readable, and a later bulk run can skip the test case as already passing.
+- **Older evidence.** If both handoff writes fail but the error execution record is written, bulk execute runs the test case again, but `gtms status` can still display the older pass. If the execution record cannot be written or inspected either, a later bulk run can skip on that older pass.
+
+After `gtms execute` fails while saving its result, run `gtms reset <tc-id>` and execute the test case again, or pass `--force` to the bulk run, before trusting that framework's row or an already-passing skip. A read-only handoff is no longer one of the ways to reach these cases: GTMS replaces a read-only handoff and keeps it read-only.
+
+**`completed` is supplied when omitted.** Your execute adapter does not have to set `completed:`. When a synchronous Tier 2 execute adapter returns a *valid terminal* contract (`status: complete`/`error`/with a terminal `result`) that omits `completed`, GTMS stamps `completed` with the current time after validation. An adapter-provided `completed` is authoritative and left unchanged. This keeps the dashboard's "already passing" check working: `gtms execute` over a folder reads `completed` to decide a test case is already green and skip it, so without the stamp a conforming adapter that reported `status: complete`/`result: pass` but no `completed` would be re-run on every bulk pass. The stamp never rescues a missing, unreadable, malformed or non-terminal contract -- those still fail closed per the rules above. If GTMS cannot durably save `completed`, or any other field it owns on the contract, the run fails instead of being recorded as a pass.
 
 ### How GTMS Discovers Tier 2 Output Files
 
@@ -1114,6 +1156,8 @@ GTMS unifies both patterns when reporting back to the CLI:
 - If streaming captured nothing AND `$GTMS_OUTPUT_DIR` is set (pattern 2), GTMS scans the output directory for files that weren't there pre-invocation and uses those instead. Same headline rendering, same downstream pipeline behaviour.
 
 **You don't need to mix the two.** Pick whichever fits your tool. Direct-write is generally simpler when the underlying tool already writes files; streaming is the natural fit when the adapter is producing output text it needs to chunk.
+
+**Wiring for a Tier 2 automate skeleton.** The built-in `agent-automate` and `manual-automate` write `artefact-hash: pending`, so the first execute hashes the filled-in script. A Tier 2 automate adapter's wiring instead records the hash of whatever file the adapter produced -- usually a skeleton the agent or tester fills in afterwards. Under the default `execute.on-script-change: accept`, the first `gtms execute` after the script is filled in accepts the change and runs it, so no `gtms link --refresh` is needed. Under `refuse`, that first execute refuses with `was not run because its automation script changed`; confirm the filled-in script with `gtms link --refresh <tc> --framework <fw>` before executing.
 
 **You don't need to put the file path in `artefact:`.** The contract's `artefact:` field is informational — GTMS discovers files via streaming or scanOutputDir, not by parsing `artefact:`. Setting it is fine and recommended for downstream traceability, but absolute Windows paths like `C:\Users\...\file.md` will fail YAML parsing if unquoted; prefer relative paths or omit the field.
 
@@ -1245,6 +1289,52 @@ Validation errors flow through the standard error path: `status: error` handoff,
 
 **Drift diagnostic:** the script SHA-256s the test case spec at execute time and compares against the `test_case_hash:` baked in at prime time. If they diverge, an idempotent diagnostic block is appended to the result file (it's not rejected — drift may be intentional). The block is removed cleanly on the next prime if the user re-stamps.
 
+### The four reserved manual execute adapters
+
+Under `execute`, four names are reserved for manual results: `manual-execute`, `agent-execute`, `manual-execute-script` and `agent-execute-script`. Each always records manual evidence and always runs synchronously, whether it is the Tier 0 built-in or a configured script. The same names registered under `create`, `automate` or `prime` are ordinary adapters.
+
+**Admission.** When one of the four is selected for execute (by `--adapter` or by `defaults.execute`), GTMS checks it before any wiring lookup, task, handoff or execution record is created and before the adapter runs, for single and bulk targets:
+
+- No `--framework`, or `--framework manual`: allowed.
+- Any other `--framework`: refused.
+- A configured `framework:` other than `manual`: refused. Omitting `framework:` resolves to `manual`, so a custom definition with no framework now works; before this rule it failed because it never received the manual execution context.
+- A configured `mode: async`: refused. GTMS does not quietly switch it to `sync`. Set `mode: sync`; an omitted mode is still a configuration error.
+
+The diagnostics, where `<adapter>` is the selected name and `<framework>` is the refused value (in both the message and the hint):
+
+```text
+✗ Adapter '<adapter>' records manual results and cannot run under framework '<framework>'.
+    Omit --framework, or use --framework manual. To run the <framework> automation, use its adapter.
+```
+
+```text
+✗ Adapter '<adapter>' records manual results but gtms.config sets framework '<framework>'.
+    Remove the framework setting or set it to manual.
+```
+
+```text
+✗ Adapter '<adapter>' records manual results but gtms.config sets mode 'async'.
+    Set its mode to sync.
+```
+
+Only one is shown. Precedence: a non-manual `--framework` first, even when the configuration is also wrong; then a non-manual configured framework (so `--framework manual` with `framework: fx` gets the second message); then `mode: async`. The checks run only on selection: a misconfigured reserved entry that is not selected does not stop `gtms status`, `gaps`, `map` or `triage` from loading the configuration.
+
+**Framework and mode are GTMS-owned.** A script for one of these adapters does not decide attribution. If it writes another `framework:` into `$GTMS_RESULT_FILE`, GTMS records `manual`; if it writes `mode: async`, GTMS records `sync`. This also holds on the recovery path GTMS runs when the script writes a contract it rejects. It depends on GTMS durably saving the corrected handoff:
+
+- If the save is refused, or other writers keep replacing the handoff through the retry limit, the run fails with no execution record, and GTMS does not rebuild over that handoff.
+- If both write attempts fail for an ordinary reason, the task moves to `error` and no execution record is written. The script's original, contradictory handoff stays on disk, so readers can still attribute it to its non-manual framework, and a later bulk run of that framework can treat a pass in it as already passing. Run `gtms reset <tc-id>` and re-run the test, or pass `--force` to the bulk run, before trusting that row. Unlike the general Tier 2 execute rule, these adapters do not write an error execution record after such a failure.
+
+**Errors stay on the manual view.** An error task from any of the four does not change a wired framework's view in `status`, `map`, `gaps` or `triage`. It shows with `--framework manual`, and on a test case that has no wiring. This applies to error tasks written before this rule, too.
+
+**History is not rewritten.** Handoffs and execution records written before this rule keep the framework they recorded. One that names a wired framework can still show the manual run on that framework's row; in `gtms status --json` the sign is that framework's `last_run_adapter` naming one of the four adapters. `gtms reset <tc-id>` clears the test case's handoffs and finished execute task files, so the row clears, along with any genuine result for that framework (re-run its adapter afterwards). Reset does not remove committed records under `gtms/execution/`.
+
+**Migration.**
+
+- A wrapper that passes a non-manual `--framework` to one of the four: drop the flag, use `--framework manual`, or invoke the automated framework's own adapter.
+- A configured non-manual `framework:` on one of the four: remove it or set it to `manual`.
+- A configured `mode: async` on one of the four: set `mode: sync`.
+- A custom definition with no configured framework: no action; it now resolves to `manual` and works.
+
 ### Adapter-First Detection Rule
 
 The CLI decides "is this the manual-execute path?" via a single helper:
@@ -1255,7 +1345,8 @@ func IsManualFramework(resolved *ResolvedAdapter) bool {
     if resolved == nil {
         return false
     }
-    if resolved.Name == "manual-execute" || resolved.Name == "agent-execute" {
+    // The four reserved names, and only under the execute command.
+    if isReservedMode3Execute(resolved) {
         return true
     }
     if resolved.Config != nil && resolved.Config.Framework == "manual" {
@@ -1265,7 +1356,7 @@ func IsManualFramework(resolved *ResolvedAdapter) bool {
 }
 ```
 
-(`agent-execute` shares the `manual-execute` implementation on day one, so both names resolve as the manual path.)
+(All four reserved execute names -- `manual-execute`, `agent-execute`, `manual-execute-script` and `agent-execute-script` -- resolve as the manual path, but only for `execute`; the same names under another command are ordinary adapters.)
 
 The signature deliberately takes nothing else. Framework strings on the CLI flag (`--framework manual`) and the on-disk wiring record's `framework:` field cannot stand alone -- the predicate physically cannot be flipped by them. This is the **adapter first, framework second** rule.
 
@@ -1399,7 +1490,7 @@ A six-week gap in the manual pipeline: the `manual-execute` adapter had been sta
 
 A stable `testcase-hash` field was added to today's `gtms/automation/records/*.automation.md` shape ahead of the wiring split. The implementation landed first-pass green across 20 BATS specs (no iterations needed). Four patterns generalise to any future stable identity field on automation records / wiring records.
 
-- **Stable identity fields are write-side-only -- execute reads, never repairs.** `testcase-hash` is written by `gtms automate` (create + `--force`), `gtms link`, and lazy auto-create (`pipeline.TryAutoCreateRecord`). `gtms execute` reads the field, recomputes the current spec hash, surfaces drift, and refuses to refresh the stored value. The repair paths are explicit, safest first: `gtms link --refresh <tc>` (recompute both hashes in place, preserve the artefact -- the acknowledgement path), then `gtms execute --allow-stale <tc>` (one-shot bypass, wiring stays stale), then `gtms link <tc> --artefact <path> --force` (relink) or `gtms automate <tc> --force` (regenerate, overwrites the artefact). This is the same ownership rule as `artefact-hash`. Critically, the non-mutation contract is **field-scoped**, not record-scoped -- the existing artefact-path auto-heal in `internal/cli/execute.go` may still rewrite the record file to refresh a stale `artefact:` line, and the new contract says only that `testcase-hash` must come through that rewrite untouched. Tests must assert on the field, not on byte-level record immutability -- assert-the-whole-record fixtures break the moment an unrelated heal fires. The same pattern (rare write paths; never repair on read; field-scoped immutability) applies to every future stable field the wiring layer accumulates.
+- **Stable identity fields are write-side-only -- execute reads, never repairs.** `testcase-hash` is written by `gtms automate` (create + `--force`), `gtms link`, and lazy auto-create (`pipeline.TryAutoCreateRecord`). `gtms execute` reads the field, recomputes the current spec hash, surfaces drift, and refuses to refresh the stored value. The repair paths are explicit, safest first: `gtms link --refresh <tc> --framework <fw>` (recompute both hashes in place, preserve the artefact -- the confirmation path), then `gtms execute <tc> --framework <fw> --allow-stale` (one-shot bypass, wiring stays stale), then `gtms link <tc> --framework <fw> --artefact <path> --force` (relink) or `gtms automate <tc> --framework <fw> --force` (regenerate, overwrites the artefact). `artefact-hash` no longer follows the same rule: under the default `execute.on-script-change: accept`, execute records the hash of a script-only change it accepts. It still never writes `testcase-hash`. Critically, the non-mutation contract is **field-scoped**, not record-scoped -- the existing artefact-path auto-heal in `internal/cli/execute.go` may still rewrite the record file to refresh a stale `artefact:` line, and the new contract says only that `testcase-hash` must come through that rewrite untouched. Tests must assert on the field, not on byte-level record immutability -- assert-the-whole-record fixtures break the moment an unrelated heal fires. The same pattern (rare write paths; never repair on read; field-scoped immutability) applies to every future stable field the wiring layer accumulates.
 
 - **Single resolver helper for all write paths, or subfolder cases get silently missed.** `pipeline.ResolveTestCaseSpec` (`internal/pipeline/resolve.go`) is the only caller that turns a TC ID into the active spec path. `BuildAutomationRecord`, `CreateAutomationRecord`, and `TryAutoCreateRecord` all go through it; `RecordOptions` deliberately does **not** grow a spec-path field. The temptation is to let each writer compute `gtms/test/cases/{tc}.md` directly — that hard-codes the root layout and silently misses subfolder-scoped cases under `gtms/test/cases/{subfolder}/{tc}.md`, producing empty hashes that *look* populated. The lesson generalises: any time the same fact is needed from three write paths, resolve it once at the pipeline layer; per-caller path computation is a recipe for one path drifting from the others. Confirmed by `tc-c1675a5f-automate-subfolder-spec-hash.bats` which would have failed if any writer skipped the resolver.
 
@@ -1568,6 +1659,76 @@ The result contract is the communication channel between adapters and GTMS.
 
 One file per task, keyed by task ID. The `.gtms/` directory is gitignored — handoff contracts are transient.
 
+### How GTMS writes and reads handoffs
+
+**GTMS's own writes are all-or-nothing.** When GTMS creates, updates or rebuilds a handoff, it stages the new document beside the old one, flushes it to disk, and replaces the handoff in one step. After a crash, a full disk or a write error, the handoff is the complete old document or the complete new one, not a partial one. A failure right after the new file lands can leave the complete new document in place while the command still returns an error. This guarantee covers GTMS's writes only. A Tier 2 adapter that writes `$GTMS_RESULT_FILE` itself is responsible for its own writes.
+
+**What an adapter should do.** Tier 2 adapters receive the handoff path as `$GTMS_RESULT_FILE`; Tier 1 command adapters receive the same path as `{result_file}`. Write the file and close it before exiting. Do not replace it with a link or a special file, and do not keep it open after the run ends: GTMS may replace the file, and a handle held open would then point at the old one. An adapter that replaces its handoff with a link or special file has its run recorded as an error, even though it ran. For the four reserved manual execute adapters, GTMS also owns the handoff's `framework` and `mode`; see [The four reserved manual execute adapters](#the-four-reserved-manual-execute-adapters).
+
+**Unsafe paths are refused, for reads and writes.** GTMS refuses a handoff that is a symbolic link (or Windows junction), a hard link, a directory, a FIFO, a device or a socket. It refuses a `.gtms/results/` that resolves outside the project -- through its own link or through `.gtms/` -- and one it cannot open or inspect, such as a dangling link or a permission error on a parent. A FIFO at `.gtms/results` itself is refused rather than opened, so it cannot hang the command. A directory link that stays inside the project, and a project reached through a link, still work. The diagnostics, which the CLI prints with its error glyph (single-target `gtms execute` uses `Error:` instead) and an indented second line:
+
+```text
+refused handoff <path>: <reason>
+remove it by hand, or replace it with an ordinary single-link regular file under .gtms/results, and retry
+```
+
+```text
+refused results directory .gtms/results: <reason>
+make it an ordinary directory inside the project, or point its link to a directory inside the project, and retry
+```
+
+The results-directory message always names the logical path `.gtms/results`, even when `.gtms` is the link that escapes. The stable reasons are `is a link`, `has more than one hard link`, `is not a regular file`, `already exists` (a new handoff found something already at its path), `resolves outside the project`, and `could not be inspected: <cause>`.
+
+**When a refusal happens matters.** One found before the adapter starts stops the command, and the adapter does not run; so does any other failure to write the handoff before invocation. An adapter that replaces its own handoff with an unsafe file is caught only after it ran: the task is filed as an error and the command exits non-zero. For `gtms execute` only, any failure after the adapter started -- this one, a persistence failure, a concurrency error -- prints `<tc> started, then failed.` (single target) or `started, then failed` (bulk), unless the accepted-script or `--allow-stale` line already said the test ran. `gtms create` and `gtms automate` do not print it.
+
+**Refused evidence is never used.** A refused handoff is not shown as a result and never counts as already passing. While any refusal exists, bulk `gtms execute` runs test cases instead of skipping them as already passing; the refusal alone does not change the bulk exit code, which the test cases' own outcomes decide as usual. Each command warns once per refused path per invocation, including an outside results directory that is empty and would otherwise look like no results.
+
+**Reports and cleanup are partial, and say so.**
+
+- `gtms status`, `gaps`, `map` and `triage` show the safe results they can and exit non-zero because the output is incomplete. JSON on stdout stays valid and carries no warning text; the diagnostics go to stderr.
+- `gtms triage <tc> --value` prints the refusal, classifies nothing and exits non-zero, because the refused file may be the newest result.
+- `gtms create status`, `gtms automate status` and `gtms execute status` report a refused handoff for one of their tasks, carry on with their other tasks, and exit non-zero.
+- `gtms reset` and `gtms delete` leave an unsafe entry untouched and never remove through it, finish the safe cleanup, name what they could not clear with the manual fix, and exit non-zero. `--dry-run` reports the same way and changes nothing, so it works as a pre-check. A refused `.gtms/results/` stops all handoff cleanup; safe cleanup outside it still finishes. `gtms reset` exits non-zero for any refused handoff in the directory, even one that belongs to another test case, because an unreadable entry cannot be attributed safely.
+
+**Staging leftovers.** A staged write is named `<handoff filename>.tmp-<16 lowercase hexadecimal characters>`. Only that exact shape is treated as a GTMS staging file: readers ignore it, and `reset` and `delete` remove it with its handoff. Other `.tmp-` files are left alone.
+
+**Permissions and metadata on replacement.**
+
+| Item | What GTMS does |
+|------|----------------|
+| Read-only handoff | Replaced, and still read-only afterwards: modes `0444` and `0400` on Linux and macOS, the read-only attribute on Windows |
+| Mode `000` handoff | An update fails and leaves it unchanged. A rebuild replaces it with an owner-readable `0600` file instead of preserving `000` |
+| Linux and macOS | Permission bits, uid and gid are kept; if they cannot be, the write is refused and the old handoff stays. Setuid, setgid and sticky bits are not carried. ACLs and extended attributes are neither preserved nor stripped: an ACL on the old file is lost, and one the new file inherits from its directory stays. This is not full metadata preservation |
+| Windows | The DACL, owner, group and read-only attribute are kept exactly; if they cannot be, the write is refused and the old handoff stays. The SACL is not carried. A handoff owned by a different user, for example one created from an elevated shell, is refused rather than taken over |
+| New handoff | Today's defaults on every platform |
+
+**Windows retries are bounded.** When another program holds a handoff open, GTMS retries: reads and inspection for a fraction of a second, replacement for up to 2 seconds. If the file is still held, the old handoff stays intact and the error names the file.
+
+**Concurrent GTMS updates.** Two GTMS updates to one handoff merge when they change different fields; where they overlap, the last writer wins. GTMS retries a few times when another writer replaced the file. If that keeps happening, it stops with:
+
+```text
+handoff <path> kept changing during the update: other writers replaced it through <N> retries
+```
+
+This is a concurrency error, not a refusal: the file needs no unsafe-entry repair. After a terminal write fails this way, re-run the affected test (with `--force` in bulk) before trusting its row or skip state.
+
+**Terminal outcomes count only once they are saved.** Four cases that used to look successful now fail the run:
+
+- A Tier 1 run whose terminal handoff write fails no longer warns and records the exit-code outcome.
+- A Tier 2 rebuild of an unusable contract that exhausts both write attempts fails.
+- A manual-execute validation error whose canonical error handoff cannot be written fails with no execution record.
+- An asynchronous task whose move to `complete/` fails writes no execution record.
+
+One case deliberately stays a warning: while an asynchronous task is still running, a failure to save the size cap on its growing log or summary only warns, and the task stays pollable so a later status poll can record the real result.
+
+**Error execution records after a failed save.** On the synchronous Tier 2 `execute` path that rejects a non-terminal contract, GTMS still writes an error execution record after both handoff writes fail for an ordinary reason, when it can write that record durably. It exists only so an older pass cannot cause an already-passing skip, and it never stands in for the adapter's outcome. The four reserved manual execute adapters write no such record after their double failure: the task moves to `error` and their original handoff stays in place. A refusal or a concurrency error writes no execution record on any path.
+
+**Remaining limits.**
+
+- On a filesystem that cannot flush a directory to disk, handoff writes fail rather than claim durability.
+- On Windows, and while GTMS creates a missing results directory, a very small window remains after the final identity check. A local process able to use it already has write access to the project.
+- If a terminal write fails after an adapter left `result: pass` in its handoff, that pass can stay readable, and a later bulk run can skip the test case. With an older pass, `gtms status` can also go on showing the older evidence after a failed save. In either case run `gtms reset <tc-id>` and re-run the test, or pass `--force` to the bulk run.
+
 ### Fields
 
 | Field | Written by | Required | Description |
@@ -1699,7 +1860,7 @@ On a `result: fail` or `status: error` result, the adapter's raw output is persi
   EOF
   ```
 
-  The runners that `gtms init` ships (`bats-runner.sh`, `playwright-runner.sh`) write this exact shape from v0.3.3. Releases v0.2.0 through v0.3.2 shipped the bare `log: |` form. In an existing project, either change the runner's two `log: |` lines to `log: |2` (this fixes only the log block; an older runner keeps every other pre-v0.3.3 behaviour, including the Playwright exit-code classification), or run `gtms init --force` with the preset: that refreshes a pristine recognised older runner in place and writes a `.gtms-new` companion beside an edited or unrecognised one, but it also rewrites `gtms.config` with no backup, so copy the config aside first and re-apply your customisations afterwards. For the bats preset the recognised older runner is the one shipped by v0.3.0 through v0.3.2; the v0.2.0 bats runner is not recognised. See the user guide's `gtms init` section for the full contract.
+  The runners that `gtms init` ships (`bats-runner.sh`, `playwright-runner.sh`) write this exact shape from v0.3.3. Releases v0.2.0 through v0.3.2 shipped the bare `log: |` form. In an existing project, either change the runner's two `log: |` lines to `log: |2` (this fixes only the log block; an older runner keeps every other pre-v0.3.3 behaviour, including the Playwright exit-code classification), or run `gtms init --force` with the preset: that refreshes a pristine recognised older runner in place and writes a `.gtms-new` companion beside an edited or unrecognised one. It also rewrites `gtms.config`, after saving the old file as `gtms.config.bak` (or the next free `gtms.config.bak.N`) and naming the backup, so re-apply your customisations from that backup afterwards. Line endings do not matter: a pristine runner checked out with CRLF line endings is still recognised. For the bats preset the recognised older runner is the one shipped by v0.3.0 through v0.3.2; the v0.2.0 bats runner is not recognised. See the user guide's `gtms init` section for the full contract.
 
 - **Tier 1 adapters** get `log:` filled in automatically on failure. GTMS captures stdout + stderr from the process and writes them into the result contract (stderr leads when both are present — most frameworks emit the error line to stderr). The mechanism fires for both the `fail` and `error` branches of the `fail-exit-codes:` mapping.
 
@@ -1713,8 +1874,8 @@ On a `result: fail` or `status: error` result, the adapter's raw output is persi
 
 | Tier | How the adapter reports | What GTMS infers |
 |------|------------------------|------------------|
-| **Tier 1** | Exit code only. Adapter author never sees the result contract. | GTMS sets: `status` from exit code (0 = complete, non-zero = error). If `fail-exit-codes:` is declared on the adapter entry, listed non-zero codes map to `fail` instead. `attempts` = 1, `completed` = now. |
-| **Tier 2** | Script updates `$GTMS_RESULT_FILE` directly. | GTMS reads the file after script exits. If `status` is still `pending`, falls back to exit code. |
+| **Tier 1** | Exit code only. Adapter author never sees the result contract. | GTMS sets: `status` from exit code (0 = complete, non-zero = error). If `fail-exit-codes:` is declared on the adapter entry, listed non-zero codes map to `fail` instead. `attempts` = 1, `completed` = now. The exit-code outcome counts only once GTMS has durably written that terminal handoff; if the write fails, is refused, or loses the concurrency retry, the run errors instead. |
+| **Tier 2** | Script updates `$GTMS_RESULT_FILE` directly. | GTMS reads the file after script exits. A synchronous `execute` requires a terminal contract and does not fall back to the exit code: a contract still `pending`, `in-progress` or empty is recorded as `status: error`. For `create`, `automate` and `prime`, a `status` still `pending` falls back to the exit code. |
 | **Built-in** | GTMS core handles internally. | No external result contract needed. |
 
 > **Artefact detection (Tier 1 / Tier 2 fallback):** When GTMS handles the result (Tier 1, or Tier 2 when the script doesn't update the contract), it populates the `artefact` field from two sources: (1) files written via stdout streaming (`<gtms-file>` tags), or (2) new files detected in the output directory after adapter invocation. The output directory scan uses a before/after snapshot to report only NEW files created by the adapter, not pre-existing files. If neither source produces files, the field remains empty.
@@ -1769,14 +1930,24 @@ After a `create` adapter returns cleanly (exit 0), GTMS inspects every `.md` fil
 4. `test_case_id` is one of the **pre-generated batch IDs** passed to the adapter via `{tc_ids}` (Tier 1) / `$GTMS_TC_IDS` (Tier 2).
 5. No two emitted specs share the same `test_case_id`.
 
-Files that don't match the `tc-{8hex}-*.md` naming pattern (e.g. `notes.txt`, `config.yaml`, README fragments) are silently skipped — the validator only inspects files that look like GTMS spec output.
+Files that don't match the `tc-{8hex}-*.md` naming pattern (e.g. `notes.txt`, `config.yaml`, README fragments) are silently skipped -- the validator only inspects files that look like GTMS spec output.
 
 **On any violation:**
 
-- The process exits non-zero; the CLI prints the `✗ Task failed: ...` summary on stderr with one indented line per offender (`    {filename}: {reason}`).
+- The process exits non-zero; the CLI prints the `✗ Task failed: ...` summary on stderr. It opens with `Created spec failed validation.`, then one line per rejected file saying where it is now, then the validation detail with one indented line per offender (`    {filename}: {reason}`).
 - The result contract is updated: `status: error`, and a new `validation-error:` field carries the same formatted summary for durability.
-- The task file is moved to `gtms/tasks/error/`.
-- The offending files are **left on disk** — never auto-deleted, never renamed. Users / AI agents need them in place to diagnose.
+- The task file is moved to `<gtms folder>/tasks/error/`. `<gtms folder>` is `gtms/` unless the project renamed it.
+- The offending files are never deleted and never admitted to the test cases folder. GTMS quarantines each one it can preserve: a file it can prove this create wrote (its filename ID is one GTMS generated for this invocation) is moved unchanged to `<gtms folder>/tasks/error/<task-id>/artifacts/`, and its new path is printed as `Rejected output preserved at: <path>`. Valid specs from the same invocation stay in the test cases folder, so the read commands keep working. Users / AI agents need the evidence to diagnose.
+- An offending file GTMS cannot quarantine is left where it is and named with the reason: `Rejected output was left in place because GTMS could not prove this create owns it: <path>. Inspect concurrent create activity, then repair or remove the file if appropriate.`, or the same opening with `because it is not a regular file: <path>.` (a symlink or special file) or `because its path is outside the project or cannot be safely resolved: <path>.`
+- A quarantine move that fails is reported as `Rejected output could not be preserved and remains at: <path> (<reason>)`; GTMS never claims a file was preserved unless it was.
+
+**Stale-header hint.** When a violation is one of the four header reasons -- `no frontmatter block`, `missing schema discriminator`, `malformed or empty schema discriminator`, or `unsupported schema version` -- the summary ends with one line naming the producer:
+
+- A shipped producer (the built-in's `test/templates/manual-testcase.template.md` or `agent-testcase.template.md`, or the scaffolded `manual-create-script.sh` / `agent-create-script.sh`, under the active GTMS folder): `the invalid header was produced by <file>. Run gtms init --force --preset <preset>, replacing <preset> with manual, bats, or playwright -- use the preset originally used for this project.`
+- The demo create adapter: `the invalid header was produced by _demo/adapters/create-demo.sh; refresh it with gtms init --force --demo.`
+- Any other create adapter: `the <adapter> create adapter (script <path>) wrote a spec without a valid test-case/v2 header; update the adapter so its output declares gtms_schema: "test-case/v2".` (without the `(script ...)` part for a `command:` adapter). GTMS does not suggest `gtms init` here: a custom adapter must emit `gtms_schema: "test-case/v2"` itself, and refreshing the scaffold does not change it.
+
+A failure with none of those four reasons -- an ID, filename or duplicate problem, a wrong `type` or `test_type`, a wrong-kind field, or unparseable frontmatter -- gets no producer hint.
 
 **On success** the invocation proceeds to the normal result-contract handling path with no behavioural change.
 
@@ -1789,13 +1960,13 @@ Note what the contract is NOT. It is not a downstream join key. Every command th
 The create validator checks **ID integrity** (filename <-> frontmatter <-> batch IDs). It does NOT check the **content** of a spec for fidelity to the product. An AI create adapter can emit a spec that passes every ID-integrity invariant but prescribes `gtms` commands the product rejects. Observed classes (surfaced in dogfooding):
 
 - **Hallucinated flags.** Spec prescribes `gtms delete tc-XXXXXXXX --yes`. The product has no `--yes` flag -- `gtms delete` is non-destructive by design and confirmation prompts were deliberately rejected. The LLM extrapolated from the generic "destructive CLI takes `--yes`/`--force`" convention. Symptom at execute time: `Error: unknown flag: --yes`. 12/12 specs in the batch carried this defect.
-- **Rejected positional-arg prefix.** Spec prescribes `gtms delete gtms/test/cases/bulk`. The product explicitly rejects this (`internal/cli/validate.go:80-99`, friendly message: *"don't include the gtms/test/cases/ prefix — GTMS adds it automatically"*). Symptom: CLI validation error.
+- **Rejected positional-arg prefix.** Spec prescribes `gtms delete gtms/test/cases/bulk`. The product explicitly rejects this (`validateFolderSafety` in `internal/target/classify.go`, shared by every folder-aware command; message: `don't include the gtms/test/cases/ prefix -- GTMS adds it automatically`, naming the active test cases folder in a renamed project). Symptom: CLI validation error.
 - **Vocabulary cross-contamination between sibling views.** When an ENH touches *one* of two similar code paths (e.g. detail-view vs folder-summary) and asks for a regression spec on the *unchanged* sibling, the AI can copy vocabulary from the in-scope view into assertions for the out-of-scope view. Surfaced in dogfooding: `tc-1aa2f86a` was generated to assert the folder-summary `Key:` legend is unchanged, but asserted the detail-view token set (`complete/pass`, `failed`, `error/stale`, `pending`) against a legend that uses entirely different vocabulary by design (`all pass`, `some failing`, `not yet attempted`). The command-level invocation was correct, so `/tests-verify-intent` couldn't catch it (both spec and BATS had drifted together) -- execute caught it cleanly as a cross-token mismatch. Mitigation until a dedicated `/specs-verify` check lands: when an ENH scope explicitly says "sibling view unchanged", grep the generated spec for tokens that belong to the *other* view and cross-reference against product source.
 
 These are all **spec-quality** defects, not ID-integrity defects. They slip through the ID-integrity validator because the filenames and IDs are all correct -- the defect is in the prose *content* of the spec. See `feedback_bug_enh_records.md` / `dogfood_spec_authoring.md` in session memory for the running catalogue.
 
 **Today's defences** (partial):
-- `/tests-verify-intent` (renamed from `/tests-verify` 2026-07-10) was hardened (2026-04-17) to fail specs whose BATS doesn't invoke the prescribed command string literally — this catches the class when BATS quietly diverges from spec, which is often how a hallucinated flag first surfaces.
+- `/tests-verify-intent` (renamed from `/tests-verify` 2026-07-10) was hardened (2026-04-17) to fail specs whose BATS doesn't invoke the prescribed command string literally -- this catches the class when BATS quietly diverges from spec, which is often how a hallucinated flag first surfaces.
 - A dedicated `/specs-verify` spec-vs-product check is proposed. Until it ships, the manual defence is to grep new `gtms/test/cases/<folder>/*.md` for suspicious flags (`--yes`, `--force`, `--confirm`) and cross-reference against `gtms <cmd> --help`.
 
 **Upstream fix** (when tackled): tighten your create adapter's prompt template (the file named by `prompt-template:` in `gtms.config`, which you author -- `gtms init` does not scaffold one) with an explicit constraint -- *"only reference flags documented in `gtms <cmd> --help`"*. This removes the defect at generation rather than catching it downstream.
@@ -1804,9 +1975,9 @@ These are all **spec-quality** defects, not ID-integrity defects. They slip thro
 
 | Tier | What to do |
 |------|-----------|
-| Tier 1 (`command:`) | Substitute `{tc_ids}` into your command and pass it through to your adapter. Use the IDs in the order supplied, one per emitted spec. Write each spec to `{output_dir}` — not to CWD-relative paths. |
+| Tier 1 (`command:`) | Substitute `{tc_ids}` into your command and pass it through to your adapter. Use the IDs in the order supplied, one per emitted spec. Write each spec to `{output_dir}` -- not to CWD-relative paths. |
 | Tier 2 (`script:`) | Read `$GTMS_TC_IDS` (comma-separated). Write each spec to `$GTMS_OUTPUT_DIR`. Use the IDs in order. |
-| Built-in | N/A — core handles this without adapter involvement. |
+| Built-in | N/A -- core handles this without adapter involvement. |
 
 **Common failure modes observed in the wild (rejected by the validator except where noted):**
 
@@ -1815,8 +1986,15 @@ These are all **spec-quality** defects, not ID-integrity defects. They slip thro
 - Adapter writes a filename like `tc-AAAAAAAA-slug.md` with `test_case_id: tc-bbbbbbbb` in the frontmatter. Violates #3.
 - Adapter emits a spec whose frontmatter YAML is missing `test_case_id` entirely, or whose frontmatter cannot be parsed at all. Violates #0 or #1 (`could not parse frontmatter: ...` or `frontmatter is missing required field 'test_case_id'`). These used to degrade to a filename-only listing; under the v2 format they fail the task like any other violation.
 - Adapter writes the old header (`type: Functional`, no `gtms_schema`) -- usually a prompt template or guide written for an earlier GTMS version. Violates #0 (`missing schema discriminator: key 'gtms_schema' is absent`). Update the template or guide to the v2 header.
+- Adapter emits frontmatter with a YAML key built from aliases that GTMS cannot read within its limits: a key that refers back to itself, nests deeper than 64 levels, or expands too far. Violates #0. GTMS refuses the file quickly with one of these reasons:
+  - `could not parse frontmatter: a mapping key contains a cyclic alias reference`
+  - `could not parse frontmatter: a mapping key nests deeper than the 64-level limit`
+  - `could not parse frontmatter: mapping key identities exceed the 100000-node expansion budget`
+  - `could not parse frontmatter: mapping key identities exceed the 1048576-byte rendered-identity budget`
 
-Whatever the trigger — prompt drift, context compaction, model quirk — the validator treats all of them the same way: fail the task, name the file, leave the evidence.
+  The limits are described with the format rules in [USER-GUIDE.md -- GTMS test case OKF profile](../USER-GUIDE.md#gtms-test-case-okf-profile).
+
+Whatever the trigger -- prompt drift, context compaction, model quirk -- the validator treats all of them the same way: fail the task, name the file, leave the evidence.
 
 **Scope boundary.** The validator runs **only** on the `create` command path. It does *not* run on `automate`, `execute`, `status`, `gaps`, `map`, or `triage`. Pre-existing specs whose filename ID and frontmatter ID disagree are not auto-corrected, and they do not need to be: downstream commands address a test case by its frontmatter `test_case_id`, so such a file is a working test case under its body ID. Do not tell users to rename them.
 
@@ -1860,7 +2038,7 @@ Two Tier 0 built-in automate adapters -- `agent-automate` and `manual-automate` 
 
 `gtms automate tc-XXXX --framework bats --adapter agent-automate` produces:
 
-1. A BATS skeleton file at `test/acceptance/{folder}/{tc-slug}.bats` (the artefact basename preserves the source spec's human-readable slug, e.g. `tc-aaaaaaaa-login-happy.bats`, not just the bare ID) with `setup_file()`, `setup()`, a placeholder `@test` block, and `teardown()`. The depth in `setup_file`'s `PROJECT_ROOT` discovery loop is computed from the subfolder structure. (Playwright lands the equivalent skeleton under `gtms/scripts/playwright/{folder}/`.)
+1. A BATS skeleton file at `test/acceptance/{folder}/{tc-slug}.bats` (the artefact basename preserves the source spec's human-readable slug, e.g. `tc-aaaaaaaa-login-happy.bats`, not just the bare ID) with a `setup_file()` that exports `PROJECT_ROOT` and one placeholder `@test` block that calls `skip`. The relative depth `setup_file()` uses to compute `PROJECT_ROOT` (`${PROJECT_ROOT_DEPTH}`, e.g. `../../..`) comes from the subfolder structure. The skeleton loads no helper file, so it runs, and records a skip, on a fresh project; a fresh project has no `bats-assert` either, so filled bodies use core BATS checks unless the project installs an assertion library. (Playwright lands the equivalent skeleton under `gtms/scripts/playwright/{folder}/`.)
 2. A six-field wiring record at `gtms/automation/wiring/{tc-id}--bats.wiring.yaml`:
 
    ```yaml
@@ -1918,7 +2096,7 @@ no automate stage).
 
 #### The `pending → <real hash>` bootstrap
 
-`PendingArtefactHash` (literal `pending`) is the single permitted sentinel value in the wiring schema. It exists because the built-in automate writes the skeleton *before* the agent fills the `@test` body -- hashing the empty skeleton at write time would guarantee a stale-wiring error on the very first `gtms execute`.
+`PendingArtefactHash` (literal `pending`) is the single permitted sentinel value in the wiring schema. It exists because the built-in automate writes the skeleton *before* the agent fills the `@test` body -- hashing the empty skeleton at write time would make the very first `gtms execute` see the filled-in script as a changed script, which a project set to `execute.on-script-change: refuse` refuses.
 
 The bootstrap mechanism, implemented in `internal/cli/execute.go` `bootstrapPendingWiring`:
 
@@ -1933,7 +2111,7 @@ The bootstrap mechanism, implemented in `internal/cli/execute.go` `bootstrapPend
 | Guarantee | Source |
 |-----------|--------|
 | Bootstrap runs **before** the drift check and **before** `--allow-stale` evaluation | `internal/cli/execute.go` (single-TC path), `runBulkExecute` (bulk parity) |
-| `gtms execute` may only transition `pending → <real hash>` — never overwrites a non-sentinel value | `bootstrapPendingWiring` guard + `tc-d596e69e-*.bats` |
+| The bootstrap may only transition `pending -> <real hash>` -- it never overwrites a non-sentinel value. (Recording an accepted script edit under `execute.on-script-change: accept` is a separate, later step.) | `bootstrapPendingWiring` guard + `tc-d596e69e-*.bats` |
 | Missing or unhashable artefact while pending → exit non-zero, **no** wiring mutation, **no** adapter invocation, **no** `.gtms/results/` file | `tc-83f46d85-*.bats` |
 | Write-back failure during bootstrap → exit non-zero, wiring stays pending on disk (atomic write) | `internal/wiring/wiring.go` `Write` |
 | `--allow-stale` does NOT bypass the bootstrap | `tc-14399830-*.bats` |
@@ -2283,12 +2461,12 @@ Adapter authors should still make the prompt rule emphatic so the AI gets it rig
 If a mismatch arrives later through an out-of-band edit, leave it alone. Frontmatter is the identity, so the file is a working test case under its body ID and nothing downstream rejects it. Rename it only if you want the folder listing to read cleanly, and never tell a user they must.
 
 **Multi-file automate output:**
-`gtms automate` expects exactly one `<gtms-file>` tag per invocation. An AI that emits a second tag for a helper or fixture file (instead of using the framework's shared-helper module) will cause the task to fail with `status: error` at automate time — no automation record is written. Make the one-file rule explicit in automate prompt templates, not implicit. Example:
+`gtms automate` expects exactly one `<gtms-file>` tag per invocation. An AI that emits a second tag for a helper or fixture file (instead of using the project's shared helper module, if it has one) will cause the task to fail with `status: error` at automate time -- no automation record is written. Make the one-file rule explicit in automate prompt templates, not implicit. Example:
 
 ```xml
 <output_rules>
 - Emit exactly ONE <gtms-file> tag per invocation.
-- Shared helpers belong in common-setup.bash (BATS) or GtmsTestHelper.psm1 (Pester), NOT in a second tag.
+- Shared helpers belong in the project's existing helper module (for example test/test_helper/common-setup.bash), NOT in a second tag.
 - GTMS rejects multi-file automate output at automate time.
 </output_rules>
 ```
@@ -2321,6 +2499,20 @@ setup() {
 ```
 
 Key points: `export` is required (without it, `PROJECT_ROOT` is invisible in `setup()` subshells); the `gtms.config`-walking loop works at any depth; `load` uses `$PROJECT_ROOT` for an absolute path.
+
+The `load "$PROJECT_ROOT/test/test_helper/common-setup"` / `_common_setup` lines
+assume the project defines that helper -- they are a project convention, not a
+default. The shipped `gtms init --preset bats` skeleton does **not** scaffold a
+`common-setup.bash`, and since BUG-202 the shipped skeleton is self-contained and
+loads no helper. Only include the helper `load` and `_common_setup` in your
+automate prompt template if your project actually provides that helper file;
+otherwise the generated `setup()` would fail on a fresh checkout. Keep the
+`load` inside `setup()`, as shown: a function loaded in `setup_file` is not
+visible in `setup` or the test body unless the helper exports it with
+`export -f`. A fresh project has no `bats-assert` or `bats-support` either, so
+a prompt template that tells the AI to use `assert_success` or `assert_output`
+needs a project that installs those libraries; otherwise ask for core BATS
+checks (`[ "$status" -eq 0 ]`, `[[ "$output" == *text* ]]`).
 
 **Project root depth calculation — cross-framework pattern:**
 Every test framework needs to resolve the project root from the test file's location. AI consistently gets the depth wrong when tests live in subdirectories. This is the single most common automation bug across all frameworks:
@@ -2578,7 +2770,7 @@ adapters:
 
 **Important:** If your script uses `cat >` to overwrite the result contract, include ALL fields — the GTMS-prepopulated values are gone. If you only need pass/fail, skip the result contract and just `exit 0` or `exit 1` — GTMS handles the rest.
 
-**When you need Tier 2:** GitHub Actions triggers (start workflow, capture run ID), multi-tool pipelines (linter -> generator -> formatter), custom result parsing (JUnit XML), retry logic -- and **execute adapters that need to distinguish a test failure (`result: fail`) from an adapter error (`status: error`)** (see [Status and Result Values](#status-and-result-values-enh-130-orthogonal-contract) for the pattern).
+**When you need Tier 2:** GitHub Actions triggers (start workflow, capture run ID), multi-tool pipelines (linter -> generator -> formatter), custom result parsing (JUnit XML), retry logic -- and **execute adapters that need to distinguish a test failure (`result: fail`) from an adapter error (`status: error`)** (see [Status and Result Values](#status-and-result-values-orthogonal-contract) for the pattern).
 
 ### Parsing Test Framework Output (Tier 2)
 
@@ -2724,7 +2916,7 @@ Template variables are command-specific. The most common mistake is using `{refe
 | automate | `{testcase}`, `{testcase_content}`, `{testcase_file}` | Using `{reference}` (empty for automate) |
 | execute | `{testcase}`, `{artefact_file}`, `{testcase_file}` | Using `{reference}` (empty for execute) |
 
-See the full [template variable table](#template-variables) for all variables and which commands populate them.
+See the full [template variable table](#variable-reference) for all variables and which commands populate them.
 
 > GTMS warns at invocation time if you use a token it does not recognise, or if you wrap a recognised placeholder in shell quotes. See [Two invocation-time template warnings](#two-invocation-time-template-warnings).
 
@@ -2804,7 +2996,7 @@ See the [execute fixture checklist](#cross-framework) for the three things that 
 | Adapter command receives blank values | Wrong template variable for command | Use `{testcase}` for automate/execute, `{reference}` for create |
 | Execute says `No wiring record found for '<tc>' (framework: <fw>)` | No wiring record for that TC+framework, or a framework mismatch between adapters | Create the `<tc>--<fw>.wiring.yaml` fixture (or run `gtms link`); set `framework:` explicitly on both automate and execute adapters |
 | Streaming test checks wrong filename | Used shared mock-adapter-streaming.sh | Write inline mock with correct TC-ID-prefixed filename |
-| Execute skips with "stale wiring" | The spec or artefact changed since the wiring record was written | `gtms link --refresh <tc>` to re-acknowledge (or refresh the fixture's hashes) |
+| Execute reports `not run (spec changed)`, or `not run (script changed)` | The spec changed since the wiring record was written (both policies), or the script changed in a project set to `execute.on-script-change: refuse`. Under the default `accept`, a script-only change is accepted and run, not refused | Confirm per test case with `gtms link --refresh <tc> --framework <fw>` (or refresh the fixture's hashes). A `script missing`, `script unreadable` or `spec unavailable` reason needs the file restored or regenerated, not a refresh |
 | Execute says "artefact file not found" | Artefact path in the wiring record doesn't exist on disk | Create the file at the path in the wiring record's `artefact:` field |
 | Automation record `executed_artefact:` stays empty after a Tier 1 mock execute | **Obsolete after the wiring cutover** -- `pipeline.UpdateExecutionResult` no longer runs on the execute path. `executed_at:` / `executed_artefact:` are not written to the automation record. The execute-timestamp substrate is `.gtms/results/<task>.handoff.yaml` `completed:`, which comes from `rc.Completed` regardless of whether `rc.Artefact` is populated. Tier 1 mocks no longer need to populate `rc.Artefact` for timestamp reasons. | Tier 1 mocks may still need to create files when an assertion depends on the result-file path (`rc.Artefact` flows through to the handoff `artefact:` field), but `command: 'echo PASS'` is now sufficient when the assertion is on the handoff `completed:` or `frameworks[].last_executed_here`. |
 
@@ -2958,7 +3150,7 @@ The automate prompt template is the highest-leverage artifact in adapter develop
 - [ ] **Assertion patterns** — show framework-specific assertion examples with `-Because` / descriptive messages. Include partial matching patterns to avoid CRLF issues.
 - [ ] **Test case ID in test names** — instruct the AI to embed `tc-{hex}` in each test name for traceability.
 - [ ] **`<gtms-file>` output format** — bare filenames only, correct extension (`.bats`, `.Tests.ps1`, `.spec.ts`), no directory prefixes.
-- [ ] **Exactly one `<gtms-file>` per automate invocation** — instruct the AI to emit exactly one `<gtms-file>` tag per `gtms automate` run. Shared helpers belong in the framework's existing helper module (`common-setup.bash` for BATS, `GtmsTestHelper.psm1` for Pester), never in a second tag. GTMS rejects multi-file automate output at automate time -- the task fails and no automation record is written. `create` is unaffected: many files per invocation (one per test case) is the expected shape there.
+- [ ] **Exactly one `<gtms-file>` per automate invocation** -- instruct the AI to emit exactly one `<gtms-file>` tag per `gtms automate` run. Shared helpers belong in the project's shared helper module, if it has one, never in a second tag. GTMS rejects multi-file automate output at automate time -- the task fails and no automation record is written. `create` is unaffected: many files per invocation (one per test case) is the expected shape there.
 - [ ] **Output rules at the END** — after all unbounded content (`{testcase_content}`, `{guides}`, `{context}`). See [Prompt Template Authoring](#prompt-template-authoring).
 - [ ] **Negative instructions** — "Do NOT reproduce examples from source material", "Do NOT include directory prefixes in filenames", "Do NOT use framework v4 syntax".
 - [ ] **One test per TC ID** — instruct the AI to generate exactly one test function/block per test case spec. Multi-step specs should be sequential steps within a single test, not split across multiple tests with the same ID. Duplicated IDs break `gtms gaps` traceability.
@@ -3067,12 +3259,12 @@ The same applies for any Tier 1 create adapter (not just BATS mocks). If you're 
 When the post-write validator rejects a spec batch, the result contract gets `status: error` -- matching the existing `rejectMultiFileAutomate` precedent. The **task file** still routes to `gtms/tasks/error/`, but assertions on contract YAML should look for `status: error`. The summary string and the separate `validation-error:` field both carry the formatted violation list.
 
 **`gtms execute` requires an existing wiring record (adapter workflow design):**
-The execute pipeline is keyed on the wiring record -- `gtms/automation/wiring/<tc-id>--<fw>.wiring.yaml` must exist before `gtms execute <tc-id>` will invoke an adapter. The wiring record has no lifecycle status field; it just has to exist and not be drifted. If your adapter's workflow skips the `gtms automate` step (e.g. you're shipping pre-written scripts), use `gtms link` to write a wiring record pointing at the artefact before invoking `gtms execute`; otherwise the user hits `No wiring record found for 'tc-XXX' (framework: <fw>)`. For manual testing, use `gtms prime --framework manual` to stamp the result file before executing with `--adapter manual-execute`.
+The execute pipeline is keyed on the wiring record -- `gtms/automation/wiring/<tc-id>--<fw>.wiring.yaml` must exist before `gtms execute <tc-id>` will invoke an adapter. The wiring record has no lifecycle status field; it just has to exist, and its spec hash has to match the current spec (a script-only change is accepted by default; under `execute.on-script-change: refuse` the script hash has to match too). If your adapter's workflow skips the `gtms automate` step (e.g. you're shipping pre-written scripts), use `gtms link` to write a wiring record pointing at the artefact before invoking `gtms execute`; otherwise the user hits `No wiring record found for 'tc-XXX' (framework: <fw>)`. For manual testing, use `gtms prime --framework manual` to stamp the result file before executing with `--adapter manual-execute`.
 
-**Mode 3 prime-path exemption:** When `gtms execute` resolves to `agent-execute` or `manual-execute` (the Tier 0 built-in action adapters), the wiring-record lookup is skipped. These adapters read the verdict from the filled result template (`gtms/manual/records/{tc-id}--manual.result.yaml`), not from an automation artefact. The prime pipeline (`gtms prime` -> user edits -> `gtms execute --adapter manual-execute`) is the intended entry path for these adapters.
+**Mode 3 prime-path exemption:** When `gtms execute` resolves to one of the four reserved manual execute adapters (`agent-execute`, `manual-execute`, `agent-execute-script`, `manual-execute-script`), the wiring-record lookup is skipped. These adapters read the verdict from the filled result template (`gtms/manual/records/{tc-id}--manual.result.yaml`), not from an automation artefact. The prime pipeline (`gtms prime` -> user edits -> `gtms execute --adapter manual-execute`) is the intended entry path for these adapters. They accept only `--framework manual` or no framework, and only `mode: sync`; see [The four reserved manual execute adapters](#the-four-reserved-manual-execute-adapters).
 
 **Execute needs a wiring record, not a `status:` gate:**
-`gtms execute` resolves solely from a wiring record (`gtms/automation/wiring/<tc>--<fw>.wiring.yaml`). The six-field wiring schema has **no `status` field**, so there is no `developed`/`accepted` gate -- the earlier gate (and the `automation not ready` skip) is retired. **Anyone hand-crafting fixtures** -- BATS, Pester, scripted pipelines, migration scripts, seed data for demos -- must write a wiring record for the TC and framework (not an `.automation.md` record). Missing wiring errors with `No wiring record found for '<tc>' (framework: <fw>)`; a spec or artefact edit since the wiring was written surfaces as stale wiring (acknowledge with `gtms link --refresh <tc>`, or refresh the fixture's hashes).
+`gtms execute` resolves solely from a wiring record (`gtms/automation/wiring/<tc>--<fw>.wiring.yaml`). The six-field wiring schema has **no `status` field**, so there is no `developed`/`accepted` gate -- the earlier gate (and the `automation not ready` skip) is retired. **Anyone hand-crafting fixtures** -- BATS, Pester, scripted pipelines, migration scripts, seed data for demos -- must write a wiring record for the TC and framework (not an `.automation.md` record). Missing wiring errors with `No wiring record found for '<tc>' (framework: <fw>)`; a spec edit since the wiring was written makes execute refuse with `was not run because its test case spec changed` (confirm with `gtms link --refresh <tc> --framework <fw>`, or refresh the fixture's hashes). An artefact edit is accepted and run by default, which rewrites the fixture's `artefact-hash`; it refuses only under `execute.on-script-change: refuse`.
 
 ### Playwright
 

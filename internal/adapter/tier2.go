@@ -11,8 +11,11 @@ import (
 )
 
 // InvokeTier2 executes a Tier 2 adapter script with GTMS_ environment variables.
-// The script can update the result contract file directly. If it doesn't,
-// GTMS falls back to exit code handling (same as Tier 1).
+// The script can update the result contract file directly. If a create, automate
+// or prime script doesn't, GTMS falls back to exit code handling (same as Tier 1).
+// A synchronous execute script must leave a terminal contract: there is no
+// fallback, and a non-terminal contract is recorded as an error (ENH-188; see
+// handleSyncResult in invoker.go).
 func InvokeTier2(ctx context.Context, ac *AdapterContext, scriptPath string) (*InvocationResult, error) {
 	// Check script exists
 	if _, err := os.Stat(scriptPath); os.IsNotExist(err) {

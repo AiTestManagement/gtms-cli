@@ -806,9 +806,9 @@ requirement: REQ-M
 
 	out := buf.String()
 
-	// New wiring categories appear as headers with counts.
-	assert.Contains(t, out, "Stale wiring (testcase): 1")
-	assert.Contains(t, out, "Stale wiring (artefact): 1")
+	// New wiring categories appear as headers with counts (ENH-225 wording).
+	assert.Contains(t, out, "Test case specs changed: 1")
+	assert.Contains(t, out, "Automation scripts changed: 1")
 	assert.Contains(t, out, "Missing artefacts: 1")
 
 	// And the specific TCs are listed.

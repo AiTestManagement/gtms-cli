@@ -469,7 +469,7 @@ func writeKeyAndSummary(w io.Writer, report *reader.MapReport) {
 
 // writeKey writes the symbol key line.
 func writeKey(w io.Writer) {
-	fmt.Fprintf(w, "\nKEY: %s complete  %s in progress  %s pending  \u2014 not started  %s failed  %s skipped  %s stale\n",
+	fmt.Fprintf(w, "\nKEY: %s complete  %s in progress  %s pending  \u2014 not started  %s failed  %s skipped  %s error or spec or script changed\n",
 		output.IconComplete, output.IconInProgress, output.IconPending, output.IconError, output.IconSkipped, output.IconWarning)
 }
 

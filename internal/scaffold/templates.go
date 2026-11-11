@@ -69,8 +69,127 @@ var PresetAssets = map[string][]PresetAsset{
 // refresh in place; an asset with no entry here keeps the plain
 // absent->write / present->skip behaviour even under --force (BUG-189).
 var PresetAssetPriorVersions = map[string][]string{
-	"gtms/adapters/playwright-runner.sh": playwrightRunnerScriptPriorVersions,
-	"gtms/adapters/bats-runner.sh":       batsRunnerScriptPriorVersions,
+	"gtms/adapters/playwright-runner.sh":           playwrightRunnerScriptPriorVersions,
+	"gtms/adapters/bats-runner.sh":                 batsRunnerScriptPriorVersions,
+	"gtms/automation/templates/bats.template.bats": batsAutomateTemplatePriorVersions,
+}
+
+// --- BUG-203: v0.3.x common-asset upgrade catalogue ---
+//
+// The all-preset scaffolded producer files below (and the demo create adapter) were
+// skipped by gtms init --force in v0.4.0, so a v0.3.x project kept emitting the pre-v2
+// header and gtms create then failed strict validation. They now join the same upgrade
+// path the preset-owned runners use (BUG-189/196/202): an unedited v0.3.x copy is
+// refreshed in place, an edited copy is kept with a .gtms-new companion, a current copy
+// is left alone. Each file's single recognised prior version is the byte-exact v0.3.x
+// snapshot embedded under priorversions/ (captured from tag v0.3.3; see embed.go).
+
+// skillCreateRelPath is the starter skill that joins the BUG-203 upgrade catalogue. Its
+// current content comes from skillsFS (not a Go const), so commonUpgradeableAssets reads
+// it at call time and WriteExampleSkills stops writing this one path.
+const skillCreateRelPath = "gtms/skills/gtms-tests-create/SKILL.md"
+
+// skillCatalogueReadmeRelPath is the starter-skills catalogue README. ENH-232 Decision 9
+// moves it from the create-only skills walker into the common upgrade catalogue so gtms
+// init --force upgrades a pristine five-skill README in place (and keeps an edited one with
+// a .gtms-new companion) once the shipped README gains the sixth skill. Its current content
+// comes from skillsFS, so commonUpgradeableAssets reads it at call time and
+// writeExampleSkillsForParent stops writing this one path.
+const skillCatalogueReadmeRelPath = "gtms/skills/README.md"
+
+// demoCreateScriptRelPath is the demo create adapter, upgraded under gtms init --force --demo.
+const demoCreateScriptRelPath = "_demo/adapters/create-demo.sh"
+
+// bug203PriorVersionFile maps each BUG-203 upgradeable RelPath to its embedded v0.3.x
+// snapshot filename under priorversions/. Both testcase templates share one snapshot;
+// both result templates share one snapshot (AgentResultTemplateYAML == manualResultTemplate).
+var bug203PriorVersionFile = map[string]string{
+	"gtms/test/templates/manual-testcase.template.md":    "manual-testcase.template.md",
+	"gtms/test/templates/agent-testcase.template.md":     "agent-testcase.template.md",
+	"gtms/manual/templates/manual-result.template.yaml":  "manual-result.template.yaml",
+	"gtms/manual/templates/agent-result.template.yaml":   "manual-result.template.yaml",
+	"gtms/adapters/manual-create-script.sh":              "manual-create-script.sh",
+	"gtms/adapters/agent-create-script.sh":               "agent-create-script.sh",
+	"gtms/adapters/manual-prime-script.sh":               "manual-prime-script.sh",
+	"gtms/adapters/agent-prime-script.sh":                "agent-prime-script.sh",
+	"gtms/test/guides/gtms-test-case-authoring-guide.md": "gtms-test-case-authoring-guide.md",
+	"gtms/schemas/manual-result.schema.json":             "manual-result.schema.json",
+	skillCreateRelPath:                                   "gtms-tests-create-SKILL.md",
+	skillCatalogueReadmeRelPath:                          "skills-README-v030.md",
+	demoCreateScriptRelPath:                              "create-demo.sh",
+}
+
+// bug203ExtraPriorVersionFiles registers ADDITIONAL recognised prior versions beyond the
+// single v0.3.3 snapshot in bug203PriorVersionFile. ENH-232 Decision 1 adds the untouched
+// v0.4.0 gtms-tests-create/SKILL.md body as a second recognised prior, pinned to LF, so
+// DOC-071 can later change the shipped create skill and an untouched v0.4.0 project still
+// upgrades in place. While the live create skill equals this v0.4.0 snapshot, the
+// current-content check in applyUpgradeableAsset wins (a pristine v0.4.0 copy reads as
+// current and is skipped); once the live body changes, this snapshot becomes the upgrade
+// source.
+var bug203ExtraPriorVersionFiles = map[string][]string{
+	skillCreateRelPath: {"gtms-tests-create-SKILL-v040.md"},
+}
+
+// priorVersionFile reads a byte-exact v0.3.x snapshot from priorVersionsFS. A missing
+// file is a build-time invariant failure (the //go:embed would not compile), so a read
+// error is fatal.
+func priorVersionFile(name string) string {
+	data, err := priorVersionsFS.ReadFile("priorversions/" + name)
+	if err != nil {
+		panic("scaffold: embedded prior version missing: " + name + ": " + err.Error())
+	}
+	return string(data)
+}
+
+func init() {
+	// Register the BUG-203 prior versions into the shared catalogue the init --force
+	// upgrade path consults (PresetAssetPriorVersions, keyed by RelPath). This lets
+	// isKnownPriorAsset recognise a pristine v0.3.x common asset exactly as it does a
+	// pristine older runner.
+	for rel, file := range bug203PriorVersionFile {
+		PresetAssetPriorVersions[rel] = []string{priorVersionFile(file)}
+	}
+	// ENH-232 Decision 1: append extra recognised priors (the v0.4.0 create skill body)
+	// without displacing the v0.3.3 snapshot. isKnownPriorAsset already scans the whole
+	// slice, so a project holding any registered prior is recognised and upgraded.
+	for rel, files := range bug203ExtraPriorVersionFiles {
+		for _, file := range files {
+			PresetAssetPriorVersions[rel] = append(PresetAssetPriorVersions[rel], priorVersionFile(file))
+		}
+	}
+}
+
+// commonUpgradeableAssets returns the all-preset scaffolded producer files that gtms init
+// --force upgrades (BUG-203). Current content comes from the live producer consts; the
+// skill's current content is read from skillsFS. The two testcase templates and the two
+// result templates deliberately share content but are listed under their own RelPaths.
+func commonUpgradeableAssets() ([]PresetAsset, error) {
+	skill, err := skillsFS.ReadFile("skills/gtms-tests-create/SKILL.md")
+	if err != nil {
+		return nil, fmt.Errorf("reading embedded gtms-tests-create skill: %w", err)
+	}
+	// ENH-232 Decision 9: the catalogue README is layout-neutral shipped content read
+	// from skillsFS, so it upgrades in place from the pristine five-skill prior and keeps
+	// an edited copy with a companion.
+	readme, err := skillsFS.ReadFile("skills/README.md")
+	if err != nil {
+		return nil, fmt.Errorf("reading embedded skills catalogue README: %w", err)
+	}
+	return []PresetAsset{
+		{RelPath: "gtms/test/templates/manual-testcase.template.md", Content: TestcaseTemplateMD, Perm: 0o644},
+		{RelPath: "gtms/test/templates/agent-testcase.template.md", Content: TestcaseTemplateMD, Perm: 0o644},
+		{RelPath: "gtms/manual/templates/manual-result.template.yaml", Content: manualResultTemplate, Perm: 0o644},
+		{RelPath: "gtms/manual/templates/agent-result.template.yaml", Content: AgentResultTemplateYAML, Perm: 0o644},
+		{RelPath: "gtms/adapters/manual-create-script.sh", Content: manualCreateScript, Perm: 0o755},
+		{RelPath: "gtms/adapters/agent-create-script.sh", Content: agentCreateScript, Perm: 0o755},
+		{RelPath: "gtms/adapters/manual-prime-script.sh", Content: manualPrimeScript, Perm: 0o755},
+		{RelPath: "gtms/adapters/agent-prime-script.sh", Content: agentPrimeScript, Perm: 0o755},
+		{RelPath: "gtms/test/guides/gtms-test-case-authoring-guide.md", Content: starterGuideContent, Perm: 0o644},
+		{RelPath: "gtms/schemas/manual-result.schema.json", Content: manualResultSchema, Perm: 0o644},
+		{RelPath: skillCreateRelPath, Content: string(skill), Perm: 0o644},
+		{RelPath: skillCatalogueReadmeRelPath, Content: string(readme), Perm: 0o644},
+	}, nil
 }
 
 // ValidPresets returns the list of valid preset names.
@@ -158,7 +277,36 @@ created: ${CREATED}
 // gtms/automation/templates/bats.template.bats, and the adapter falls back
 // to it when the file is missing. adapter/framework_support.go references
 // this const via BATSSupport.FallbackContent().
+//
+// BUG-202: the shipped skeleton is self-contained. Earlier releases loaded
+// test/test_helper/common-setup.bash in setup_file and called _common_setup
+// from setup, but the bats preset never scaffolds that helper, so on a fresh
+// project setup_file failed and every first automated test recorded fail. The
+// helper load, the _common_setup call, and the empty setup()/teardown() blocks
+// were removed. setup_file is kept, reduced to exporting PROJECT_ROOT -- a
+// framework-neutral capability that keeps ${PROJECT_ROOT_DEPTH} meaningful.
 const BATSAutomateTemplate = `#!/usr/bin/env bats
+
+# Auto-generated by gtms automate --adapter agent-automate
+# Test case: ${TESTCASE_ID}
+
+setup_file() {
+    export PROJECT_ROOT="$(cd "$(dirname "$BATS_TEST_FILENAME")/${PROJECT_ROOT_DEPTH}" && pwd)"
+}
+
+@test "${TESTCASE_ID}: <describe what this test validates>" {
+    # TODO: fill in the test body
+    skip "skeleton -- not yet implemented"
+}
+`
+
+// batsAutomateTemplateV040 is the exact BATSAutomateTemplate body shipped in
+// v0.3.0 through v0.4.0 (byte-identical in every release since ENH-162). The
+// gtms init --force upgrade path recognises a project still holding this
+// pre-BUG-202 body as a pristine older copy safe to refresh in place with the
+// self-contained skeleton above; see batsAutomateTemplatePriorVersions. Do not
+// edit this const: it is a frozen fingerprint, not a live template.
+const batsAutomateTemplateV040 = `#!/usr/bin/env bats
 
 # Auto-generated by gtms automate --adapter agent-automate
 # Test case: ${TESTCASE_ID}
@@ -3214,6 +3362,15 @@ var playwrightRunnerScriptPriorVersions = []string{playwrightRunnerScriptV1, pla
 // it is treated as user-modified and kept with a `.gtms-new` companion
 // (tc-55884862).
 var batsRunnerScriptPriorVersions = []string{batsRunnerScriptPreBUG196}
+
+// batsAutomateTemplatePriorVersions lists known, byte-exact shipped contents of
+// gtms/automation/templates/bats.template.bats that predate the current version.
+// BUG-202 made the bats automate skeleton self-contained; a project carrying the
+// v0.3.0-v0.4.0 body (which loads test/test_helper/common-setup.bash and calls
+// _common_setup) is refreshed in place to the current helper-free body by
+// gtms init --force --preset bats. Upgrading the binary alone does not fix such a
+// project, because its own copy of this template overrides the built-in skeleton.
+var batsAutomateTemplatePriorVersions = []string{batsAutomateTemplateV040}
 
 // tasksReadmeContent is the warning file placed at gtms/tasks/.README.md.
 // ENH-135: Signals that the tasks directory is GTMS-managed state.

@@ -23,12 +23,18 @@ import (
 // block line is indented four spaces, so YAML infers a four-space block and
 // the following two-space line closes it early.
 const createBadSpecAndMalformedContractScript = `#!/bin/sh
-cat > "${GTMS_OUTPUT_DIR}/tc-aaaaaaaa-bad-spec.md" <<'SPEC'
+# BUG-203 ownership rule (REV-209): the rejected spec must be OWNED by this invocation
+# (its filename ID one of the generated batch IDs) to be quarantined. Use the first batch
+# ID from GTMS_TC_IDS for the filename and the second for the frontmatter, so the sole
+# spec violation is the mismatch and the file is attributable and moved.
+ID1=$(printf '%s' "$GTMS_TC_IDS" | cut -d, -f1)
+ID2=$(printf '%s' "$GTMS_TC_IDS" | cut -d, -f2)
+cat > "${GTMS_OUTPUT_DIR}/${ID1}-bad-spec.md" <<SPEC
 ---
 gtms_schema: "test-case/v2"
 type: Test Case Spec
 test_type: Functional
-test_case_id: tc-deadbeef
+test_case_id: ${ID2}
 title: bad spec
 ---
 # Test
@@ -119,6 +125,20 @@ func TestREV164_CreateValidationFailure_UnusableContract_StillLeavesReadableHand
 	// The adapter's claimed pass is not salvaged anywhere.
 	assert.NotEqual(t, "pass", rc.Result)
 
-	// The bad spec stays on disk for inspection (BUG-038 behaviour, unchanged).
-	assert.FileExists(t, filepath.Join(outputDir, "tc-aaaaaaaa-bad-spec.md"))
+	// BUG-203 AC10 (Owner Decision 4, revised 2026-10-15: quarantine, not delete, and
+	// applies to every create path including configured adapters): a create whose output
+	// fails validation MOVES the invalid spec out of gtms/test/cases/ (so it no longer
+	// breaks status -r / map / gaps) into the task's error artefacts folder, preserving
+	// it byte-for-byte for inspection. The REV-164 guarantee this test pins (a readable
+	// error handoff survives an unusable contract) is unchanged above.
+	// The filename carries a runtime-generated batch ID, so assert by glob.
+	remaining, _ := filepath.Glob(filepath.Join(outputDir, "*-bad-spec.md"))
+	assert.Empty(t, remaining,
+		"BUG-203 AC10: the owned invalid spec must leave the cases tree after a failed create")
+	quarantinedMatches, _ := filepath.Glob(filepath.Join(root, "gtms", "tasks", "error", res.TaskID, "artifacts", "*-bad-spec.md"))
+	require.Len(t, quarantinedMatches, 1, "the invalid spec must be preserved in the error artefacts folder")
+	qbytes, qerr := os.ReadFile(quarantinedMatches[0])
+	require.NoError(t, qerr)
+	assert.Contains(t, string(qbytes), "title: bad spec",
+		"the quarantined spec must be preserved byte-for-byte")
 }

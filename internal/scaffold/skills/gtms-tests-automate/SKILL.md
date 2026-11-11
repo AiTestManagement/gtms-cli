@@ -50,11 +50,40 @@ what makes `gtms execute` repeatable.
    `gtms status <folder>` shows the AUTOMATE stage complete.
    `artefact-hash: pending` is normal here -- the first execute settles it.
 5. If you edit a script again after it has been executed at least once,
-   acknowledge the deliberate change:
+   re-run `gtms execute`: by default it accepts the changed script, updates
+   the wiring record and runs the test, so no refresh is needed. Confirm with
+   a refresh only after a spec change, or after a script edit in a project
+   that sets `execute.on-script-change: refuse` in `gtms.config`:
 
    ```sh
    gtms link --refresh <tc-id> --framework <framework>
    ```
+
+## Writing BATS on a fresh project
+
+The BATS skeleton GTMS stamps is self-contained: `setup_file()` exports
+`PROJECT_ROOT` (the project folder) and one placeholder test calls `skip`, so
+an unfilled skeleton records a skip, not a pass. It loads no helper file.
+
+A project scaffolded by `gtms init` has no BATS assertion library:
+`bats-assert` and `bats-support` are not installed. Use core BATS checks
+unless the project already provides an assertion library:
+
+| bats-assert helper | Core BATS check |
+|--------------------|-----------------|
+| `assert_success` | `[ "$status" -eq 0 ]` |
+| `assert_failure` | `[ "$status" -ne 0 ]` |
+| `assert_output "text"` | `[ "$output" = "text" ]` |
+| `assert_output --partial "text"` | `[[ "$output" == *"text"* ]]` |
+| `refute_output --partial "text"` | `[[ "$output" != *"text"* ]]` |
+
+The examples in the next section use the helper names; the rule they teach
+applies to both forms.
+
+If the project has its own shared setup helper, load it inside `setup()`, not
+`setup_file()`. BATS runs `setup_file()` in a separate shell from each test,
+so a function loaded there is not visible to `setup()` or the test body.
+Exported variables such as `PROJECT_ROOT` do carry over.
 
 ## Writing BATS: every `run` replaces `$output`, `$stderr`, `$lines` and `$status`
 

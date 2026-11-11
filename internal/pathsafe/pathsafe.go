@@ -125,6 +125,11 @@ func (e *PathSafetyError) Error() string {
 
 func (e *PathSafetyError) Unwrap() error { return e.Cause }
 
+// ErrOutsideRoot is wrapped by the PathSafetyError ResolveUnderRoot returns when the
+// resolved path really is outside the project root, so a caller can tell that from a
+// failure to inspect the path at all (for example, a permission error on a parent).
+var ErrOutsideRoot = errors.New("resolves outside project root")
+
 // IsPathSafetyError reports whether err (or any error it wraps) is a
 // *PathSafetyError.
 func IsPathSafetyError(err error) bool {
@@ -225,7 +230,7 @@ func ResolveUnderRoot(projectRoot, inputPath string) (absPath, relPath string, e
 	if !IsWithinRoot(evalPath, evalRoot) {
 		return "", "", &PathSafetyError{
 			Path:  inputPath,
-			Cause: fmt.Errorf("path %q resolves outside project root", inputPath),
+			Cause: fmt.Errorf("path %q %w", inputPath, ErrOutsideRoot),
 		}
 	}
 

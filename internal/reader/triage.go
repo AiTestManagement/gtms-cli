@@ -11,6 +11,7 @@ import (
 
 	"github.com/aitestmanagement/gtms-cli/internal/pathsafe"
 	"github.com/aitestmanagement/gtms-cli/internal/pipeline"
+	"github.com/aitestmanagement/gtms-cli/internal/result"
 	"github.com/aitestmanagement/gtms-cli/internal/testcase"
 	"github.com/aitestmanagement/gtms-cli/internal/triage"
 	"github.com/aitestmanagement/gtms-cli/internal/wiring"
@@ -67,8 +68,20 @@ func ClassifyTriage(projectRoot, testCaseID, value, summary, defect, framework s
 		return nil, fmt.Errorf("'%s' is not a configured triage value. Configured values: %s", value, sortedKeys(values))
 	}
 
+	// BUG-209 AC30: run the shared scanner before anything can change. A refused
+	// entry cannot be attributed and may be the newest evidence for this test case,
+	// so any refusal stops the classification (the global veto). A missing results
+	// directory is not a refusal, and falls through to the normal step 4 message.
+	scan := result.OpenScan(projectRoot)
+	defer scan.Close()
+	var refusalDiags IdentityDiagnostics
+	refusalDiags.addResultsRefusals(refusalsFrom(scan))
+	if err := incompleteReadErr(refusalDiags); err != nil {
+		return nil, err
+	}
+
 	// 2. Resolve framework through wiring (ambiguity names candidates).
-	resolvedFramework, err := resolveTriageFramework(projectRoot, testCaseID, framework)
+	resolvedFramework, err := resolveTriageFramework(projectRoot, scan, testCaseID, framework)
 	if err != nil {
 		return nil, err
 	}
@@ -87,7 +100,7 @@ func ClassifyTriage(projectRoot, testCaseID, value, summary, defect, framework s
 	// 4. Select the latest terminal result for the pair. scanTerminalResultsForTC
 	// loads every wiring record for the TC so the ENH-146 join ladder sees the
 	// full sibling set (do not narrow it -- see the function's docstring).
-	overlay, oErr := scanTerminalResultsForTC(projectRoot, testCaseID)
+	overlay, oErr := overlayForTCFromScan(projectRoot, scan, testCaseID)
 	if oErr != nil {
 		return nil, fmt.Errorf("scanning terminal results: %w", oErr)
 	}
@@ -257,7 +270,7 @@ func selectTriageRecordPath(projectRoot, testCaseID, framework string) (string, 
 // execute handoff whose artefact proves out), never on the mere presence of a
 // primed manual template -- a primed-only case therefore has no manual candidate
 // and refuses like any un-executed pair.
-func resolveTriageFramework(projectRoot, testCaseID, framework string) (string, error) {
+func resolveTriageFramework(projectRoot string, scan *result.Scan, testCaseID, framework string) (string, error) {
 	if framework != "" {
 		return framework, nil
 	}
@@ -283,7 +296,7 @@ func resolveTriageFramework(projectRoot, testCaseID, framework string) (string, 
 	for _, r := range recs {
 		add(r.Framework)
 	}
-	if _, ok := manualClaimForTC(projectRoot, testCaseID); ok {
+	if _, ok := manualClaimFromScan(projectRoot, scan, testCaseID); ok {
 		add("manual")
 	}
 	sort.Strings(candidates)

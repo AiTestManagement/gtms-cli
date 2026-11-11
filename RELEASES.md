@@ -8,6 +8,38 @@ install instructions are in `README.md`.
 
 ---
 
+## v0.4.1
+
+Enhanced execution evidence, clearer refusals and stricter filesystem boundaries. Script-only wiring
+drift is now relaxed by default, and a new navigation skill helps with large test-case collections.
+
+**Changes**
+
+- `gtms execute` accepts a changed automation script when the spec is unchanged; opt back into refusal with `execute.on-script-change: refuse`.
+- The four manual execute adapters are manual-only and synchronous. Tier 2 execute adapters must
+  leave a usable terminal result; missing, unreadable or invalid results are errors.
+- Atomic handoff I/O rejects unsafe links, special files and paths outside the project. Reporting
+  and cleanup still show safe partial results, but exit non-zero.
+- Bounded YAML alias keys prevent reader hangs. `init` and `create` also refuse links and junctions that escape their allowed boundary.
+- Forced init saves a named config backup and refreshes supported unedited assets. Fresh BATS
+  projects get a runnable skeleton, and `gtms-okf-index` adds safe index-building guidance.
+- Execute refusals include recovery steps. Bulk output distinguishes passed, failed, errored,
+  skipped and not-run test cases, and refused cases make the command exit non-zero.
+
+**Upgrading**
+
+- For the manual execute adapters, remove non-manual framework flags, configure `framework: manual` and use `mode: sync`.
+- On Windows, remove `GODEBUG=winsymlink=1` if it was set. Use `gtms init --force --preset
+  <preset>` (or `--demo`) to add missing starter skills and refresh supported unedited assets.
+
+**Known limitations**
+
+- An exhausted result-write failure can leave a readable pass that affects a later skip. Run
+  `gtms reset <tc-id>` and re-run, or use `--force` in bulk.
+- Filesystems without directory fsync refuse durable handoff writes rather than claiming success.
+
+---
+
 ## v0.4.0
 
 A new test case spec format, `test-case/v2`. Every spec now starts with a

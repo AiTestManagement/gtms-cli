@@ -69,6 +69,12 @@ type Config struct {
 	// which classification values are permitted. See ResolveTriageValues.
 	Triage *TriageConfig `yaml:"triage,omitempty"`
 
+	// Execute holds the ENH-231 execute-command policy block. It is a pointer
+	// so an absent `execute` block (nil) is indistinguishable from an absent
+	// on-script-change value: both resolve to the relaxed default. See
+	// OnScriptChange.
+	Execute *ExecuteConfig `yaml:"execute,omitempty"`
+
 	// Warnings holds non-fatal load-time notices surfaced by validate().
 	// Not serialized; the CLI prints them to stderr after Load returns.
 	Warnings []string `yaml:"-"`
@@ -141,6 +147,37 @@ func (c *Config) ResolveTriageValues() (map[string]string, error) {
 		out[k] = v
 	}
 	return out, nil
+}
+
+// Script-drift policy values for execute.on-script-change (ENH-231). These are
+// the only two permitted values; any other value is a config error.
+const (
+	// OnScriptChangeAccept is the relaxed default: gtms execute auto-accepts a
+	// changed automation script (artefact-hash drift only) and runs the test.
+	OnScriptChangeAccept = "accept"
+	// OnScriptChangeRefuse is the strict opt-in: script-only drift is refused
+	// exactly as before ENH-231, requiring an explicit gtms link --refresh.
+	OnScriptChangeRefuse = "refuse"
+)
+
+// ExecuteConfig is the ENH-231 execute-command policy block. Today it carries
+// only the on-script-change policy; it is a struct so further execute-scoped
+// policy can be added without widening Config.
+type ExecuteConfig struct {
+	// OnScriptChange is "accept" (relaxed, the default) or "refuse" (strict).
+	// An empty value resolves to the relaxed default (see OnScriptChange).
+	OnScriptChange string `yaml:"on-script-change,omitempty"`
+}
+
+// OnScriptChange returns the resolved execute.on-script-change policy. An absent
+// execute block, an absent setting, or an empty value all resolve to the relaxed
+// default "accept" (ENH-231 Owner Decision 1), including in existing projects
+// that never wrote the setting.
+func (c *Config) OnScriptChange() string {
+	if c == nil || c.Execute == nil || c.Execute.OnScriptChange == "" {
+		return OnScriptChangeAccept
+	}
+	return c.Execute.OnScriptChange
 }
 
 // ProjectConfig holds project-level metadata.
@@ -350,6 +387,59 @@ func FindParentDir(projectRoot string) (string, error) {
 	}
 }
 
+// ParentScan is the result of scanning a project root's direct children for the
+// GTMS sentinel file (BUG-207). Names holds the sorted folder names that contain
+// a regular-file sentinel. Unlike FindParentDir, ScanParents does not collapse the
+// discovery cases: an empty Names is "no sentinel" (not an error), while symlink
+// sentinels, an unreadable root, or a sentinel Lstat error other than
+// "does not exist" are returned as an error so the caller can refuse before
+// mutation (Owner Decision 3: those states are errors, not "absent").
+type ParentScan struct {
+	// Names are the direct-child directory names that hold a regular sentinel,
+	// sorted. Length 0 = no sentinel; 1 = unique parent; >1 = ambiguous.
+	Names []string
+}
+
+// ScanParents inspects the direct children of projectRoot for a regular
+// SentinelFileName without following links. It excludes the .git and .gtms
+// operational directories exactly as FindParentDir does. It returns an error for
+// a symlink sentinel, an unreadable project root, or any sentinel Lstat error
+// other than os.ErrNotExist (BUG-207 Owner Decision 3).
+func ScanParents(projectRoot string) (ParentScan, error) {
+	entries, err := os.ReadDir(projectRoot)
+	if err != nil {
+		return ParentScan{}, fmt.Errorf("Cannot read project root '%s': %v\n    Check the directory exists and is readable.", projectRoot, err)
+	}
+
+	var found []string
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if name == ".git" || name == ".gtms" {
+			continue
+		}
+
+		sentinelPath := filepath.Join(projectRoot, name, SentinelFileName)
+		info, lerr := os.Lstat(sentinelPath)
+		if lerr != nil {
+			if os.IsNotExist(lerr) {
+				continue // sentinel genuinely absent in this child
+			}
+			// A permission or other Lstat error is NOT proof of absence; refuse.
+			return ParentScan{}, fmt.Errorf("Cannot inspect sentinel at %s: %v\n    Check the directory is readable and re-run.", sentinelPath, lerr)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return ParentScan{}, fmt.Errorf("Symlink sentinel at %s -- sentinel must be a regular file.", sentinelPath)
+		}
+		found = append(found, name)
+	}
+
+	sort.Strings(found)
+	return ParentScan{Names: found}, nil
+}
+
 // formatDirNames wraps each name in single quotes for error messages.
 func formatDirNames(names []string) []string {
 	quoted := make([]string, len(names))
@@ -487,6 +577,24 @@ func validate(cfg *Config) error {
 					),
 				)
 			}
+		}
+	}
+
+	// ENH-231: validate the execute.on-script-change policy. Only "accept" and
+	// "refuse" are permitted. Any other value -- including the abandoned draft
+	// value "record" -- is a hard error that names the setting and the offending
+	// value, so a strict project with a typo loses strictness loudly, not
+	// silently (tc-1247a26d). An absent block or empty value is the relaxed
+	// default and is not validated here.
+	if cfg.Execute != nil && cfg.Execute.OnScriptChange != "" {
+		switch cfg.Execute.OnScriptChange {
+		case OnScriptChangeAccept, OnScriptChangeRefuse:
+			// valid
+		default:
+			return fmt.Errorf(
+				"gtms.config: invalid execute.on-script-change value '%s'. Must be 'accept' or 'refuse'.",
+				cfg.Execute.OnScriptChange,
+			)
 		}
 	}
 

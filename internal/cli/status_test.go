@@ -201,9 +201,10 @@ func TestRunStatusOverview_StatusKey(t *testing.T) {
 	out := buf.String()
 	assert.Contains(t, out, "Key:")
 	// BUG-078: updated legend wording per ENH-130 vocabulary.
+	// ENH-225: the warning-icon legend now reads "spec or script changed".
 	assert.Contains(t, out, "= complete")
 	assert.Contains(t, out, "= error")
-	assert.Contains(t, out, "= stale")
+	assert.Contains(t, out, "= spec or script changed")
 	assert.Contains(t, out, "= skipped")
 	assert.Contains(t, out, "not yet attempted")
 	// Stale wordings must be gone.
@@ -1730,10 +1731,10 @@ func TestBUG078_StatusLegendUsesENH130Vocabulary(t *testing.T) {
 
 	out := buf.String()
 
-	// New legend wording (BUG-078 / ENH-130 vocabulary).
+	// New legend wording (BUG-078 / ENH-130 vocabulary; ENH-225 drift label).
 	assert.Contains(t, out, "= complete")
 	assert.Contains(t, out, "= error")
-	assert.Contains(t, out, "= stale")
+	assert.Contains(t, out, "= spec or script changed")
 	assert.Contains(t, out, "= skipped")
 
 	// Stale legend wording must be absent.

@@ -281,11 +281,12 @@ func TestENH146_Overview_MissingArtefact(t *testing.T) {
 }
 
 // TestENH146_Overview_ManualOnlyTC verifies that manual-only TCs render
-// as wired:false / manual_ready:true / frameworks:[] with no wiring row
-// pretending to cover the TC. JSON contract: selected_framework
-// serialises as `null` (asserted separately in the SelectedFrameworkIsNull
-// raw-JSON tests); on the Go struct after json.Unmarshal it round-trips
-// back to the empty string, which assert.Empty satisfies.
+// as wired:false / manual_ready:true with one synthesized `manual` row
+// (BUG-206) and no WIRING row pretending to cover the TC. JSON contract:
+// selected_framework serialises as `null` for the default view (asserted
+// separately in the SelectedFrameworkIsNull raw-JSON tests); on the Go struct
+// after json.Unmarshal it round-trips back to the empty string, which
+// assert.Empty satisfies.
 func TestENH146_Overview_ManualOnlyTC(t *testing.T) {
 	root := t.TempDir()
 	writeTestFile(t, root, filepath.Join("gtms/test/cases", "tc-eee0009-x.md"),
@@ -301,8 +302,17 @@ func TestENH146_Overview_ManualOnlyTC(t *testing.T) {
 
 	assert.False(t, e.Wired, "manual-only TC: wired:false")
 	assert.True(t, e.ManualReady, "manual-only TC: manual_ready:true")
-	assert.Empty(t, e.SelectedFramework, "manual-only TC has no wiring → selected_framework empty")
-	assert.Len(t, e.Frameworks, 0, "no wiring → frameworks[] is empty (manual row must NOT appear)")
+	assert.Empty(t, e.SelectedFramework, "manual-only TC default view -> selected_framework empty")
+	// BUG-206: a recorded manual result surfaces one non-wired `manual` row.
+	require.Len(t, e.Frameworks, 1, "manual-only recorded TC gets one manual row (BUG-206)")
+	mrow := e.Frameworks[0]
+	assert.Equal(t, "manual", mrow.Framework)
+	assert.False(t, mrow.Wired, "synthesized manual row is not a wiring unit")
+	assert.Equal(t, "pass", mrow.LastResultHere)
+	assert.Equal(t, "complete", mrow.LastStatusHere)
+	assert.Empty(t, mrow.LastExecutedHere, "manual row carries no execution timestamp")
+	assert.Empty(t, mrow.WiredAdapter)
+	assert.Empty(t, mrow.LastRunAdapter)
 
 	// No wiring directory should have been created either.
 	wiringDir := filepath.Join(root, "gtms", "automation", "wiring")
@@ -438,10 +448,11 @@ git-dirty: false
 	assertNoLegacyCarriersInDetailJSON(t, raw)
 }
 
-// TestENH146_Detail_ManualOnlyHasNoFrameworksRow verifies a manual-only TC's
-// detail view renders the per-TC ENH-146 shape (wired:false / manual_ready:true)
-// and an empty frameworks[].
-func TestENH146_Detail_ManualOnlyHasNoFrameworksRow(t *testing.T) {
+// TestENH146_Detail_ManualOnlyHasManualRow verifies a manual-only TC's detail
+// view renders the per-TC shape (wired:false / manual_ready:true) with one
+// synthesized `manual` row (BUG-206) and selected_framework null in the default
+// view.
+func TestENH146_Detail_ManualOnlyHasManualRow(t *testing.T) {
 	root := t.TempDir()
 	writeTestFile(t, root, filepath.Join("gtms/test/cases", "tc-eee0012-x.md"),
 		"---\ngtms_schema: \"test-case/v2\"\ntype: Test Case Spec\ntest_type: Functional\ntest_case_id: tc-eee0012\ntitle: manual only\n---\n")
@@ -456,7 +467,13 @@ func TestENH146_Detail_ManualOnlyHasNoFrameworksRow(t *testing.T) {
 	assert.False(t, detail.Wired)
 	assert.True(t, detail.ManualReady)
 	assert.Empty(t, detail.SelectedFramework)
-	assert.Len(t, detail.Frameworks, 0)
+	require.Len(t, detail.Frameworks, 1, "BUG-206: manual-only detail gets one manual row")
+	mrow := detail.Frameworks[0]
+	assert.Equal(t, "manual", mrow.Framework)
+	assert.False(t, mrow.Wired)
+	assert.Equal(t, "pass", mrow.LastResultHere)
+	assert.Equal(t, "complete", mrow.LastStatusHere)
+	assert.Empty(t, mrow.LastExecutedHere)
 }
 
 // TestENH146_Detail_LegacyCarriersAbsent verifies the named legacy carriers

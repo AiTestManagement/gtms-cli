@@ -5,8 +5,6 @@
 package result
 
 import (
-	"crypto/rand"
-	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -120,6 +118,17 @@ func IsTerminalExecuteContract(rc *ResultContract) bool {
 	return rc.Command == "execute" && (rc.Status == "complete" || rc.Status == "error")
 }
 
+// IsExecuteContract reports whether rc is an EXECUTE handoff, terminal or not.
+// It is the BUG-130 structural guard's sibling for consumers that must also
+// consider NON-terminal execute handoffs (pending / in-progress) -- e.g.
+// isAlreadyPassing, which (REV-263) treats a newer non-terminal execute handoff
+// as a non-pass so a run whose durable error write failed cannot fall back to an
+// older pass. Keeping the command == "execute" literal here, beside
+// IsTerminalExecuteContract, keeps the command dimension in exactly one place.
+func IsExecuteContract(rc *ResultContract) bool {
+	return rc != nil && rc.Command == "execute"
+}
+
 // testCaseScopedCommands is the CLOSED set of commands whose contracts record a
 // bare TEST CASE id in `target`. It is a positive allowlist, not a denylist of
 // folder-scoped commands, because it gates a DESTRUCTIVE path: anything this set
@@ -157,6 +166,13 @@ func TargetIsTestCaseScoped(rc *ResultContract) bool {
 
 // Create writes a new handoff contract to .gtms/results/{task-id}.handoff.yaml.
 // Returns the filepath of the created file.
+//
+// BUG-209: Create is a thin contract over the shared safe-handoff writer. An
+// existing single-link regular file at the path is refused as a collision
+// (*RefusedHandoffError "already exists"); a link, hard link or special file is
+// refused; a results directory resolving outside the project is refused
+// (*RefusedDirError); an absent destination is created with mode 0644 through the
+// kernel so the umask filters it (REV-164 / AC12).
 func Create(projectRoot string, rc *ResultContract) (string, error) {
 	if rc.Task == "" {
 		return "", fmt.Errorf("result contract task ID is required")
@@ -170,33 +186,45 @@ func Create(projectRoot string, rc *ResultContract) (string, error) {
 		return "", fmt.Errorf("contract validation failed: %w", err)
 	}
 
-	// Ensure the results directory exists
-	dir := filepath.Join(projectRoot, ".gtms", "results")
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return "", fmt.Errorf("creating results directory: %w", err)
-	}
-
-	filename := fmt.Sprintf("%s.handoff.yaml", rc.Task)
-	path := filepath.Join(dir, filename)
+	path := ResultPath(projectRoot, rc.Task)
 
 	data, err := yaml.Marshal(rc)
 	if err != nil {
 		return "", fmt.Errorf("marshalling result contract: %w", err)
 	}
 
-	if err := os.WriteFile(path, data, 0644); err != nil {
-		return "", fmt.Errorf("writing result contract: %w", err)
+	if err := writeHandoff(path, opCreate, data, nil, nil); err != nil {
+		return "", err
 	}
 
 	return path, nil
 }
 
 // Read parses a result contract from the given path.
-// It sanitizes the YAML before parsing to handle YAML document separators (---)
-// that may appear inside block scalar fields like log:.
+//
+// BUG-209: Read inspects and reads through the same no-follow handle the writers
+// use, and applies the section-8 rules: a symlink, dangling symlink, hard link,
+// directory or special file is refused (*RefusedHandoffError); a results directory
+// resolving outside the project is refused (*RefusedDirError); an absent file is a
+// not-found read error (as today); an unreadable regular file (mode 000) is a read
+// error (as today), so BUG-191 recovery still runs. It sanitizes the YAML before
+// parsing to handle YAML document separators (---) inside block scalar fields.
 func Read(path string) (*ResultContract, error) {
-	data, err := os.ReadFile(path)
+	root, absent, err := openResultsDirForPath(path)
 	if err != nil {
+		return nil, err
+	}
+	if absent {
+		return nil, fmt.Errorf("reading result contract: %w",
+			&os.PathError{Op: "open", Path: handoffRel(filepath.Base(path)), Err: os.ErrNotExist})
+	}
+	defer root.Close()
+
+	data, err := readThroughRoot(root, filepath.Base(path))
+	if err != nil {
+		if IsRefusal(err) {
+			return nil, err
+		}
 		return nil, fmt.Errorf("reading result contract: %w", err)
 	}
 
@@ -213,95 +241,51 @@ func Read(path string) (*ResultContract, error) {
 // Update reads a result contract, applies updates, and writes it back.
 // The updates map keys correspond to YAML field names.
 //
-// ENH-130: validates the post-merge contract before writing. This catches
-// invalid combinations created by partial updates (e.g. setting status to
-// "complete" without also setting result).
+// BUG-209: Update reads and replaces through one shared, no-follow, atomic,
+// metadata-preserving operation, so the bytes merged and the file replaced are
+// the same file. The existing mode, uid/gid (Unix) or DACL/owner/group/read-only
+// (Windows) are preserved. A link, hard link, special file or directory is
+// refused; an absent target is an error; a mode-000 file fails at the read step
+// with the destination unchanged (AC11). ENH-130 validates the post-merge
+// contract before writing.
 func Update(path string, updates map[string]interface{}) error {
-	// Read the existing file as a generic map to preserve all fields
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return fmt.Errorf("reading result contract for update: %w", err)
-	}
+	merge := func(data []byte) ([]byte, error) {
+		sanitized := sanitizeResultYAML(data)
 
-	sanitized := sanitizeResultYAML(data)
-
-	var existing map[string]interface{}
-	if err := yaml.Unmarshal(sanitized, &existing); err != nil {
-		return fmt.Errorf("parsing result contract for update: %w", err)
-	}
-
-	// BUG-111 round 3: yaml.Unmarshal on an empty (or all-whitespace) file
-	// leaves existing == nil, which panics on map assignment below. This
-	// can happen when a Tier 2 adapter's heredoc-write fails partway --
-	// e.g. the shell's `>` redirect truncates the file before `cat`
-	// executes, and `cat` then errors out because PATH is restricted.
-	// Treat the truncated file as a blank slate and apply the updates as
-	// the new contract; downstream Validate will catch any
-	// status/result mismatch before the write goes through.
-	if existing == nil {
-		existing = make(map[string]interface{}, len(updates))
-	}
-
-	// Apply updates
-	for k, v := range updates {
-		existing[k] = v
-	}
-
-	// ENH-130: validate the post-merge contract before writing.
-	// Re-marshal into a ResultContract struct to run Validate.
-	merged, err := yaml.Marshal(existing)
-	if err != nil {
-		return fmt.Errorf("marshalling merged contract for validation: %w", err)
-	}
-	var rc ResultContract
-	if err := yaml.Unmarshal(merged, &rc); err != nil {
-		return fmt.Errorf("parsing merged contract for validation: %w", err)
-	}
-	if err := Validate(&rc); err != nil {
-		return fmt.Errorf("contract validation failed: %w", err)
-	}
-
-	// Write back
-	if err := os.WriteFile(path, merged, 0644); err != nil {
-		return fmt.Errorf("writing updated result contract: %w", err)
-	}
-
-	return nil
-}
-
-// createHandoffTemp creates a uniquely named, exclusively created temporary
-// file in dir, requesting mode 0644 so the KERNEL applies the process umask to
-// it -- exactly as it does for the os.WriteFile(path, data, 0644) calls in
-// Create and Update. The recovered handoff therefore lands with the same
-// permissions as every normal handoff on the same machine.
-//
-// This is deliberately not os.CreateTemp. CreateTemp hardcodes 0600, and the
-// obvious repair -- chmod 0644 afterwards -- is wrong, because chmod is NOT
-// umask-filtered while file creation is (REV-164 CLAUDE-R01). Under umask 077
-// that combination produced a 0644 recovered handoff while every normal handoff
-// came out 0600, so the one file carrying captured adapter stdout/stderr was
-// the one file readable by everyone. Under the default umask 022 both come out
-// 0644, which is why nothing caught it.
-//
-// O_EXCL keeps the collision safety CreateTemp provides; the suffix comes from
-// crypto/rand, and a name already taken is retried rather than reused.
-func createHandoffTemp(dir, prefix string) (*os.File, error) {
-	buf := make([]byte, 8)
-	for attempt := 0; attempt < 10000; attempt++ {
-		if _, err := rand.Read(buf); err != nil {
-			return nil, fmt.Errorf("generating temporary file name: %w", err)
+		var existing map[string]interface{}
+		if err := yaml.Unmarshal(sanitized, &existing); err != nil {
+			return nil, fmt.Errorf("parsing result contract for update: %w", err)
 		}
-		name := filepath.Join(dir, prefix+hex.EncodeToString(buf))
-		f, err := os.OpenFile(name, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0644)
-		if os.IsExist(err) {
-			continue
+
+		// BUG-111 round 3: yaml.Unmarshal on an empty (or all-whitespace) file
+		// leaves existing == nil, which would panic on map assignment below. A
+		// Tier 2 adapter's heredoc-write can fail partway and truncate the file.
+		// Treat the truncated file as a blank slate; Validate catches any
+		// status/result mismatch before the write goes through.
+		if existing == nil {
+			existing = make(map[string]interface{}, len(updates))
 		}
+
+		for k, v := range updates {
+			existing[k] = v
+		}
+
+		// ENH-130: validate the post-merge contract before writing.
+		merged, err := yaml.Marshal(existing)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("marshalling merged contract for validation: %w", err)
 		}
-		return f, nil
+		var rc ResultContract
+		if err := yaml.Unmarshal(merged, &rc); err != nil {
+			return nil, fmt.Errorf("parsing merged contract for validation: %w", err)
+		}
+		if err := Validate(&rc); err != nil {
+			return nil, fmt.Errorf("contract validation failed: %w", err)
+		}
+		return merged, nil
 	}
-	return nil, fmt.Errorf("exhausted attempts to create a unique temporary file in %s", dir)
+
+	return writeHandoff(path, opUpdate, nil, merge, nil)
 }
 
 // Reconstruct writes a fresh, valid handoff contract to path from a
@@ -311,90 +295,48 @@ func createHandoffTemp(dir, prefix string) (*os.File, error) {
 // YAML, a deleted file, or a file it made unreadable -- GTMS must still leave a
 // readable error handoff behind. Update cannot do this: it reads the existing
 // file and decodes it into a map before merging, so it re-hits the very
-// read/parse error that triggered recovery and returns before writing anything.
-// Reconstruct sidesteps that by marshalling the caller's trusted contract and
-// replacing the file outright.
+// read/parse error that triggered recovery. Reconstruct marshals the caller's
+// trusted contract and replaces the file outright, without reading it.
 //
-// Ordering matters (REV-164 CODEX-001). The complete replacement is marshalled
-// first, then written to a temporary file in the SAME directory as the target,
-// and only then renamed over the target. Nothing on disk is destroyed until the
-// replacement bytes are already there, so a marshal failure, a full disk or a
-// read-only filesystem leaves the previous handoff exactly as it was instead of
-// deleting the old evidence and failing to write a replacement.
-//
-// A rename within one directory is atomic on POSIX. On Windows, Go's os.Rename
-// calls MoveFileEx with MOVEFILE_REPLACE_EXISTING, which likewise replaces an
-// existing file in one step; where Windows refuses (a read-only target, or one
-// another process holds open), Reconstruct does NOT unlink the target and retry
-// -- that would reopen the very destructive window this ordering closes. It
-// removes the temporary file, leaves the existing handoff untouched, and
-// returns the error. A failed replacement therefore always leaves the old
-// handoff in place, never nothing.
-//
-// The replacement's permissions match a normal handoff write on the same
-// machine: the temporary file is created with mode 0644 through the kernel, so
-// the process umask filters it exactly as it filters Create's and Update's
-// os.WriteFile(..., 0644). See createHandoffTemp for why chmod is not used.
-//
-// A regular file with no permissions (mode 000, e.g. an adapter that chmod
-// 000'd its own handoff) is replaced normally: rename acts through the writable
-// parent directory regardless of the target's own mode. A missing target is not
-// an error -- the recovery must be able to CREATE the handoff, not only rewrite
-// one (BUG-191 tc-969e199b).
-//
-// A DIRECTORY at the target path is refused with an error. Its contents are
-// unknown, and deleting them to make room for the handoff is more destructive
-// than failing: the caller gets a clear message and the directory survives
-// untouched. Callers must still route the task to error/ when Reconstruct
-// fails (see recoverUnusableContract).
+// BUG-209: Reconstruct is a thin contract over the shared safe-handoff writer, so
+// it stages and renames atomically and durably, and it now REFUSES an unsafe leaf
+// rather than replacing it: a symlink, dangling symlink, hard link, directory or
+// special file is refused (*RefusedHandoffError), and a results directory
+// resolving outside the project is refused (*RefusedDirError). A missing target is
+// not an error -- recovery must be able to CREATE the handoff (BUG-191
+// tc-969e199b) -- and lands with mode 0644 through the kernel (umask filtered). A
+// single-link regular file is replaced preserving its permission bits, uid/gid
+// (Unix) or DACL/owner/group/read-only (Windows), EXCEPT a mode-000 file, which is
+// replaced with owner read/write added (0600) so the recovered handoff is
+// readable by its owner (BUG-209 section 5 / AC11). A failed replacement always
+// leaves the old handoff in place, never nothing. Callers must still route the
+// task to error/ when Reconstruct fails (see recoverUnusableContract).
 func Reconstruct(path string, rc *ResultContract) error {
 	// ENH-130: never write a contract that would fail validation.
 	if err := Validate(rc); err != nil {
 		return fmt.Errorf("reconstruct contract validation failed: %w", err)
 	}
 
-	// Marshal before touching disk: hold the complete replacement in hand
-	// before anything existing can be disturbed.
 	data, err := yaml.Marshal(rc)
 	if err != nil {
 		return fmt.Errorf("marshalling reconstructed contract: %w", err)
 	}
 
-	// Refuse a directory at the target rather than destroying unknown contents.
-	if info, statErr := os.Stat(path); statErr == nil && info.IsDir() {
-		return fmt.Errorf("cannot reconstruct result contract: %s is a directory, not a file -- inspect and remove it by hand", path)
-	}
+	return writeHandoff(path, opReconstruct, data, nil, nil)
+}
 
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return fmt.Errorf("creating results directory: %w", err)
+// ReconstructIfUnchanged is Reconstruct that first proves the handoff is still in the
+// captured state. A file replaced or removed since then is refused and left alone, so a
+// recovery cannot overwrite a newer writer's file (BUG-209 section 9).
+func ReconstructIfUnchanged(path string, rc *ResultContract, prior HandoffState) error {
+	if err := Validate(rc); err != nil {
+		return fmt.Errorf("reconstruct contract validation failed: %w", err)
 	}
-
-	tmp, err := createHandoffTemp(dir, filepath.Base(path)+".tmp-")
+	data, err := yaml.Marshal(rc)
 	if err != nil {
-		return fmt.Errorf("creating temporary result contract: %w", err)
+		return fmt.Errorf("marshalling reconstructed contract: %w", err)
 	}
-	tmpPath := tmp.Name()
-	// Every failure path below removes the temporary file so a failed recovery
-	// does not litter .gtms/results/ with orphans.
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		_ = os.Remove(tmpPath)
-		return fmt.Errorf("writing reconstructed result contract: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		_ = os.Remove(tmpPath)
-		return fmt.Errorf("writing reconstructed result contract: %w", err)
-	}
-
-	if err := os.Rename(tmpPath, path); err != nil {
-		// Preserve whatever is at the target: a failed replacement must never
-		// leave the operator with nothing. Drop the temp file and report.
-		_ = os.Remove(tmpPath)
-		return fmt.Errorf("replacing unusable result contract: %w", err)
-	}
-
-	return nil
+	return writeHandoff(path, opReconstruct, data, nil, &prior)
 }
 
 // ResultPath returns the expected path for a result contract given a project root and task ID.

@@ -31,7 +31,10 @@ func newCreateCmd() *cobra.Command {
 		Long: `Create test cases through an adapter. Built-in adapters stamp a test case
 skeleton; a prompt-driven configured adapter receives a prompt assembled from
 your template, guides, and CLI flags and generates filled test case specs.
-Output lands in gtms/test/cases/<folder>/.
+Output lands in <folder>/ under the test cases directory (gtms/test/cases/
+by default), or in the create adapter's output-dir when one is configured.
+Create refuses a target that resolves outside the test cases directory (or,
+for an output-dir, outside the project) before writing anything.
 
 Examples:
   gtms create bug-022 --context-file docs/bugs/BUG-022.md --reference BUG-022
@@ -107,19 +110,10 @@ Adapter execution:
 					resolved.Name, resolved.Tier, resolved.Mode)
 			}
 
-			// Auto-create the target folder under gtms/test/cases/ (only when adapter doesn't override output-dir)
-			if resolved.Config.OutputDir == "" {
-				paths := layout.Current()
-				outputDir := filepath.Join(root, paths.TestCases, folder)
-				if err := os.MkdirAll(outputDir, 0755); err != nil {
-					return fmt.Errorf("creating output directory: %w", err)
-				}
-				fmt.Printf("  → Target folder: %s/%s/\n", paths.TestCases, folder)
-			} else {
-				fmt.Printf("  → Output directory: %s (from adapter config)\n", resolved.Config.OutputDir)
-			}
-
-			// Extract and validate optional name from second positional arg
+			// Extract and validate optional name from second positional arg.
+			// BUG-214 Owner Decision 3 / AC14: name validation moves AHEAD of the
+			// containment check and MkdirAll, so an invalid name refuses before any
+			// folder is created.
 			var nameArg string
 			if len(args) > 1 {
 				nameArg = args[1]
@@ -130,15 +124,41 @@ Adapter execution:
 				}
 			}
 
+			// BUG-214 admission boundary: resolve the create target for containment
+			// BEFORE any mutation or adapter launch. testcase.ResolveCreateTarget
+			// returns the authoritative, containment-checked absolute output
+			// directory (or a *CreateContainmentError carrying the stable phrase). A
+			// refusal here leaves the project, task/result stores and any linked
+			// target unchanged.
+			resolvedOutputDir, err := testcase.ResolveCreateTarget(root, resolved.Config.OutputDir, folder)
+			if err != nil {
+				output.Errorf(err.Error(), "")
+				return output.AsDisplayed(err)
+			}
+
+			// Auto-create the target folder under gtms/test/cases/ (only when adapter
+			// doesn't override output-dir). MkdirAll targets the CHECKED path, never a
+			// recomputation of the raw folder (BUG-214 Owner Decision 7).
+			if resolved.Config.OutputDir == "" {
+				paths := layout.Current()
+				if err := os.MkdirAll(resolvedOutputDir, 0755); err != nil {
+					return fmt.Errorf("creating output directory: %w", err)
+				}
+				fmt.Printf("  → Target folder: %s/%s/\n", paths.TestCases, folder)
+			} else {
+				fmt.Printf("  → Output directory: %s (from adapter config)\n", resolved.Config.OutputDir)
+			}
+
 			// Invoke adapter
 			flags := adapter.CommandFlags{
-				Adapter:     adapterFlag,
-				Focus:       focusFlag,
-				ContextFile: absContextPath,
-				Context:     contextContent,
-				Folder:      folder,
-				Reference:   referenceFlag,
-				Name:        nameArg,
+				Adapter:           adapterFlag,
+				Focus:             focusFlag,
+				ContextFile:       absContextPath,
+				Context:           contextContent,
+				Folder:            folder,
+				Reference:         referenceFlag,
+				Name:              nameArg,
+				ResolvedOutputDir: resolvedOutputDir,
 			}
 
 			// Start spinner for sync adapters

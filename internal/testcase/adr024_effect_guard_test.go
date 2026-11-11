@@ -112,6 +112,10 @@ var effectGuardAllowlist = map[string]string{
 	"cli.folderNotFoundMessage: maps parameter prefix to a cases-tree path":              "user-facing error text (the dry-run marker prefix)",
 	"cli.whatHappenedBulkAutomate: maps parameter folder to a cases-tree path":           "user-facing summary text: \"N automations created in gtms/test/cases/<folder>/\"",
 	"cli.whatHappenedBulkExecute: maps parameter folder to a cases-tree path":            "user-facing summary text: \"N passed ... in gtms/test/cases/<folder>/\"",
+	// BUG-207: layout-aware demo bridge guide. The helper rewrites the demo
+	// "Cleaning Up Demo Data" rm -rf commands (documentation text) to the active
+	// parent; it resolves no test-case identity and opens no tree.
+	"scaffold.demoBridgeGuideFor: maps parameter parent to a cases-tree path": "documentation text: rewrites the demo cleanup command \"rm -rf <parent>/test/cases/_demo/\" to the active GTMS parent",
 }
 
 // effectGuardExcludedPkgs are the packages whose code may touch the cases tree:

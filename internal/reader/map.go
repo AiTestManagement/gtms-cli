@@ -56,24 +56,25 @@ func MapWithDiagnostics(projectRoot string, scope *ScopeInfo, defaultFramework s
 	if err != nil {
 		return nil, IdentityDiagnostics{}, err
 	}
-	report, err := mapFromSpecs(projectRoot, testCases, defaultFramework, strictFramework)
+	report, refusals, err := mapFromSpecs(projectRoot, testCases, defaultFramework, strictFramework)
 	if err != nil {
 		return nil, IdentityDiagnostics{}, err
 	}
+	diags.addResultsRefusals(refusals)
 	return report, diags, nil
 }
 
 // mapFromSpecs builds the traceability report from already-resolved, proven specs.
-func mapFromSpecs(projectRoot string, testCases []testCaseFrontmatter, defaultFramework string, strictFramework bool) (*MapReport, error) {
+func mapFromSpecs(projectRoot string, testCases []testCaseFrontmatter, defaultFramework string, strictFramework bool) (*MapReport, resultsRefusals, error) {
 	wiringByTC, err := wiringScan(projectRoot)
 	if err != nil {
-		return nil, fmt.Errorf("scanning wiring records: %w", err)
+		return nil, resultsRefusals{}, fmt.Errorf("scanning wiring records: %w", err)
 	}
-	overlay := scanTerminalResults(projectRoot, wiringByTC)
+	overlay, refusals := scanTerminalResults(projectRoot, wiringByTC)
 	manuals := scanManualByTC(projectRoot)
 	tasks, err := scanTasks(projectRoot)
 	if err != nil {
-		return nil, fmt.Errorf("scanning tasks: %w", err)
+		return nil, resultsRefusals{}, fmt.Errorf("scanning tasks: %w", err)
 	}
 
 	// Group test cases by requirement.
@@ -153,7 +154,7 @@ func mapFromSpecs(projectRoot string, testCases []testCaseFrontmatter, defaultFr
 		Groups:   sortedGroups,
 		Unlinked: unlinked,
 		Summary:  summary,
-	}, nil
+	}, refusals, nil
 }
 
 // MapTargetDiagnostics resolves the target of `map <tc-id>` and, when the target
@@ -199,7 +200,8 @@ func MapTargetDiagnosticsWithSnapshot(snap *testcase.Snapshot, projectRoot, tcID
 	if rerr != nil {
 		return nil, nil, IdentityDiagnostics{}, rerr
 	}
-	report, rerr = mapFromSpecs(projectRoot, testCases, defaultFramework, strictFramework)
+	var mapRefusals resultsRefusals
+	report, mapRefusals, rerr = mapFromSpecs(projectRoot, testCases, defaultFramework, strictFramework)
 	if rerr != nil {
 		return nil, nil, IdentityDiagnostics{}, rerr
 	}
@@ -210,6 +212,7 @@ func MapTargetDiagnosticsWithSnapshot(snap *testcase.Snapshot, projectRoot, tcID
 		// membership cannot be ruled out (ADR-024 5b; tc-a99b5902).
 		pathIssues: treeDiags.pathIssues,
 	}
+	scoped.addResultsRefusals(mapRefusals)
 	for _, a := range treeDiags.ambiguous {
 		if ambiguousInPrintedGroup(a, targetReq) {
 			scoped.ambiguous = append(scoped.ambiguous, a)

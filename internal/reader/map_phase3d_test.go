@@ -294,7 +294,7 @@ requirement: REQ-E
 // TestMapPhase3D_ManualOnlySignal pins the manual-only TC contract:
 //   - Wired = false  (manual TCs are not wiring units)
 //   - ManualReady = true when a primed manual result file exists
-//   - Frameworks = [] (no framework row pretends to be wiring)
+//   - Frameworks = one synthesized non-wired `manual` row (BUG-206)
 //   - Legacy carriers: AutomateStatus="manual", LastResult=<manual result>
 func TestMapPhase3D_ManualOnlySignal(t *testing.T) {
 	root := t.TempDir()
@@ -341,9 +341,13 @@ requirement: REQ-MAN
 	assert.True(t, recorded.ManualReady)
 	assert.Empty(t, recorded.SelectedFramework,
 		"manual-only TC has no selected wiring framework")
-	require.NotNil(t, recorded.Frameworks)
-	assert.Len(t, recorded.Frameworks, 0,
-		"manual-only TC must not surface a framework row in Frameworks[]")
+	// BUG-206: a recorded manual result surfaces one non-wired `manual` row.
+	require.Len(t, recorded.Frameworks, 1,
+		"manual-only recorded TC surfaces one manual row (BUG-206)")
+	assert.Equal(t, "manual", recorded.Frameworks[0].Framework)
+	assert.False(t, recorded.Frameworks[0].Wired)
+	assert.Equal(t, "pass", recorded.Frameworks[0].LastResultHere)
+	assert.Equal(t, "complete", recorded.Frameworks[0].LastStatusHere)
 	assert.Equal(t, "manual", recorded.AutomateStatus)
 	assert.Equal(t, "pass", recorded.LastResult)
 	assert.Equal(t, "complete", recorded.ExecuteStatus)
@@ -353,7 +357,13 @@ requirement: REQ-MAN
 	assert.False(t, prepared.Wired)
 	assert.True(t, prepared.ManualReady)
 	assert.Empty(t, prepared.SelectedFramework)
-	assert.Len(t, prepared.Frameworks, 0)
+	// BUG-206: a prepared manual record surfaces one result-free manual row.
+	require.Len(t, prepared.Frameworks, 1)
+	assert.Equal(t, "manual", prepared.Frameworks[0].Framework)
+	assert.False(t, prepared.Frameworks[0].Wired)
+	assert.Empty(t, prepared.Frameworks[0].LastResultHere,
+		"prepared manual row carries no result")
+	assert.Empty(t, prepared.Frameworks[0].LastStatusHere)
 	assert.Equal(t, "manual", prepared.AutomateStatus)
 	assert.Equal(t, "none", prepared.LastResult,
 		"primed-but-not-recorded manual surfaces LastResult=none")

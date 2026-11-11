@@ -124,8 +124,14 @@ func TestInitMinimalPreset(t *testing.T) {
 	assert.Contains(t, string(batsTempl), "${TESTCASE_ID}")
 	assert.Contains(t, string(batsTempl), "${PROJECT_ROOT_DEPTH}")
 	assert.Contains(t, string(batsTempl), "#!/usr/bin/env bats")
-	assert.Contains(t, string(batsTempl), "common-setup.bash")
 	assert.Contains(t, string(batsTempl), `skip "skeleton -- not yet implemented"`)
+	// BUG-202: the shipped skeleton is self-contained -- no helper load, no
+	// _common_setup call, and no empty setup()/teardown() blocks. It keeps
+	// setup_file reduced to the PROJECT_ROOT export.
+	assert.Contains(t, string(batsTempl), "export PROJECT_ROOT=")
+	assert.NotContains(t, string(batsTempl), "common-setup.bash")
+	assert.NotContains(t, string(batsTempl), "_common_setup")
+	assert.NotContains(t, string(batsTempl), "teardown()")
 
 	// ENH-162: Playwright template should NOT be created for bats preset
 	assert.NoFileExists(t, filepath.Join(dir, "gtms", "automation", "templates", "playwright.template.spec.ts"))
@@ -1338,9 +1344,9 @@ func TestIntegrationPlaywrightFullInit(t *testing.T) {
 	// + 1 manual-prime-script + 1 agent-prime-script
 	// + 1 manual-execute-script + 1 agent-execute-script + 1 tasks-readme
 	// + 1 vscode-settings + 1 vscode-extensions + 1 vscode-snippets + 1 guidance
-	// + 6 starter skills (5 SKILL.md + 1 README.md) = 28
-	assert.Equal(t, 28, len(result.FilesCreated),
-		"playwright preset should create 28 files; got: %v", result.FilesCreated)
+	// + 7 starter skills (6 SKILL.md + 1 README.md) = 29 (ENH-232 adds gtms-okf-index)
+	assert.Equal(t, 29, len(result.FilesCreated),
+		"playwright preset should create 29 files; got: %v", result.FilesCreated)
 }
 
 func TestInitCreatesGuidanceYAML(t *testing.T) {
@@ -1412,7 +1418,7 @@ func TestDemoSeedFreshProject(t *testing.T) {
 	require.NoError(t, err)
 
 	// Seed demo data
-	result, err := DemoSeed(dir)
+	result, err := DemoSeed(dir, false)
 	require.NoError(t, err)
 	require.NotNil(t, result)
 
@@ -1446,7 +1452,7 @@ func TestDemoSeedConfigValidation(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	_, err = DemoSeed(dir)
+	_, err = DemoSeed(dir, false)
 	require.NoError(t, err)
 
 	// Config must pass validation after demo merge
@@ -1493,7 +1499,7 @@ func TestDemoSeedExistingProjectPreservesAdapters(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	_, err = DemoSeed(dir)
+	_, err = DemoSeed(dir, false)
 	require.NoError(t, err)
 
 	cfg, err := config.LoadFromFile(filepath.Join(dir, "gtms.config"))
@@ -1526,7 +1532,7 @@ func TestDemoSeedCreatesBackups(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	_, err = DemoSeed(dir)
+	_, err = DemoSeed(dir, false)
 	require.NoError(t, err)
 
 	// Backup of config should exist
@@ -1549,7 +1555,7 @@ func TestDemoSeedGuidanceUpdated(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	_, err = DemoSeed(dir)
+	_, err = DemoSeed(dir, false)
 	require.NoError(t, err)
 
 	// Read guidance.yaml and check init key was updated
@@ -1572,7 +1578,7 @@ func TestDemoAdapterScriptsHaveShebang(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	_, err = DemoSeed(dir)
+	_, err = DemoSeed(dir, false)
 	require.NoError(t, err)
 
 	scripts := []string{
@@ -1615,7 +1621,7 @@ func TestDemoSeedSkipsExistingFiles(t *testing.T) {
 	customContent := "# My custom requirement\n"
 	require.NoError(t, os.WriteFile(filepath.Join(demoDir, "login-feature.md"), []byte(customContent), 0o644))
 
-	result, err := DemoSeed(dir)
+	result, err := DemoSeed(dir, false)
 	require.NoError(t, err)
 
 	// login-feature.md should be skipped
@@ -1678,13 +1684,14 @@ func TestVSCodeSnippetsShipped(t *testing.T) {
 func TestEnsureGitignore_CreatesFileWhenAbsent(t *testing.T) {
 	dir := t.TempDir()
 
-	action, err := ensureGitignore(dir)
+	action, err := ensureGitignore(dir, &Result{})
 	require.NoError(t, err)
 	assert.Equal(t, GitignoreCreated, action)
 
 	content, err := os.ReadFile(filepath.Join(dir, ".gitignore"))
 	require.NoError(t, err)
-	expected := ".gtms/\ngtms/execution/attachments/\ngtms/execution/logs/\n"
+	// REV-209 R3-CODEX-002: the root-anchored gtms.config backup pattern is a managed entry.
+	expected := ".gtms/\ngtms/execution/attachments/\ngtms/execution/logs/\n/gtms.config.bak*\n"
 	assert.Equal(t, expected, string(content))
 }
 
@@ -1694,7 +1701,7 @@ func TestEnsureGitignore_AppendsEntryWhenMissing(t *testing.T) {
 	// Pre-create .gitignore without any GTMS entries
 	require.NoError(t, os.WriteFile(filepath.Join(dir, ".gitignore"), []byte("node_modules/\n"), 0o644))
 
-	action, err := ensureGitignore(dir)
+	action, err := ensureGitignore(dir, &Result{})
 	require.NoError(t, err)
 	assert.Equal(t, GitignoreAppended, action)
 
@@ -1712,7 +1719,7 @@ func TestEnsureGitignore_IdempotentWhenPresent(t *testing.T) {
 	original := "node_modules/\n.gtms/\ngtms/execution/attachments/\ngtms/execution/logs/\nbuild/\n"
 	require.NoError(t, os.WriteFile(filepath.Join(dir, ".gitignore"), []byte(original), 0o644))
 
-	action, err := ensureGitignore(dir)
+	action, err := ensureGitignore(dir, &Result{})
 	require.NoError(t, err)
 	assert.Equal(t, GitignoreUnchanged, action)
 
@@ -1728,7 +1735,7 @@ func TestEnsureGitignore_HandlesCRLF(t *testing.T) {
 	crlf := "node_modules/\r\n.gtms/\r\ngtms/execution/attachments/\r\ngtms/execution/logs/\r\nbuild/\r\n"
 	require.NoError(t, os.WriteFile(filepath.Join(dir, ".gitignore"), []byte(crlf), 0o644))
 
-	action, err := ensureGitignore(dir)
+	action, err := ensureGitignore(dir, &Result{})
 	require.NoError(t, err)
 	assert.Equal(t, GitignoreUnchanged, action)
 
@@ -1745,7 +1752,7 @@ func TestEnsureGitignore_IdempotentWithWhitespace(t *testing.T) {
 	original := "  .gtms/  \n  gtms/execution/attachments/  \n  gtms/execution/logs/  \n"
 	require.NoError(t, os.WriteFile(filepath.Join(dir, ".gitignore"), []byte(original), 0o644))
 
-	action, err := ensureGitignore(dir)
+	action, err := ensureGitignore(dir, &Result{})
 	require.NoError(t, err)
 	assert.Equal(t, GitignoreUnchanged, action)
 
@@ -1766,7 +1773,7 @@ func TestEnsureGitignore_SentinelOnlyLeftUnchanged(t *testing.T) {
 	original := "node_modules/\n.gtms/\ndist/\n"
 	require.NoError(t, os.WriteFile(filepath.Join(dir, ".gitignore"), []byte(original), 0o644))
 
-	action, err := ensureGitignore(dir)
+	action, err := ensureGitignore(dir, &Result{})
 	require.NoError(t, err)
 	assert.Equal(t, GitignoreUnchanged, action)
 
@@ -2723,27 +2730,47 @@ func TestWriteExampleSkills(t *testing.T) {
 	err := WriteExampleSkills(dir, result)
 	require.NoError(t, err)
 
-	// Verify all six files were created.
+	// Verify the files WriteExampleSkills owns were created. BUG-203:
+	// gtms/skills/gtms-tests-create/SKILL.md is deliberately NOT in this set -- it is
+	// now owned by the common-asset upgrade catalogue (installCommonAssets), so
+	// gtms init --force can refresh a stale v0.3.x copy. WriteExampleSkills skips it.
+	// ENH-232 Decision 9: gtms/skills/README.md joins the same upgrade catalogue, so
+	// WriteExampleSkills no longer owns it either. ENH-232 also adds gtms-okf-index.
 	expectedFiles := []string{
-		"gtms/skills/README.md",
-		"gtms/skills/gtms-tests-create/SKILL.md",
 		"gtms/skills/gtms-tests-automate/SKILL.md",
 		"gtms/skills/gtms-tests-execute/SKILL.md",
 		"gtms/skills/gtms-tests-prime/SKILL.md",
 		"gtms/skills/gtms-tests-verify-intent/SKILL.md",
+		"gtms/skills/gtms-okf-index/SKILL.md",
 	}
 	for _, f := range expectedFiles {
 		assert.FileExists(t, filepath.Join(dir, filepath.FromSlash(f)), "missing: %s", f)
 		assert.Contains(t, result.FilesCreated, f, "should be listed in FilesCreated: %s", f)
 	}
 
-	// Verify name: frontmatter matches directory name for each SKILL.md.
+	// BUG-203: WriteExampleSkills must NOT write or list the gtms-tests-create skill.
+	assert.NoFileExists(t, filepath.Join(dir, "gtms", "skills", "gtms-tests-create", "SKILL.md"),
+		"WriteExampleSkills must not write gtms-tests-create/SKILL.md (owned by installCommonAssets)")
+	assert.NotContains(t, result.FilesCreated, skillCreateRelPath,
+		"WriteExampleSkills must not list gtms-tests-create/SKILL.md")
+	assert.NotContains(t, result.FilesSkipped, skillCreateRelPath,
+		"WriteExampleSkills must not even skip-report gtms-tests-create/SKILL.md")
+
+	// ENH-232 Decision 9: WriteExampleSkills must NOT write or list the catalogue README.
+	assert.NoFileExists(t, filepath.Join(dir, "gtms", "skills", "README.md"),
+		"WriteExampleSkills must not write README.md (owned by installCommonAssets)")
+	assert.NotContains(t, result.FilesCreated, skillCatalogueReadmeRelPath,
+		"WriteExampleSkills must not list gtms/skills/README.md")
+	assert.NotContains(t, result.FilesSkipped, skillCatalogueReadmeRelPath,
+		"WriteExampleSkills must not even skip-report gtms/skills/README.md")
+
+	// Verify name: frontmatter matches directory name for each SKILL.md it writes.
 	skillDirs := []string{
-		"gtms-tests-create",
 		"gtms-tests-automate",
 		"gtms-tests-execute",
 		"gtms-tests-prime",
 		"gtms-tests-verify-intent",
+		"gtms-okf-index",
 	}
 	for _, name := range skillDirs {
 		content, readErr := os.ReadFile(filepath.Join(dir, "gtms", "skills", name, "SKILL.md"))
@@ -2758,13 +2785,15 @@ func TestWriteExampleSkills(t *testing.T) {
 			"SKILL.md must contain provenance anchor in %s", name)
 	}
 
-	// Verify idempotency: modify one file, re-call, verify it was not overwritten.
-	modPath := filepath.Join(dir, "gtms", "skills", "gtms-tests-create", "SKILL.md")
+	// Verify idempotency: modify one file WriteExampleSkills owns, re-call, verify it
+	// was not overwritten. (gtms-tests-create is out of scope here; its upgrade
+	// behaviour is covered by the installCommonAssets tests.)
+	modPath := filepath.Join(dir, "gtms", "skills", "gtms-tests-automate", "SKILL.md")
 	require.NoError(t, os.WriteFile(modPath, []byte("custom content"), 0o644))
 	result2 := &Result{}
 	err = WriteExampleSkills(dir, result2)
 	require.NoError(t, err)
-	assert.Contains(t, result2.FilesSkipped, "gtms/skills/gtms-tests-create/SKILL.md",
+	assert.Contains(t, result2.FilesSkipped, "gtms/skills/gtms-tests-automate/SKILL.md",
 		"modified file should be skipped on re-call")
 
 	modContent, _ := os.ReadFile(modPath)

@@ -346,17 +346,27 @@ func TestBUG038_CreateValidatorRejectsIDMismatch(t *testing.T) {
 	outputDir := filepath.Join(root, "gtms/test/cases", "bug038test")
 	require.NoError(t, os.MkdirAll(outputDir, 0755))
 
-	// The command template uses sh -c, which will write a spec file.
-	// We can't know the batch IDs ahead of time (they're generated at invocation),
-	// so we write a frontmatter ID that is clearly wrong regardless of batch.
-	cmdTemplate := `sh -c 'echo "---
-gtms_schema: \"test-case/v2\"
-type: Test Case Spec
-test_type: Functional
-test_case_id: tc-deadbeef
-title: bad spec
----
-# Test" > "` + filepath.ToSlash(outputDir) + `/tc-aaaaaaaa-bad-spec.md"'`
+	// BUG-203 ownership rule (REV-209): for the rejected file to be QUARANTINED it must
+	// be attributable to this invocation, i.e. its canonical filename ID must be one of
+	// the IDs GTMS generated. We cannot know those IDs ahead of time, so the Tier 1
+	// command takes the generated batch via the {tc_ids} substitution (passed as a
+	// top-level `sh -c` positional arg so it is one shell-escaped token, never nested
+	// inside the inner single-quoted script), uses the FIRST batch ID for the filename
+	// and the SECOND for the frontmatter. Both are in the batch, so the only violation is
+	// that the frontmatter ID does not match the filename ID -- and the file is owned, so
+	// it is quarantined.
+	cmdTemplate := "sh -c 'ID1=$(printf \"%s\" \"$1\" | cut -d, -f1); ID2=$(printf \"%s\" \"$1\" | cut -d, -f2); " +
+		"cat > \"" + filepath.ToSlash(outputDir) + "/${ID1}-bad-spec.md\" <<SPEC\n" +
+		"---\n" +
+		"gtms_schema: \"test-case/v2\"\n" +
+		"type: Test Case Spec\n" +
+		"test_type: Functional\n" +
+		"test_case_id: ${ID2}\n" +
+		"title: bad spec\n" +
+		"---\n" +
+		"# Test\n" +
+		"SPEC\n" +
+		"' _ {tc_ids}"
 
 	resolved := &ResolvedAdapter{
 		Command: "create",
@@ -375,6 +385,9 @@ title: bad spec
 	require.NotNil(t, res)
 	assert.Equal(t, "error", res.Status)
 	assert.Contains(t, res.Summary, "does not match filename ID")
+	// BUG-203 AC10 (quarantine): the failure headline and the preserved-at line.
+	assert.Contains(t, res.Summary, "Created spec failed validation.")
+	assert.Contains(t, res.Summary, "Rejected output preserved at:")
 
 	// Verify task was moved to error
 	errorTasks, taskErr := task.List(root, "error")
@@ -387,10 +400,22 @@ title: bad spec
 	require.NoError(t, rcErr)
 	assert.Equal(t, "error", rc.Status)
 
-	// Verify the bad file is still on disk
-	badFile := filepath.Join(outputDir, "tc-aaaaaaaa-bad-spec.md")
-	_, statErr := os.Stat(badFile)
-	assert.NoError(t, statErr, "bad file should remain on disk for inspection")
+	// BUG-203 AC10 (revised: quarantine owned, not delete): the offending spec -- owned,
+	// because its filename ID is a generated batch ID -- no longer stays in
+	// gtms/test/cases/ (it broke status -r / map / gaps), nor is it deleted (that lost
+	// BUG-038's inspection copy). It is MOVED byte-for-byte to the task's error artefacts
+	// folder. The filename carries a runtime-generated ID, so assert by glob.
+	remaining, _ := filepath.Glob(filepath.Join(outputDir, "*-bad-spec.md"))
+	assert.Empty(t, remaining, "the owned rejected spec must be removed from the cases tree")
+
+	quarantinedMatches, _ := filepath.Glob(filepath.Join(root, "gtms", "tasks", "error", res.TaskID, "artifacts", "*-bad-spec.md"))
+	require.Len(t, quarantinedMatches, 1, "the rejected spec must be preserved in the error artefacts folder")
+	qbytes, qerr := os.ReadFile(quarantinedMatches[0])
+	require.NoError(t, qerr)
+	assert.Contains(t, string(qbytes), "title: bad spec",
+		"the quarantined spec must be preserved byte-for-byte (content unchanged)")
+	assert.Contains(t, string(qbytes), `gtms_schema: "test-case/v2"`,
+		"the quarantined spec must be preserved byte-for-byte (content unchanged)")
 }
 
 func TestBUG038_CreateValidatorHappyPath(t *testing.T) {

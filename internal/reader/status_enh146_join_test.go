@@ -205,7 +205,7 @@ title: Explicit framework join TC
 
 	wiringByTC, err := wiringScan(root)
 	require.NoError(t, err)
-	overlay := scanTerminalResults(root, wiringByTC)
+	overlay, _ := scanTerminalResults(root, wiringByTC)
 
 	hitBats, okBats := overlay[overlayKey("tc-aaa22222", "bats")]
 	require.True(t, okBats, "bats result must overlay via explicit-framework rung")
@@ -249,7 +249,7 @@ title: Ambiguous adapter mapping
 
 	wiringByTC, err := wiringScan(root)
 	require.NoError(t, err)
-	overlay := scanTerminalResults(root, wiringByTC)
+	overlay, _ := scanTerminalResults(root, wiringByTC)
 
 	_, okBats := overlay[overlayKey("tc-aaa33333", "bats")]
 	_, okPW := overlay[overlayKey("tc-aaa33333", "playwright")]
@@ -367,7 +367,7 @@ title: Same-second completed tiebreaker
 
 	wiringByTC, err := wiringScan(root)
 	require.NoError(t, err)
-	overlay := scanTerminalResults(root, wiringByTC)
+	overlay, _ := scanTerminalResults(root, wiringByTC)
 
 	hit, ok := overlay[overlayKey("tc-tie01", "bats")]
 	require.True(t, ok, "overlay must surface a hit for (tc-tie01, bats)")

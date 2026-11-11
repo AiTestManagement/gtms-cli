@@ -261,6 +261,11 @@ func runTriageValue(root, target, value, summary, defect, framework string, json
 
 	rec, err := reader.ClassifyTriage(root, target, value, summary, defect, framework, values)
 	if err != nil {
+		// BUG-209 AC30: print the standard refusal once per path, exit non-zero.
+		var refused *reader.IncompleteReadError
+		if errors.As(err, &refused) {
+			return finishWithIdentityDiagnostics(refused.Diagnostics)
+		}
 		output.Errorf(err.Error(), "")
 		return output.AsDisplayed(err)
 	}
@@ -400,10 +405,13 @@ func runTriageShow(root, target, framework string, jsonOut bool) error {
 		}
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
-		return enc.Encode(out)
+		if err := enc.Encode(out); err != nil {
+			return failWithIdentityDiagnostics(view.Diagnostics, err)
+		}
+		return finishWithIdentityDiagnostics(view.Diagnostics)
 	}
 	printTriageView(os.Stdout, view)
-	return nil
+	return finishWithIdentityDiagnostics(view.Diagnostics)
 }
 
 // runTriageList lists records for a scope. The positional is classified with the
@@ -445,7 +453,7 @@ func runTriageList(root string, hasArg bool, res targetpkg.Result, valueFilter s
 		// A BARE tc-id whose spec is Ambiguous or Unprovable is refused inside the
 		// reader (ADR-024 5b; REV-184 CODEX-004) -- empty stdout (not []), the
 		// diagnostic, exit 1 -- via the error path below.
-		views, err = reader.ListTriageForTCWithSnapshot(snap, root, res.TCID, valueFilter, includeResolved)
+		views, diags, err = reader.ListTriageForTCWithSnapshot(snap, root, res.TCID, valueFilter, includeResolved)
 	default: // targetpkg.KindFolder
 		scope, serr := buildScopeFromArg(root, res.Target, recursive)
 		if serr != nil {

@@ -237,6 +237,26 @@ func Find(projectRoot, testCaseID, framework string) (*WiringRecord, string, err
 // data-integrity error owned by that other identity, so it is not this id's
 // record either way.
 func FindAllForTC(projectRoot, testCaseID string) ([]*WiringRecord, error) {
+	sels, err := FindAllForTCSelections(projectRoot, testCaseID)
+	if err != nil {
+		return nil, err
+	}
+	var out []*WiringRecord
+	for _, sel := range sels {
+		out = append(out, sel.Record)
+	}
+	return out, nil
+}
+
+// FindAllForTCSelections is FindAllForTC, but each record comes back as a
+// Selection carrying the exact file it was read from and the identity the
+// FILENAME declares for it: testcase is testCaseID, and framework is the
+// filename text between "{testCaseID}--" and FileSuffix. Body identity still
+// decides which records are this test case's (see FindAllForTC); the
+// framework is deliberately taken from the filename, not the body, so a
+// caller that later writes the record can prove the body still agrees with
+// the file it selected (VerifySelection) instead of trusting the body.
+func FindAllForTCSelections(projectRoot, testCaseID string) ([]Selection, error) {
 	if err := pathsafe.ValidateFilenameComponent(testCaseID, "test case ID"); err != nil {
 		return nil, err
 	}
@@ -251,7 +271,7 @@ func FindAllForTC(projectRoot, testCaseID string) ([]*WiringRecord, error) {
 	}
 
 	prefix := testCaseID + "--"
-	var out []*WiringRecord
+	var out []Selection
 	for _, entry := range entries {
 		if entry.IsDir() {
 			continue
@@ -273,9 +293,61 @@ func FindAllForTC(projectRoot, testCaseID string) ([]*WiringRecord, error) {
 		if rec.TestCase != testCaseID {
 			continue
 		}
-		out = append(out, rec)
+		out = append(out, Selection{
+			Record:    rec,
+			Path:      path,
+			TestCase:  testCaseID,
+			Framework: strings.TrimSuffix(strings.TrimPrefix(name, prefix), FileSuffix),
+		})
 	}
 	return out, nil
+}
+
+// Selection is a wiring record together with the exact file it was read from
+// and the (testcase, framework) identity the command selected that file for.
+// The expected identity comes from the command (the target and --framework, or
+// the selected filename), never from the record body, so it can be used to
+// check the body rather than be taken from it.
+type Selection struct {
+	Record    *WiringRecord
+	Path      string
+	TestCase  string
+	Framework string
+}
+
+// ErrIdentityMismatch reports that a wiring file's body declares a different
+// test case or framework than the identity it was selected for, or that the
+// selected file is not the canonical file for that identity.
+var ErrIdentityMismatch = errors.New("wiring identity mismatch")
+
+// VerifyIdentity reports an ErrIdentityMismatch when rec's body does not
+// declare exactly the expected test case and framework.
+func VerifyIdentity(rec *WiringRecord, testCaseID, framework string) error {
+	if rec == nil {
+		return errors.New("wiring record is required")
+	}
+	if rec.TestCase != testCaseID || rec.Framework != framework {
+		return fmt.Errorf("%w: file selected for %s--%s declares testcase %q, framework %q",
+			ErrIdentityMismatch, testCaseID, framework, rec.TestCase, rec.Framework)
+	}
+	return nil
+}
+
+// VerifySelection proves a selection is self-consistent before anything is
+// written for it: the selected path must be the canonical wiring path for the
+// expected identity, and the record body must declare that same identity.
+// A caller that passes VerifySelection can derive its write target from the
+// expected identity and know it is the file it selected.
+func VerifySelection(projectRoot string, sel Selection) error {
+	canonical, err := Path(projectRoot, sel.TestCase, sel.Framework)
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrIdentityMismatch, err)
+	}
+	if filepath.Clean(sel.Path) != filepath.Clean(canonical) {
+		return fmt.Errorf("%w: selected file %s is not the wiring file for %s--%s",
+			ErrIdentityMismatch, sel.Path, sel.TestCase, sel.Framework)
+	}
+	return VerifyIdentity(sel.Record, sel.TestCase, sel.Framework)
 }
 
 // Scan reads every wiring record under gtms/automation/wiring/, returning a

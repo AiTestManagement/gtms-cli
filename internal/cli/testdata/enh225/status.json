@@ -1,0 +1,82 @@
+[
+  {
+    "testcase": "tc-11111111",
+    "slug": "spec-drift",
+    "title": "Spec drift fixture",
+    "create_status": "complete",
+    "wired": true,
+    "manual_ready": false,
+    "frameworks": [
+      {
+        "framework": "bats",
+        "wired": true,
+        "wiring_drift": "testcase",
+        "artefact_present": true,
+        "artefact": "test/acceptance/tc-11111111.bats",
+        "wired_adapter": "bats-runner",
+        "wiring_bootstrap": "ready"
+      }
+    ],
+    "selected_framework": "bats"
+  },
+  {
+    "testcase": "tc-22222222",
+    "slug": "script-drift",
+    "title": "Script drift fixture",
+    "create_status": "complete",
+    "wired": true,
+    "manual_ready": false,
+    "frameworks": [
+      {
+        "framework": "bats",
+        "wired": true,
+        "wiring_drift": "artefact",
+        "artefact_present": true,
+        "artefact": "test/acceptance/tc-22222222.bats",
+        "wired_adapter": "bats-runner",
+        "wiring_bootstrap": "ready"
+      }
+    ],
+    "selected_framework": "bats"
+  },
+  {
+    "testcase": "tc-33333333",
+    "slug": "both-drift",
+    "title": "Both drift fixture",
+    "create_status": "complete",
+    "wired": true,
+    "manual_ready": false,
+    "frameworks": [
+      {
+        "framework": "bats",
+        "wired": true,
+        "wiring_drift": "both",
+        "artefact_present": true,
+        "artefact": "test/acceptance/tc-33333333.bats",
+        "wired_adapter": "bats-runner",
+        "wiring_bootstrap": "ready"
+      }
+    ],
+    "selected_framework": "bats"
+  },
+  {
+    "testcase": "tc-44444444",
+    "slug": "no-drift",
+    "title": "No drift control",
+    "create_status": "complete",
+    "wired": true,
+    "manual_ready": false,
+    "frameworks": [
+      {
+        "framework": "bats",
+        "wired": true,
+        "wiring_drift": "",
+        "artefact_present": true,
+        "artefact": "test/acceptance/tc-44444444.bats",
+        "wired_adapter": "bats-runner",
+        "wiring_bootstrap": "ready"
+      }
+    ],
+    "selected_framework": "bats"
+  }
+]

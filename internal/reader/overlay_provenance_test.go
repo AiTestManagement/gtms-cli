@@ -82,7 +82,7 @@ func TestScanTerminalResults_CarriesProvenanceAndKeepsReaderVocabulary(t *testin
 	require.NoError(t, os.WriteFile(
 		filepath.Join(resultsDir, taskID+".handoff.yaml"), []byte(handoff), 0644))
 
-	overlay, err := scanTerminalResultsForTC(root, tc)
+	overlay, _, err := scanTerminalResultsForTC(root, tc)
 	require.NoError(t, err)
 
 	hit, ok := overlay[overlayKey(tc, framework)]
@@ -158,7 +158,7 @@ func TestScanTerminalResults_OmitsAbsentOptionalProvenance(t *testing.T) {
 	require.NoError(t, os.WriteFile(
 		filepath.Join(resultsDir, taskID+".handoff.yaml"), []byte(handoff), 0644))
 
-	overlay, err := scanTerminalResultsForTC(root, tc)
+	overlay, _, err := scanTerminalResultsForTC(root, tc)
 	require.NoError(t, err)
 	hit, ok := overlay[overlayKey(tc, framework)]
 	require.True(t, ok, "a terminal error handoff must still join")

@@ -57,10 +57,11 @@ func GapsWithDiagnostics(projectRoot string, scope *ScopeInfo, defaultFramework 
 		return nil, IdentityDiagnostics{}, err
 	}
 
-	autoRecords, err := scanAutomationRecords(projectRoot)
+	autoRecords, refusals, err := scanAutomationRecords(projectRoot)
 	if err != nil {
 		return nil, IdentityDiagnostics{}, err
 	}
+	diags.addResultsRefusals(refusals)
 
 	report := &GapReport{
 		TotalTestCases: len(testCases),
@@ -354,10 +355,11 @@ func GapsFolderSummaryWithDiagnostics(projectRoot string, defaultFramework strin
 		return nil, IdentityDiagnostics{}, err
 	}
 
-	autoRecords, err := scanAutomationRecords(projectRoot)
+	autoRecords, refusals, err := scanAutomationRecords(projectRoot)
 	if err != nil {
 		return nil, IdentityDiagnostics{}, err
 	}
+	diags.addResultsRefusals(refusals)
 
 	// ENH-202: shared triage-record enumeration (active only) for the folder-wide
 	// triaged/untriaged partition. Reuses the ENH-201 machinery (triage.ListAll

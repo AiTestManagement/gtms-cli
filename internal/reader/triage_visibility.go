@@ -216,11 +216,26 @@ func folderTriagedCountsFromSpecs(projectRoot string, testCases []testCaseFrontm
 // non-manual selection on a manual-only case must not surface the manual
 // classification for rendering, filtering, or JSON (REV-170 CODEX-001).
 func AttachTriageToEntries(projectRoot string, entries []PipelineEntry, triageValues map[string]string, filter string, requestedFramework string) error {
+	overlay, err := overlayForTriageRead(projectRoot)
+	if err != nil {
+		return err
+	}
+	return attachTriageToEntries(projectRoot, entries, overlay, triageValues, filter, requestedFramework)
+}
+
+// AttachTriageToEntriesFromScan is AttachTriageToEntries for a command that already
+// scanned .gtms/results: diags comes from that scan, so the command scans once and its
+// refusals are the only ones to report (section 8, CODEX-006).
+func AttachTriageToEntriesFromScan(projectRoot string, entries []PipelineEntry, diags IdentityDiagnostics, triageValues map[string]string, filter string, requestedFramework string) error {
+	return attachTriageToEntries(projectRoot, entries, diags.resultsOverlay, triageValues, filter, requestedFramework)
+}
+
+func attachTriageToEntries(projectRoot string, entries []PipelineEntry, overlay map[string]overlayHit, triageValues map[string]string, filter string, requestedFramework string) error {
 	ids := make([]string, 0, len(entries))
 	for i := range entries {
 		ids = append(ids, entries[i].TestCaseID)
 	}
-	idx, err := buildFrameworkTriage(projectRoot, ids, triageValues, filter)
+	idx, err := buildFrameworkTriage(projectRoot, ids, overlay, triageValues, filter)
 	if err != nil {
 		return err
 	}
@@ -231,17 +246,27 @@ func AttachTriageToEntries(projectRoot string, entries []PipelineEntry, triageVa
 		}
 		attachedManual := false
 		for j := range entries[i].Frameworks {
-			if ft := byFramework[entries[i].Frameworks[j].Framework]; ft != nil {
+			fw := entries[i].Frameworks[j].Framework
+			if ft := byFramework[fw]; ft != nil {
+				// BUG-206: on a manual-ONLY (unwired) case the synthesized
+				// `manual` row must NOT carry triage; it stays at the test-case
+				// top level (Owner Decision 2), and leaving attachedManual false
+				// lets the top-level fallback below fire. On a wired case the
+				// manual row nests triage (BUG-127 / BUG-193, unchanged).
+				if fw == "manual" && !entries[i].Wired {
+					continue
+				}
 				entries[i].Frameworks[j].Triage = ft
-				if entries[i].Frameworks[j].Framework == "manual" {
+				if fw == "manual" {
 					attachedManual = true
 				}
 			}
 		}
-		// BUG-193: a manual-only test case has frameworks[] == [] (ENH-146), so a
-		// manual triage record cannot nest under a framework entry. Attach it at
-		// the test-case level instead. The gate is "the case is NOT wired", not
-		// "no manual row received it": on a wired case whose manual artefact was
+		// BUG-193 / BUG-206: a manual-only test case keeps its manual triage at
+		// the test-case level. Since BUG-206 it has a synthesized manual row, but
+		// that row deliberately does not carry the triage (BUG-206 Owner
+		// Decision 2), so attach it at the test-case level instead. The gate is
+		// "the case is NOT wired", not "no manual row received it": on a wired case whose manual artefact was
 		// removed after classification, the BUG-127 synthesised manual row is
 		// gone but the manual record remains, and attaching it here would let the
 		// selected wired framework inherit a manual classification (BUG-193 worktree review, 2026-09-13).
@@ -258,19 +283,40 @@ func AttachTriageToEntries(projectRoot string, entries []PipelineEntry, triageVa
 // AttachTriageToDetail decorates FrameworkEntry.Triage on a single-test-case
 // detail entry, using the same rules as AttachTriageToEntries.
 func AttachTriageToDetail(projectRoot string, detail *PipelineDetailEntry, triageValues map[string]string, filter string, requestedFramework string) error {
+	overlay, err := overlayForTriageRead(projectRoot)
+	if err != nil {
+		return err
+	}
+	return attachTriageToDetail(projectRoot, detail, overlay, triageValues, filter, requestedFramework)
+}
+
+// AttachTriageToDetailFromScan is AttachTriageToDetail for a command that already
+// scanned .gtms/results. See AttachTriageToEntriesFromScan.
+func AttachTriageToDetailFromScan(projectRoot string, detail *PipelineDetailEntry, diags IdentityDiagnostics, triageValues map[string]string, filter string, requestedFramework string) error {
+	return attachTriageToDetail(projectRoot, detail, diags.resultsOverlay, triageValues, filter, requestedFramework)
+}
+
+func attachTriageToDetail(projectRoot string, detail *PipelineDetailEntry, overlay map[string]overlayHit, triageValues map[string]string, filter string, requestedFramework string) error {
 	if detail == nil {
 		return nil
 	}
-	idx, err := buildFrameworkTriage(projectRoot, []string{detail.TestCaseID}, triageValues, filter)
+	idx, err := buildFrameworkTriage(projectRoot, []string{detail.TestCaseID}, overlay, triageValues, filter)
 	if err != nil {
 		return err
 	}
 	byFramework := idx[detail.TestCaseID]
 	attachedManual := false
 	for j := range detail.Frameworks {
-		if ft := byFramework[detail.Frameworks[j].Framework]; ft != nil {
+		fw := detail.Frameworks[j].Framework
+		if ft := byFramework[fw]; ft != nil {
+			// BUG-206: manual-ONLY (unwired) detail keeps its manual triage at
+			// the test-case top level (Owner Decision 2); see
+			// AttachTriageToEntries.
+			if fw == "manual" && !detail.Wired {
+				continue
+			}
 			detail.Frameworks[j].Triage = ft
-			if detail.Frameworks[j].Framework == "manual" {
+			if fw == "manual" {
 				attachedManual = true
 			}
 		}
@@ -294,18 +340,27 @@ func manualCarrierAllowed(requestedFramework string) bool {
 	return requestedFramework == "" || requestedFramework == "manual"
 }
 
-// buildFrameworkTriage enumerates and joins triage records for the given test
-// cases into presentation objects keyed by tcID -> framework. It runs ONE bulk
-// terminal-result scan (scanTerminalResults) -- the same canonical scanner
-// ListTriage uses -- and joins each record with compareRawResult, so the
-// result-changed comparison is identical to the ENH-201 read surface.
-func buildFrameworkTriage(projectRoot string, tcIDs []string, triageValues map[string]string, filter string) (map[string]map[string]*FrameworkTriage, error) {
+// overlayForTriageRead scans for a caller with no scan of its own. A refusal comes back
+// as an *IncompleteReadError, because such a caller has no other way to report it.
+func overlayForTriageRead(projectRoot string) (map[string]overlayHit, error) {
 	wiringByTC, err := wiringScan(projectRoot)
 	if err != nil {
 		return nil, fmt.Errorf("scanning wiring records: %w", err)
 	}
-	overlay := scanTerminalResults(projectRoot, wiringByTC)
+	overlay, refusals := scanTerminalResults(projectRoot, wiringByTC)
+	var diags IdentityDiagnostics
+	diags.addResultsRefusals(refusals)
+	if ierr := incompleteReadErr(diags); ierr != nil {
+		return nil, ierr
+	}
+	return overlay, nil
+}
 
+// buildFrameworkTriage enumerates and joins triage records for the given test
+// cases into presentation objects keyed by tcID -> framework. It joins each record
+// with compareRawResult against the given overlay, so the result-changed comparison is
+// identical to the ENH-201 read surface, and it does not scan .gtms/results itself.
+func buildFrameworkTriage(projectRoot string, tcIDs []string, overlay map[string]overlayHit, triageValues map[string]string, filter string) (map[string]map[string]*FrameworkTriage, error) {
 	all, err := scopedTriageRecords(projectRoot, tcIDs)
 	if err != nil {
 		return nil, err

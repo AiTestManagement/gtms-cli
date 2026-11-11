@@ -157,9 +157,14 @@ func TestBUG191_DirectoryAtHandoffPath_PreservesContentsAndStillRoutesToError(t 
 	artefact := "test/acceptance/unparseable-contract/tc-88888888-unreadable-subject.bats"
 
 	_, err := InvokeWithRoot(context.Background(), root, cfg, resolved, "tc-88888888", withOwner(t, root, "tc-88888888", execFlagsForBats(artefact)))
-	require.Error(t, err, "an unwritable handoff path is a persistence failure, surfaced as a Go error")
-	assert.Contains(t, err.Error(), "reconstructing result contract")
-	assert.Contains(t, err.Error(), "is a directory")
+	require.Error(t, err, "an unsafe handoff path is refused, surfaced as a Go error")
+	// BUG-209 section 9: a refused read fails the run with no reconstruct attempted.
+	assert.Contains(t, err.Error(), "refused handoff")
+	// BUG-209: a directory at the handoff path is now refused as a non-regular
+	// leaf ("is not a regular file"), replacing the old "is a directory" message.
+	// The non-destructive contract (directory + contents survive, task routed to
+	// error/) is unchanged and asserted below.
+	assert.Contains(t, err.Error(), "is not a regular file")
 
 	// 1 + 2. The squatting directory and its contents are untouched.
 	errorTasks, listErr := task.List(root, "error")

@@ -1,0 +1,32 @@
+{
+  "total_test_cases": 4,
+  "no_tests": [],
+  "no_automation": [],
+  "currently_failing": [],
+  "execution_errors": [],
+  "runtime_skipped": [],
+  "stale_testcase_hash": [
+    {
+      "id": "tc-11111111",
+      "title": "Spec drift fixture"
+    },
+    {
+      "id": "tc-33333333",
+      "title": "Both drift fixture"
+    }
+  ],
+  "stale_artefact_hash": [
+    {
+      "id": "tc-22222222",
+      "title": "Script drift fixture"
+    },
+    {
+      "id": "tc-33333333",
+      "title": "Both drift fixture"
+    }
+  ],
+  "missing_artefact": [],
+  "drift_detected": [],
+  "currently_failing_triaged": 0,
+  "currently_failing_untriaged": 0
+}

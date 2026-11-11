@@ -170,7 +170,7 @@ func runStatusOverview(w io.Writer, projectRoot string, scope *reader.ScopeInfo,
 	if jsonOut {
 		// Per-TC JSON always exposes triage; the filter, when set, narrows both
 		// which rows appear and which triage objects attach.
-		if err := reader.AttachTriageToEntries(projectRoot, entries, triageValues, triageFilter, explicitFramework); err != nil {
+		if err := reader.AttachTriageToEntriesFromScan(projectRoot, entries, diags, triageValues, triageFilter, explicitFramework); err != nil {
 			return failWithIdentityDiagnostics(diags, err)
 		}
 		if triageFilter != "" {
@@ -187,7 +187,7 @@ func runStatusOverview(w io.Writer, projectRoot string, scope *reader.ScopeInfo,
 	// Human output. Attach triage only when it will be shown (showTriage is the
 	// caller's showTriage||filter), so default output stays byte-identical.
 	if showTriage {
-		if err := reader.AttachTriageToEntries(projectRoot, entries, triageValues, triageFilter, explicitFramework); err != nil {
+		if err := reader.AttachTriageToEntriesFromScan(projectRoot, entries, diags, triageValues, triageFilter, explicitFramework); err != nil {
 			return failWithIdentityDiagnostics(diags, err)
 		}
 		if triageFilter != "" {
@@ -270,7 +270,7 @@ func runStatusOverview(w io.Writer, projectRoot string, scope *reader.ScopeInfo,
 
 	tbl.Render(w)
 	fmt.Fprintf(w, "\nKey:\n")
-	fmt.Fprintf(w, "  %s = complete  %s = error  %s = stale  %s = skipped\n",
+	fmt.Fprintf(w, "  %s = complete  %s = error  %s = spec or script changed  %s = skipped\n",
 		output.IconComplete, output.IconError, output.IconWarning, output.IconSkipped)
 	fmt.Fprintf(w, "  %s = in progress    %s = pending  \u2014 = not yet attempted\n",
 		output.IconInProgress, output.IconPending)
@@ -294,6 +294,13 @@ func runStatusOverview(w io.Writer, projectRoot string, scope *reader.ScopeInfo,
 // or matches (ENH-202 / tc-82eebc80).
 func selectedFrameworkTriage(e reader.PipelineEntry) *reader.FrameworkTriage {
 	if e.SelectedFramework != "" {
+		// BUG-206: a manual-ONLY (unwired) `--framework manual` selection carries
+		// its triage at the test-case top level (Owner Decision 2), not on the
+		// synthesized manual row. No-op pre-fix (SelectedFramework was never
+		// "manual" on an unwired case).
+		if e.SelectedFramework == "manual" && !e.Wired {
+			return e.Triage
+		}
 		// A selected (wired) framework answers for itself: its own triage or
 		// nil. Never fall through to the entry-level carrier here, or a manual
 		// classification could render or filter as the wired framework's
@@ -305,8 +312,8 @@ func selectedFrameworkTriage(e reader.PipelineEntry) *reader.FrameworkTriage {
 		}
 		return nil
 	}
-	// BUG-193: a manual-only test case has no selected framework and an empty
-	// frameworks[], so its manual triage is carried at the test-case level.
+	// BUG-193 / BUG-206: a manual-only test case carries its manual triage at the
+	// test-case level, not on its synthesized manual row (BUG-206 Owner Decision 2).
 	return e.Triage
 }
 
@@ -617,6 +624,36 @@ func adapterHint(command string) string {
 	return ""
 }
 
+// selectedWiringDrift returns the wiring_drift value ("" | "testcase" |
+// "artefact" | "both") of the framework the detail view selected -- the same
+// selected wiring that sets detail.Stale (ENH-225 Decision 3). It never
+// aggregates drift across sibling frameworks.
+func selectedWiringDrift(detail *reader.PipelineDetailEntry) string {
+	for _, fe := range detail.Frameworks {
+		if fe.Framework == detail.Framework {
+			return fe.WiringDrift
+		}
+	}
+	return ""
+}
+
+// driftDetailSuffix maps a wiring_drift kind to the plain-language EXECUTE
+// detail suffix (ENH-225 target wording), reusing ENH-222's vocabulary. The
+// default guards against an empty kind while detail.Stale is set; it names both
+// conditions rather than claiming one it cannot confirm.
+func driftDetailSuffix(drift string) string {
+	switch drift {
+	case "testcase":
+		return "-- test case spec changed"
+	case "artefact":
+		return "-- automation script changed"
+	case "both":
+		return "-- test case spec and automation script changed"
+	default:
+		return "-- test case spec and automation script changed"
+	}
+}
+
 // runStatusDetail displays detailed status for a single test case.
 // ENH-082: strictFramework is true when the user supplied --framework on the
 // command line, so the detail view shows em-dashes for AUTOMATE/EXECUTE
@@ -626,7 +663,7 @@ func runStatusDetail(w io.Writer, snap *testcase.Snapshot, projectRoot, testCase
 	// for the rest of the read (one project-wide enumeration per operation). ENH-205
 	// shares that one snapshot with the qualified scoped-owner check.
 
-	detail, err := reader.PipelineDetailWithSnapshot(snap, projectRoot, testCaseID, defaultFramework, strictFramework)
+	detail, diags, err := reader.PipelineDetailWithSnapshot(snap, projectRoot, testCaseID, defaultFramework, strictFramework)
 	if err != nil {
 		// ADR-024 / BUG-185 / BUG-188: direct single-TC read refuses an ambiguous id
 		// (naming its owners) or an unprovable candidate (with its repair), visibly
@@ -649,25 +686,32 @@ func runStatusDetail(w io.Writer, snap *testcase.Snapshot, projectRoot, testCase
 		// filter narrows attachment to matching active records; a non-matching
 		// single-test-case view returns the object WITHOUT a triage member
 		// rather than an empty collection (tc-cd5d4d75 step 7).
-		if err := reader.AttachTriageToDetail(projectRoot, detail, triageValues, triageFilter, explicitFramework); err != nil {
-			return err
+		if err := reader.AttachTriageToDetailFromScan(projectRoot, detail, diags, triageValues, triageFilter, explicitFramework); err != nil {
+			return failWithIdentityDiagnostics(diags, err)
 		}
-		return writeStatusDetailJSON(w, detail)
+		if err := writeStatusDetailJSON(w, detail); err != nil {
+			return failWithIdentityDiagnostics(diags, err)
+		}
+		// BUG-209 section 8: stdout JSON stays clean; a refusal goes to stderr and
+		// makes the exit non-zero, because the detail may be missing evidence.
+		return finishWithIdentityDiagnostics(diags)
 	}
 
 	// Human output. Attach triage only when it will be shown (showTriage already
 	// ORs an active --triage filter), so default detail output is byte-identical.
 	if showTriage {
-		if err := reader.AttachTriageToDetail(projectRoot, detail, triageValues, triageFilter, explicitFramework); err != nil {
-			return err
+		if err := reader.AttachTriageToDetailFromScan(projectRoot, detail, diags, triageValues, triageFilter, explicitFramework); err != nil {
+			return failWithIdentityDiagnostics(diags, err)
 		}
 	}
 	// ENH-202: a --triage filter that matches nothing is a successful, empty
 	// result -- print the diagnostic and stop before rendering the record body
 	// (tc-cd5d4d75 step 4).
 	if triageFilter != "" && selectedDetailTriage(detail) == nil {
-		fmt.Fprintf(w, "No test cases match triage value '%s'.\n", triageFilter)
-		return nil
+		if !diags.Affected() {
+			fmt.Fprintf(w, "No test cases match triage value '%s'.\n", triageFilter)
+		}
+		return finishWithIdentityDiagnostics(diags)
 	}
 
 	// Header
@@ -708,8 +752,13 @@ func runStatusDetail(w io.Writer, snap *testcase.Snapshot, projectRoot, testCase
 	// (runStatusOverview) stays STATUS-TIED per BUG-078 and is NOT changed.
 	execIcon := formatExecuteStageIcon(detail.ExecuteStatus, detail.LastResult)
 	if detail.Stale {
+		// ENH-225: name the actual drift kind (spec, script, or both) in plain
+		// language, replacing the old blanket "script modified since last run".
+		// The kind is read from the SAME selected wiring/framework that sets
+		// detail.Stale today (Decision 3), so framework selection is unchanged
+		// and sibling-framework drift is never folded in.
 		execIcon += " " + output.IconWarning
-		execLabel += " -- script modified since last run"
+		execLabel += " " + driftDetailSuffix(selectedWiringDrift(detail))
 	}
 	fmt.Fprintf(w, "EXECUTE:    %s (%s)\n", execIcon, execLabel)
 
@@ -781,7 +830,7 @@ func runStatusDetail(w io.Writer, snap *testcase.Snapshot, projectRoot, testCase
 		}
 	}
 
-	return nil
+	return finishWithIdentityDiagnostics(diags)
 }
 
 // selectedDetailTriage returns the triage object attached to the detail's
@@ -793,6 +842,11 @@ func selectedDetailTriage(detail *reader.PipelineDetailEntry) *reader.FrameworkT
 		return nil
 	}
 	if detail.SelectedFramework != "" {
+		// BUG-206: manual-ONLY (unwired) `--framework manual` keeps its triage at
+		// the test-case top level (Owner Decision 2). No-op pre-fix.
+		if detail.SelectedFramework == "manual" && !detail.Wired {
+			return detail.Triage
+		}
 		// Same rule as selectedFrameworkTriage: a selected framework answers
 		// for itself and never inherits the entry-level carrier (BUG-193 worktree review, 2026-09-13).
 		for i := range detail.Frameworks {

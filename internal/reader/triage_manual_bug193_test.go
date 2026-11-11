@@ -128,8 +128,8 @@ func TestClassifyTriage_BUG193_AdapterNameNotFrameworkAlias(t *testing.T) {
 	assert.NoFileExists(t, triageRecordPath(root, "tc-11111111", "manual-execute"))
 	assert.NoFileExists(t, triageRecordPath(root, "tc-11111111", "manual"))
 
-	// The task-field mismatch is non-causal: classification never reads the task
-	// file, and the real framework name classifies the same fixture.
+	// Classification never reads the task file, and the real framework name
+	// classifies the same fixture.
 	_, err = ClassifyTriage(root, "tc-11111111", "environment", "", "", "manual", triageTestValues())
 	require.NoError(t, err)
 	assert.FileExists(t, triageRecordPath(root, "tc-11111111", "manual"))
@@ -339,15 +339,17 @@ func TestClassifyTriage_BUG193_PostExecutionEditKeepsExecutedResult(t *testing.T
 	assert.False(t, *view.ResultChanged, "latest handoff is still the executed fail")
 }
 
-// BUG-193 item 13: the task-field mismatch is non-causal. The manual claim reads
-// the handoff's framework: manual, never the task file, so classification is
-// independent of what the execute task recorded as its framework.
+// BUG-193 item 13: the manual claim reads the handoff's framework: manual, never
+// the task file, so classification is independent of what the execute task
+// recorded as its framework.
 func TestClassifyTriage_BUG193_TaskFrameworkMismatchNonCausal(t *testing.T) {
 	root := newManualProject(t, "tc-11111111")
 	// The manual claim is admitted purely from the terminal execute handoff; no
 	// task file is written here, and classification still succeeds.
 	seedManualExecution(t, root, "tc-11111111", "fail", "task-manual-1", "2026-09-10T16:34:00Z")
-	_, hit := manualClaimForTC(root, "tc-11111111")
+	scan := result.OpenScan(root)
+	_, hit := manualClaimFromScan(root, scan, "tc-11111111")
+	scan.Close()
 	assert.True(t, hit, "the proven manual claim comes from the handoff, not the task file")
 
 	rec, err := ClassifyTriage(root, "tc-11111111", "environment", "", "", "manual", triageTestValues())
@@ -356,8 +358,10 @@ func TestClassifyTriage_BUG193_TaskFrameworkMismatchNonCausal(t *testing.T) {
 }
 
 // tc-ac5e07ff item 9 status JSON contract: on a MANUAL-ONLY case the manual
-// triage is attached at the test-case level and frameworks[] stays [] (the
-// ENH-146 shape the map_phase3d tests pin), never nested under a framework entry.
+// triage is attached at the test-case level, never nested under a framework
+// entry. BUG-206: frameworks[] now carries one synthesized `manual` row, but
+// that row must NOT carry the triage object (Owner Decision 2) -- the triage
+// stays at the test-case top level.
 func TestAttachTriage_BUG193_ManualOnlyCarriesTopLevelTriage(t *testing.T) {
 	root := newManualProject(t, "tc-11111111")
 	seedManualExecution(t, root, "tc-11111111", "fail", "task-manual-1", "2026-09-10T16:34:00Z")
@@ -369,7 +373,9 @@ func TestAttachTriage_BUG193_ManualOnlyCarriesTopLevelTriage(t *testing.T) {
 	detail, err := PipelineDetail(root, "tc-11111111", "manual", true)
 	require.NoError(t, err)
 	require.NoError(t, AttachTriageToDetail(root, detail, triageTestValues(), "", ""))
-	assert.Empty(t, detail.Frameworks, "manual-only frameworks[] stays []")
+	require.Len(t, detail.Frameworks, 1, "BUG-206: manual-only detail has one manual row")
+	assert.Equal(t, "manual", detail.Frameworks[0].Framework)
+	assert.Nil(t, detail.Frameworks[0].Triage, "manual-only row must NOT carry triage (Owner Decision 2)")
 	require.NotNil(t, detail.Triage, "manual triage attaches at the test-case level")
 	assert.Equal(t, "environment", detail.Triage.Value)
 	assert.Equal(t, "fail", detail.Triage.Snapshot.Result)
@@ -385,7 +391,9 @@ func TestAttachTriage_BUG193_ManualOnlyCarriesTopLevelTriage(t *testing.T) {
 		}
 	}
 	require.NotNil(t, found)
-	assert.Empty(t, found.Frameworks)
+	require.Len(t, found.Frameworks, 1)
+	assert.Equal(t, "manual", found.Frameworks[0].Framework)
+	assert.Nil(t, found.Frameworks[0].Triage, "manual-only row must NOT carry triage (Owner Decision 2)")
 	require.NotNil(t, found.Triage)
 	assert.Equal(t, "environment", found.Triage.Value)
 }

@@ -10,6 +10,7 @@ import (
 
 	"github.com/aitestmanagement/gtms-cli/internal/layout"
 	"github.com/aitestmanagement/gtms-cli/internal/pathsafe"
+	"github.com/aitestmanagement/gtms-cli/internal/result"
 	"github.com/aitestmanagement/gtms-cli/internal/testcase"
 	"github.com/aitestmanagement/gtms-cli/internal/wiring"
 )
@@ -78,6 +79,7 @@ func filterOutKeys(paths []string, exclude map[string]bool) []string {
 // removed while the plan is built, so a shared artefact is classified the same
 // way whether or not earlier siblings would have been deleted first.
 type deletePlan struct {
+	projectRoot        string
 	testCasesProcessed int
 	specs              []string // absolute paths (spec files; empty when keepSpec)
 	records            []string // wiring + manual records for selected TCs
@@ -86,6 +88,13 @@ type deletePlan struct {
 	artefactDeletes    []string // canonical abs artefact paths to physically remove
 	resultFiles        []string // executed_artefact result files (deduped, minus artefact candidates)
 	preserved          []PreservedArtefact
+
+	// BUG-209: an unsafe .gtms/results leaf is left untouched and named; an
+	// escaping results directory stops all handoff removal. Either makes the
+	// cleanup incomplete, so delete names it and exits non-zero while completing
+	// every unrelated safe removal.
+	handoffRefusals []*result.RefusedHandoffError
+	dirRefusal      *result.RefusedDirError
 }
 
 // buildDeletePlan resolves the complete deletion plan for a single TC (tcID
@@ -240,7 +249,18 @@ func buildDeletePlan(projectRoot string, scope *ScopeInfo, tcID string, keepSpec
 		}
 	}
 
-	plan := &deletePlan{}
+	plan := &deletePlan{projectRoot: projectRoot}
+
+	// BUG-209: open the shared results-directory scan ONCE for the whole plan. An
+	// escaping results directory stops all handoff removal (never followed or
+	// removed through); each unsafe leaf is recorded and left untouched. The rest
+	// of the plan (specs, wiring, tasks) is independent and still completes.
+	scan := result.OpenScan(projectRoot)
+	defer scan.Close()
+	plan.dirRefusal = scan.DirRefusal
+	for _, ref := range scan.Refusals {
+		plan.handoffRefusals = append(plan.handoffRefusals, ref.Err)
+	}
 
 	// artefactCandidates: canonical key -> {abs, rel}, deduplicated across the
 	// whole selection (BUG-073 + BUG-173 batch dedupe; CODEX-002 case-fold).
@@ -296,11 +316,9 @@ func buildDeletePlan(projectRoot string, scope *ScopeInfo, tcID string, keepSpec
 		}
 		plan.taskFiles = append(plan.taskFiles, tasks...)
 
-		contracts, err := findResultContracts(projectRoot, id)
-		if err != nil {
-			return nil, fmt.Errorf("finding result contracts for %s: %w", id, err)
-		}
+		contracts, unsafeLeftovers := scanResultContractsForTC(scan, id)
 		plan.resultContracts = append(plan.resultContracts, contracts...)
+		plan.handoffRefusals = append(plan.handoffRefusals, unsafeLeftovers...)
 	}
 
 	// 4. Classify each deduped artefact candidate. Iterate in sorted canonical

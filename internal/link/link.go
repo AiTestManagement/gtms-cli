@@ -330,20 +330,16 @@ type RefreshPlan struct {
 func PlanRefresh(projectRoot string, snap *testcase.Snapshot, rec *wiring.WiringRecord) (RefreshPlan, error) {
 	plan := RefreshPlan{TestCase: rec.TestCase, Framework: rec.Framework}
 
-	// Path-safety check on the stored artefact path.
-	artefactAbs, _, safeErr := pathsafe.ResolveUnderRoot(projectRoot, rec.Artefact)
-	if safeErr != nil {
-		return RefreshPlan{}, fmt.Errorf("unsafe artefact path for wiring: %w", safeErr)
-	}
-
-	// Artefact must exist on disk. The pending sentinel only controls whether
-	// the artefact hash gets recomputed (see below), it does not exempt the
-	// record from artefact-existence validation. A pending record whose
-	// artefact has been deleted is unrecoverable: refresh must surface that.
-	if _, err := os.Stat(artefactAbs); os.IsNotExist(err) {
-		return RefreshPlan{}, fmt.Errorf("artefact file not found: %s", rec.Artefact)
-	} else if err != nil {
-		return RefreshPlan{}, fmt.Errorf("checking artefact file: %w", err)
+	// Path-safety + existence on the stored artefact path. The pending sentinel
+	// only controls whether the artefact hash gets recomputed (see below), it
+	// does not exempt the record from artefact-existence validation. A pending
+	// record whose artefact has been deleted is unrecoverable: refresh must
+	// surface that. ENH-231: the automatic script-drift acceptance path
+	// (AcceptScriptDrift) reuses this same primitive, so the two enforce one
+	// rule.
+	artefactAbs, err := validateWiringArtefact(projectRoot, rec.Artefact)
+	if err != nil {
+		return RefreshPlan{}, err
 	}
 
 	// Look the owner up in the snapshot the operation already built. Refresh is a
@@ -444,6 +440,206 @@ func RefreshRecord(projectRoot string, snap *testcase.Snapshot, rec *wiring.Wiri
 		return false, err
 	}
 	return ApplyRefresh(projectRoot, plan)
+}
+
+// validateWiringArtefact runs the artefact-side safety checks shared by
+// PlanRefresh and AcceptScriptDrift: path-safety containment on the stored
+// artefact path, then existence on disk. It returns the canonical absolute
+// artefact path on success.
+//
+// Extracting it keeps explicit refresh and automatic script-drift acceptance
+// enforcing ONE rule for "is this artefact safe and present", so the two can
+// never drift apart (ENH-231 Owner Decision 10).
+func validateWiringArtefact(projectRoot, artefact string) (string, error) {
+	artefactAbs, _, safeErr := pathsafe.ResolveUnderRoot(projectRoot, artefact)
+	if safeErr != nil {
+		return "", fmt.Errorf("unsafe artefact path for wiring: %w", safeErr)
+	}
+	if _, err := os.Stat(artefactAbs); os.IsNotExist(err) {
+		return "", fmt.Errorf("artefact file not found: %s", artefact)
+	} else if err != nil {
+		return "", fmt.Errorf("checking artefact file: %w", err)
+	}
+	return artefactAbs, nil
+}
+
+// ErrConcurrentWiringChange reports that the on-disk wiring record changed
+// between the execute drift preflight and the acceptance write, so
+// AcceptScriptDrift refused to overwrite it (ENH-231 Owner Decision 11).
+var ErrConcurrentWiringChange = errors.New("wiring changed since the drift preflight; not overwriting")
+
+// ErrNothingToAccept reports that AcceptScriptDrift was asked to accept a
+// record whose artefact-hash is the pending sentinel. Pending is bootstrap
+// state, not drift, so there is no script change to accept.
+var ErrNothingToAccept = errors.New("artefact-hash is pending (bootstrap state); no script change to accept")
+
+// AcceptScriptDrift refreshes ONLY the artefact-hash of an existing wiring
+// record to the current artefact content, preserving every other field --
+// crucially the examined testcase-hash. It is the automatic script-drift
+// acceptance path for `gtms execute` in relaxed mode (ENH-231).
+//
+// It reuses the SAME path-safety, existence, hashing and writable-record safety
+// as explicit `gtms link --refresh` (validateWiringArtefact + pipeline.HashFile
+// + wiring.ValidateWritable), but deliberately does NOT recompute or apply the
+// testcase-hash: specification drift stays strict and is refused earlier by the
+// caller (Owner Decisions 5 and 10). It therefore needs no ownership snapshot.
+//
+// sel is the wiring the execute drift preflight inspected: sel.Record is the
+// examined record, sel.Path the exact file it was read from, and
+// sel.TestCase/sel.Framework the identity execute selected that file for.
+// Before hashing or writing, AcceptScriptDrift requires (REV-232 CODEX-001):
+//
+//   - sel.Path is the canonical wiring path for the expected identity, and the
+//     examined body declares that identity (wiring.VerifySelection);
+//   - a re-read of that exact file still declares the expected identity and
+//     still matches the examined record field for field -- otherwise it
+//     refuses with ErrConcurrentWiringChange (Owner Decision 11). The re-read
+//     runs twice: once before artefact validation, and again after hashing,
+//     immediately before the write (REV-232 DCODEX-001).
+//
+// The record it writes takes its test case and framework from the verified
+// expected identity, never from the body, so the write target is always the
+// selected file. It introduces no lock or compare-and-swap writer; the residual
+// check-to-write race inherited from wiring.Write is out of scope.
+//
+// On success it returns the exact artefact-hash it wrote, so the caller can
+// stamp that same value into the invocation (REV-232 CODEX-002) instead of
+// hashing the script a second time. Any refusal returns "" and an error, and
+// leaves the wiring untouched.
+func AcceptScriptDrift(projectRoot string, sel wiring.Selection) (string, error) {
+	examined := sel.Record
+	if examined == nil {
+		return "", errors.New("wiring record is required")
+	}
+
+	// REV-232 CODEX-001: the selected file must be the canonical file for the
+	// expected identity, and its body must declare that identity.
+	if err := wiring.VerifySelection(projectRoot, sel); err != nil {
+		return "", err
+	}
+
+	// Pending is bootstrap state, not drift. ENH-151's pending -> real hash
+	// transition is a separate path; acceptance must never run for it.
+	if wiring.IsPendingArtefactHash(examined.ArtefactHash) {
+		return "", ErrNothingToAccept
+	}
+
+	// Owner Decision 11: early re-read of the exact selected file. Refuse
+	// before any artefact work if it no longer declares the expected identity
+	// or no longer matches what the preflight examined.
+	if err := recheckSelectedWiring(sel); err != nil {
+		return "", err
+	}
+
+	// Same artefact-side safety as explicit refresh.
+	artefactAbs, err := validateWiringArtefact(projectRoot, examined.Artefact)
+	if err != nil {
+		return "", err
+	}
+
+	// Same hashing as explicit refresh; this is the current script fingerprint
+	// and the exact value returned to the caller.
+	newArtefactHash, err := pipeline.HashFile(artefactAbs)
+	if err != nil {
+		return "", fmt.Errorf("hashing artefact: %w", err)
+	}
+	runAcceptTestHook("post-hash")
+
+	// REV-232 DCODEX-001: artefact validation and hashing can be slow, and
+	// another command may update the wiring meanwhile. Re-read the selected
+	// file again, verify its identity, and compare all six fields with the
+	// examined record; only then write. A difference refuses with
+	// ErrConcurrentWiringChange so the newer wiring survives unchanged.
+	if err := recheckSelectedWiring(sel); err != nil {
+		return "", err
+	}
+
+	// Identity comes from the verified selection, not the body; only the
+	// artefact-hash changes.
+	updated := &wiring.WiringRecord{
+		TestCase:     sel.TestCase,
+		TestCaseHash: examined.TestCaseHash,
+		Framework:    sel.Framework,
+		Adapter:      examined.Adapter,
+		Artefact:     examined.Artefact,
+		ArtefactHash: newArtefactHash,
+	}
+
+	// Same writable-record validation as PlanRefresh.
+	if err := wiring.ValidateWritable(projectRoot, updated); err != nil {
+		return "", fmt.Errorf("wiring cannot be written: %w", err)
+	}
+
+	// The writer derives its target from updated's identity. Confirm, before
+	// writing, that this is the selected file (VerifySelection already proved
+	// it; this keeps a future change to wiring.Path from redirecting the write).
+	target, err := wiring.Path(projectRoot, updated.TestCase, updated.Framework)
+	if err != nil {
+		return "", fmt.Errorf("wiring cannot be written: %w", err)
+	}
+	if filepath.Clean(target) != filepath.Clean(sel.Path) {
+		return "", fmt.Errorf("%w: accepted wiring would be written to %s, selected %s", wiring.ErrIdentityMismatch, target, sel.Path)
+	}
+
+	if _, err := wiring.Write(projectRoot, updated); err != nil {
+		return "", fmt.Errorf("writing accepted wiring: %w", err)
+	}
+	return newArtefactHash, nil
+}
+
+// ErrScriptChangedAgain reports that the script changed again after
+// AcceptScriptDrift accepted it, so the hash the wiring now records is not
+// the hash of the script about to run (REV-232 DCODEX-002).
+var ErrScriptChangedAgain = errors.New("the script changed again after its change was accepted")
+
+// ConfirmAcceptedArtefact hashes the artefact at artefactAbs and refuses with
+// ErrScriptChangedAgain unless it still matches acceptedHash, the value
+// AcceptScriptDrift returned. Execute calls it immediately before invocation
+// so CommandFlags.ArtefactHash is the artefact hash at invocation time. It
+// never writes the wiring. The window between this check and the adapter
+// opening the file is inherited behaviour: ENH-231 promises no locking or
+// frozen file handle.
+func ConfirmAcceptedArtefact(artefactAbs, acceptedHash string) error {
+	current, err := pipeline.HashFile(artefactAbs)
+	if err != nil {
+		return fmt.Errorf("re-hashing accepted script: %w", err)
+	}
+	if current != acceptedHash {
+		return ErrScriptChangedAgain
+	}
+	return nil
+}
+
+// recheckSelectedWiring re-reads sel.Path and refuses unless the file still
+// declares the expected identity and still matches sel.Record in all six
+// fields (ENH-231 Owner Decision 11).
+func recheckSelectedWiring(sel wiring.Selection) error {
+	onDisk, err := wiring.Read(sel.Path)
+	if err != nil {
+		return fmt.Errorf("re-reading wiring before acceptance: %w", err)
+	}
+	// The selection was identity-verified before this re-read, so an identity
+	// mismatch here means the file changed underneath us: report it as a
+	// concurrent change (retry), keeping the identity error in the chain.
+	if err := wiring.VerifyIdentity(onDisk, sel.TestCase, sel.Framework); err != nil {
+		return fmt.Errorf("%w: %w", ErrConcurrentWiringChange, err)
+	}
+	if !sameWiringSelection(onDisk, sel.Record) {
+		return ErrConcurrentWiringChange
+	}
+	return nil
+}
+
+// acceptTestHook, when set by a test, is called at named points inside
+// AcceptScriptDrift ("post-hash" right after the artefact is hashed, before
+// the final wiring re-read) so tests can model a concurrent wiring update in
+// that window. Always nil in production.
+var acceptTestHook func(stage string)
+
+func runAcceptTestHook(stage string) {
+	if acceptTestHook != nil {
+		acceptTestHook(stage)
+	}
 }
 
 // CheckLink validates inputs and reports link health without writing anything.

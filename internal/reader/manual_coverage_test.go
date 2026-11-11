@@ -88,6 +88,14 @@ func TestPipelineStatus_ManualCoverage_Prepared(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, entries, 1)
 	assert.Equal(t, "prepared", entries[0].ManualCoverage)
+
+	// BUG-206: the JSON-visible frameworks[] now carries one result-free manual
+	// row for the prepared manual-only TC (not just the legacy carrier above).
+	prepRows := frameworksWithName(entries[0].Frameworks, "manual")
+	require.Len(t, prepRows, 1)
+	assert.False(t, prepRows[0].Wired)
+	assert.Empty(t, prepRows[0].LastResultHere, "prepared manual row carries no result")
+	assert.Empty(t, prepRows[0].LastStatusHere)
 }
 
 func TestPipelineStatus_ManualCoverage_Recorded(t *testing.T) {
@@ -101,6 +109,13 @@ func TestPipelineStatus_ManualCoverage_Recorded(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, entries, 1)
 	assert.Equal(t, "recorded", entries[0].ManualCoverage)
+
+	// BUG-206: the JSON-visible frameworks[] carries the recorded manual outcome.
+	recRows := frameworksWithName(entries[0].Frameworks, "manual")
+	require.Len(t, recRows, 1)
+	assert.False(t, recRows[0].Wired)
+	assert.Equal(t, "pass", recRows[0].LastResultHere)
+	assert.Equal(t, "complete", recRows[0].LastStatusHere)
 }
 
 func TestPipelineStatus_ManualCoverage_NoCoverage(t *testing.T) {

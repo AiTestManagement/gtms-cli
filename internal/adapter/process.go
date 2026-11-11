@@ -63,15 +63,21 @@ func runAdapterProcess(cmd *exec.Cmd, outputDir string, force bool) (*Invocation
 	// Kill implicitly cleans up; cleanup after kill is a no-op.
 	defer cleanupFn()
 
+	// ENH-222: the process is now launched. Every return from here on reports
+	// Started=true, including the post-launch error paths below, so the CLI can
+	// distinguish "accepted and ran" from "accepted but could not start".
+	started := true
+
 	// Stream and parse stdout
 	streamRes, parseErr := parseStreamingOutput(stdout, outputDir, force)
 
 	// Wait for process to complete (AFTER reading all stdout)
 	waitErr := cmd.Wait()
 
-	// Handle parse errors
+	// Handle parse errors (post-launch: carry Started so callers still see the
+	// adapter was dispatched).
 	if parseErr != nil {
-		return nil, parseErr
+		return &InvocationResult{Started: started}, parseErr
 	}
 
 	// Handle ErrWaitDelay — pipes were slow to close, treat as success.
@@ -84,6 +90,7 @@ func runAdapterProcess(cmd *exec.Cmd, outputDir string, force bool) (*Invocation
 		ExitCode:   0,
 		Stderr:     strings.TrimSpace(stderrBuf.String()),
 		SavedFiles: streamRes.SavedFiles,
+		Started:    started,
 	}
 
 	// Set Stdout: summary from streaming parser
@@ -93,7 +100,9 @@ func runAdapterProcess(cmd *exec.Cmd, outputDir string, force bool) (*Invocation
 		if exitErr, ok := waitErr.(*exec.ExitError); ok {
 			result.ExitCode = exitErr.ExitCode()
 		} else {
-			return nil, waitErr
+			// Post-launch wait failure: carry Started so the CLI still sees the
+			// adapter was dispatched (ENH-222).
+			return &InvocationResult{Started: started}, waitErr
 		}
 	}
 

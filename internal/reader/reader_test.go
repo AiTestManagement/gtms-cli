@@ -1155,7 +1155,7 @@ func TestScanAutomationRecords_NonAutomationFiles(t *testing.T) {
 		Result:    "pass",
 	})
 
-	records, err := scanAutomationRecords(root)
+	records, _, err := scanAutomationRecords(root)
 	require.NoError(t, err)
 	assert.Len(t, records, 1)
 	assert.Contains(t, records, "tc-001")

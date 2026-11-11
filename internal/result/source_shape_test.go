@@ -92,6 +92,81 @@ func TestSourceShape_ResultsDirWalkersUseCommandPredicate(t *testing.T) {
 	}
 }
 
+// BUG-209 AC20: no production file may discard a result.Update error. Every one
+// of the seven previously-discarding sites now handles it (section 9), and this
+// guard fails on any `_ = result.Update(` that reappears in production code.
+func TestSourceShape_NoDiscardedResultUpdate(t *testing.T) {
+	dirs := []string{
+		filepath.Join("..", "adapter"),
+		filepath.Join("..", "cli"),
+		filepath.Join("..", "reader"),
+		filepath.Join("..", "pipeline"),
+	}
+	for _, dir := range dirs {
+		files, err := filepath.Glob(filepath.Join(dir, "*.go"))
+		require.NoError(t, err)
+		for _, f := range files {
+			if strings.HasSuffix(f, "_test.go") {
+				continue
+			}
+			src, err := os.ReadFile(f)
+			require.NoError(t, err)
+			code := stripGoComments(t, f, string(src))
+			assert.NotContainsf(t, code, "_ = result.Update(",
+				"%s: a result.Update error is discarded; BUG-209 section 9 / AC20 requires every one handled", f)
+		}
+	}
+}
+
+// BUG-209 AC22: every GTMS-owned handoff read, write and directory scan goes
+// through the shared result abstraction (result.Create / Update / Reconstruct /
+// Read / OpenScan). No production file outside internal/result may construct the
+// .gtms/results directory path AND perform a raw filesystem read, write, rename or
+// enumeration on it -- that is exactly the pattern (os.ReadDir / filepath.Glob /
+// os.Open / os.WriteFile / os.ReadFile / os.Rename on .gtms/results) the shared
+// scanner and writers replace at all five former sites.
+//
+// The trigger is the comma-adjacent path literal `".gtms", "results"` (how the
+// handoff directory is built with filepath.Join) together with a raw IO call. That
+// literal is absent from every non-result production file after consolidation, so
+// re-introducing a direct .gtms/results scan or handoff IO re-adds it and fails
+// here. Directory CREATION (os.MkdirAll of .gtms subdirs, containment-gated in the
+// invoker) is deliberately not in the forbidden set.
+func TestSourceShape_HandoffAccessUsesAbstraction(t *testing.T) {
+	dirs := []string{
+		filepath.Join("..", "adapter"),
+		filepath.Join("..", "cli"),
+		filepath.Join("..", "reader"),
+		filepath.Join("..", "pipeline"),
+	}
+	const resultsDirLiteral = `".gtms", "results"` // the filepath.Join handoff-dir construction
+	rawIO := []string{
+		"os.ReadDir(", "filepath.Glob(", "os.Open(",
+		"os.WriteFile(", "os.ReadFile(", "os.Rename(",
+	}
+	for _, dir := range dirs {
+		files, err := filepath.Glob(filepath.Join(dir, "*.go"))
+		require.NoError(t, err)
+		for _, f := range files {
+			if strings.HasSuffix(f, "_test.go") {
+				continue
+			}
+			src, err := os.ReadFile(f)
+			require.NoError(t, err)
+			code := stripGoComments(t, f, string(src))
+			if !strings.Contains(code, resultsDirLiteral) {
+				continue
+			}
+			for _, io := range rawIO {
+				assert.NotContainsf(t, code, io,
+					"%s: constructs the .gtms/results directory path and calls %s on it -- "+
+						"route handoff reads/writes/scans through result.OpenScan / result.Read / "+
+						"result.Create / result.Update / result.Reconstruct (BUG-209 AC22)", f, io)
+			}
+		}
+	}
+}
+
 // stripGoComments removes // line comments and /* */ block comments
 // from Go source so source-shape literal searches do not match
 // provenance notes. Returns the comment-stripped source.

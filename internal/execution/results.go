@@ -158,6 +158,13 @@ func ResultsFilePath(projectRoot, taskID, tcID string) (string, error) {
 	if err := pathsafe.ValidateFilenameComponent(tcID, "test case ID"); err != nil {
 		return "", err
 	}
-	return filepath.Join(layout.ExecutionDir(projectRoot),
-		fmt.Sprintf("%s--%s.results.yaml", taskID, tcID)), nil
+	return filepath.Join(layout.ExecutionDir(projectRoot), taskID+ResultsFileSuffix(tcID)), nil
+}
+
+// ResultsFileSuffix returns the part of a per-test results filename that names
+// the test case. Every record ResultsFilePath produces for tcID ends in it, so a
+// directory scan can rule out another test case's records from the name alone,
+// without opening them.
+func ResultsFileSuffix(tcID string) string {
+	return "--" + tcID + ".results.yaml"
 }

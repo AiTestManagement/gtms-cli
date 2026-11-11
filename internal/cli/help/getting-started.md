@@ -41,9 +41,13 @@ STEP 3 -- INSTALL THE STARTER SKILLS
 
     gtms skills         -- the gtms/skills/ catalog and install steps
 
-  Five skills wrap the pipeline stages with process discipline (ordering,
-  verification, chaining): gtms-tests-create, gtms-tests-automate,
+  The five pipeline skills wrap the pipeline stages with process discipline
+  (ordering, verification, chaining): gtms-tests-create, gtms-tests-automate,
   gtms-tests-execute, gtms-tests-prime, gtms-tests-verify-intent.
+
+  Another skill, gtms-okf-index, is a repository navigation skill, not a
+  pipeline stage: it builds and refreshes the OKF index.md files under the
+  test-cases tree so cases are browsable.
 
 STEP 4 -- RUN ONE TEST CASE THROUGH THE PIPELINE
 

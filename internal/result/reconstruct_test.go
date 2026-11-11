@@ -95,7 +95,11 @@ func TestReconstruct_RefusesDirectoryAtTargetPath(t *testing.T) {
 
 			err := Reconstruct(path, errorContract("task-recon03"))
 			require.Error(t, err, "a directory at the handoff path must be reported, not deleted")
-			assert.Contains(t, err.Error(), "is a directory")
+			// BUG-209: a directory is now refused as a non-regular leaf (section 10
+			// reason "is not a regular file"), replacing the old "is a directory"
+			// message. The regression intent -- the directory is reported and left
+			// untouched, never deleted -- is unchanged.
+			assert.Contains(t, err.Error(), reasonNotRegular)
 
 			info, statErr := os.Stat(path)
 			require.NoError(t, statErr, "the directory must still be there")

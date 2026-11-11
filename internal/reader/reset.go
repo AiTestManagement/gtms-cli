@@ -1,6 +1,7 @@
 package reader
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -17,6 +18,18 @@ type ResetResult struct {
 	TestCasesAffected        int
 	AutomationRecordsCleared int
 	TaskFilesRemoved         int
+
+	// BUG-209: a refused .gtms/results entry (an unsafe leaf) is left untouched
+	// and named; a refused results directory (an escaping link) stops all handoff
+	// cleanup. Either makes the cleanup incomplete, so the CLI names it and exits
+	// non-zero while completing every unrelated safe removal.
+	HandoffRefusals []*result.RefusedHandoffError
+	DirRefusal      *result.RefusedDirError
+}
+
+// Incomplete reports whether a BUG-209 refusal left the reset cleanup incomplete.
+func (r *ResetResult) Incomplete() bool {
+	return len(r.HandoffRefusals) > 0 || r.DirRefusal != nil
 }
 
 // ResetExecuteResults clears execute results for test cases matching the given
@@ -26,7 +39,7 @@ type ResetResult struct {
 // If tcID is non-empty, only that single test case is reset (scope is ignored).
 // If tcID is empty, scope determines which test cases are reset.
 func ResetExecuteResults(projectRoot string, scope *ScopeInfo, tcID string, dryRun bool) (*ResetResult, error) {
-	result := &ResetResult{}
+	res := &ResetResult{}
 
 	// ADR-024: reset is destructive by EFFECT (it removes handoffs and task
 	// files), so it requires proven UniqueOwner ownership before any mutation.
@@ -70,16 +83,28 @@ func ResetExecuteResults(projectRoot string, scope *ScopeInfo, tcID string, dryR
 		selection = ids
 	}
 	for _, id := range selection {
-		res := snap.Resolve(id)
-		if res.Outcome == testcase.OutcomeAmbiguous || res.Outcome == testcase.OutcomeUnprovable {
-			return nil, testcase.OwnershipErrorFor(res)
+		r := snap.Resolve(id)
+		if r.Outcome == testcase.OutcomeAmbiguous || r.Outcome == testcase.OutcomeUnprovable {
+			return nil, testcase.OwnershipErrorFor(r)
 		}
 	}
 
-	if tcID != "" {
-		return resetSingleTC(projectRoot, tcID, dryRun, result)
+	// BUG-209: open the shared results-directory scan ONCE. An escaping results
+	// directory stops all handoff cleanup (never followed or removed through); each
+	// unsafe leaf is recorded and left untouched. Task-file cleanup (under
+	// gtms/tasks, not .gtms/results) proceeds regardless, so the safe part of the
+	// reset still completes.
+	scan := result.OpenScan(projectRoot)
+	defer scan.Close()
+	res.DirRefusal = scan.DirRefusal
+	for _, ref := range scan.Refusals {
+		res.HandoffRefusals = append(res.HandoffRefusals, ref.Err)
 	}
-	return resetSelection(projectRoot, selection, dryRun, result)
+
+	if tcID != "" {
+		return resetSingleTC(projectRoot, scan, tcID, dryRun, res)
+	}
+	return resetSelection(projectRoot, scan, selection, dryRun, res)
 }
 
 // deriveResetScopeRel returns the canonical project-relative scope directory for
@@ -92,97 +117,113 @@ func deriveResetScopeRel(projectRoot string, scope *ScopeInfo) string {
 }
 
 // resetSingleTC clears execute results for a single test case by ID.
-func resetSingleTC(projectRoot, tcID string, dryRun bool, result *ResetResult) (*ResetResult, error) {
-	cleared, err := clearAutomationRecords(projectRoot, tcID, dryRun)
+func resetSingleTC(projectRoot string, scan *result.Scan, tcID string, dryRun bool, res *ResetResult) (*ResetResult, error) {
+	cleared, err := clearAutomationRecords(scan, tcID, dryRun, res)
 	if err != nil {
 		return nil, err
 	}
-	result.AutomationRecordsCleared = cleared
+	res.AutomationRecordsCleared = cleared
 
 	removed, err := removeExecuteTaskFiles(projectRoot, tcID, dryRun)
 	if err != nil {
 		return nil, err
 	}
-	result.TaskFilesRemoved = removed
+	res.TaskFilesRemoved = removed
 
 	if cleared > 0 || removed > 0 {
-		result.TestCasesAffected = 1
+		res.TestCasesAffected = 1
 	}
 
-	return result, nil
+	return res, nil
 }
 
 // resetSelection clears execute results for the snapshot-selected owner ids.
 // Selection and the ownership preflight already ran in ResetExecuteResults, so
 // every id here is a proven unique (or not-found) owner.
-func resetSelection(projectRoot string, selection []string, dryRun bool, result *ResetResult) (*ResetResult, error) {
+func resetSelection(projectRoot string, scan *result.Scan, selection []string, dryRun bool, res *ResetResult) (*ResetResult, error) {
 	for _, id := range selection {
-		cleared, err := clearAutomationRecords(projectRoot, id, dryRun)
+		cleared, err := clearAutomationRecords(scan, id, dryRun, res)
 		if err != nil {
 			return nil, err
 		}
-		result.AutomationRecordsCleared += cleared
+		res.AutomationRecordsCleared += cleared
 
 		removed, err := removeExecuteTaskFiles(projectRoot, id, dryRun)
 		if err != nil {
 			return nil, err
 		}
-		result.TaskFilesRemoved += removed
+		res.TaskFilesRemoved += removed
 
 		if cleared > 0 || removed > 0 {
-			result.TestCasesAffected++
+			res.TestCasesAffected++
 		}
 	}
 
-	return result, nil
+	return res, nil
 }
 
-// clearAutomationRecords clears all GTMS handoff history (create,
-// automate, execute, prime) for the given TC under .gtms/results/.
-// CON-023 / ENH-146: wiring is read-only -- reset must not mutate
-// wiring. The full clear is intentional: reset purges all stage
-// results so the TC can be re-run from scratch. Counts handoffs
-// removed (or that would be removed in dry-run mode).
-func clearAutomationRecords(projectRoot, tcID string, dryRun bool) (int, error) {
-	dir := filepath.Join(projectRoot, ".gtms", "results")
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return 0, nil
-		}
-		return 0, fmt.Errorf("reading .gtms/results for %s: %w", tcID, err)
+// clearAutomationRecords clears all GTMS handoff history (create, automate,
+// execute, prime) for the given TC under .gtms/results/, through the shared
+// BUG-209 scanner: it removes each safe handoff whose target matches tcID AND its
+// leftover staged files, never follows or removes through an unsafe leaf or an
+// escaping results directory (those were recorded as refusals in
+// ResetExecuteResults), and leaves wiring untouched (CON-023 / ENH-146). Counts
+// handoffs removed (or that would be removed in dry-run mode).
+func clearAutomationRecords(scan *result.Scan, tcID string, dryRun bool, res *ResetResult) (int, error) {
+	if scan.Absent || scan.DirRefusal != nil {
+		return 0, nil
 	}
-
 	cleared := 0
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".handoff.yaml") {
-			continue
-		}
-		path := filepath.Join(dir, e.Name())
-		rc, err := readContractTarget(path)
-		if err != nil || rc != tcID {
+	for _, e := range scan.Entries {
+		if e.RC == nil || e.RC.Target != tcID {
 			continue
 		}
 		if dryRun {
+			// A preview names what a real run would leave (AC35).
+			_, refused := scan.LeftoversFor(e.Base)
+			res.addHandoffRefusals(refused)
 			cleared++
 			continue
 		}
-		if err := os.Remove(path); err != nil {
-			return cleared, fmt.Errorf("removing handoff %s: %w", path, err)
+		refused, err := scan.Remove(e.Base)
+		res.addHandoffRefusals(refused)
+		if err != nil {
+			// BUG-209 section 8: an entry that became unsafe after the scan read it is
+			// left untouched and reported like any other refused entry, which makes the
+			// exit non-zero, and the rest of the cleanup continues. delete does the same.
+			var rh *result.RefusedHandoffError
+			var rd *result.RefusedDirError
+			switch {
+			case errors.As(err, &rh):
+				res.addHandoffRefusals([]*result.RefusedHandoffError{rh})
+				continue
+			case errors.As(err, &rd):
+				if res.DirRefusal == nil {
+					res.DirRefusal = rd
+				}
+				return cleared, nil
+			}
+			return cleared, fmt.Errorf("removing handoff %s: %w", e.Base, err)
 		}
 		cleared++
 	}
 	return cleared, nil
 }
 
-// readContractTarget peeks at a handoff file and returns its target TC.
-// Best-effort: parse errors return ("", err).
-func readContractTarget(path string) (string, error) {
-	rc, err := result.Read(path)
-	if err != nil || rc == nil {
-		return "", err
+// addHandoffRefusals records refusals once per path.
+func (r *ResetResult) addHandoffRefusals(refs []*result.RefusedHandoffError) {
+	for _, ref := range refs {
+		seen := false
+		for _, have := range r.HandoffRefusals {
+			if have.Rel == ref.Rel {
+				seen = true
+				break
+			}
+		}
+		if !seen {
+			r.HandoffRefusals = append(r.HandoffRefusals, ref)
+		}
 	}
-	return rc.Target, nil
 }
 
 // removeExecuteTaskFiles removes completed and error execute task files for the

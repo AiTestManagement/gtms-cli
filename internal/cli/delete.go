@@ -168,6 +168,14 @@ func runDelete(w io.Writer, projectRoot string, scope *reader.ScopeInfo, tcID st
 	}
 
 	formatDeleteOutput(w, result, projectRoot, dryRun)
+
+	// BUG-209: a refused .gtms/results entry or an escaping results directory
+	// leaves the cleanup incomplete. The safe plan above has already run (or been
+	// previewed in dry-run); now name each refusal on stderr and exit non-zero.
+	if result.Incomplete() {
+		renderHandoffRefusals(result.DirRefusal, result.HandoffRefusals)
+		return output.AsDisplayed(fmt.Errorf("delete incomplete: an unsafe .gtms/results entry was left untouched"))
+	}
 	return nil
 }
 
@@ -230,7 +238,7 @@ func formatDeleteOutput(w io.Writer, result *reader.DeleteResult, projectRoot st
 				rel = f
 			}
 			rel = filepath.ToSlash(rel)
-			fmt.Fprintf(w, "  %s\n", rel)
+			fmt.Fprintf(w, "  %s\n", pathsafe.SanitizeControlChars(rel))
 		}
 	}
 }

@@ -75,7 +75,7 @@ func whatHappenedAutomate(res *adapter.InvokeResult) string {
 }
 
 // whatHappenedPrime builds the "What happened" text for the prime command.
-// BUG-080: dedicated helper — uses manual-aware wording, not automate wording.
+// BUG-080: dedicated helper -- uses manual-aware wording, not automate wording.
 func whatHappenedPrime(res *adapter.InvokeResult) string {
 	if res.Status == "error" {
 		return fmt.Sprintf("Prime failed: %s", res.Summary)
@@ -146,10 +146,15 @@ func whatHappenedBulkAutomate(folder string, succeeded, skipped, failed int) str
 }
 
 // whatHappenedBulkExecute builds the "What happened" text for bulk execute.
-func whatHappenedBulkExecute(folder string, passed, skipped, failed, errored int) string {
-	if failed == 0 && skipped == 0 && errored == 0 {
+// BUG-200: notRun counts test cases GTMS refused to run (counted apart from
+// skipped); any refusal makes the clean-run branch not apply.
+func whatHappenedBulkExecute(folder string, passed, skipped, notRun, failed, errored int) string {
+	if failed == 0 && skipped == 0 && errored == 0 && notRun == 0 {
 		return fmt.Sprintf("All %d tests passed in gtms/test/cases/%s/", passed, folder)
 	}
-	return fmt.Sprintf("%d passed, %d failed, %d errored, %d skipped in gtms/test/cases/%s/",
-		passed, failed, errored, skipped, folder)
+	// ENH-222: match the summary's bucket order -- passed, skipped, not run,
+	// failed, errored -- so the guidance line reads in the same order as the
+	// five-bucket summary. Counts are unchanged.
+	return fmt.Sprintf("%d passed, %d skipped, %d not run, %d failed, %d errored in gtms/test/cases/%s/",
+		passed, skipped, notRun, failed, errored, folder)
 }

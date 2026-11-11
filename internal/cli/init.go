@@ -52,14 +52,35 @@ Examples:
   gtms init --preset bats            -- BATS shell testing with local runner
   gtms init --preset playwright      -- Playwright browser testing
   gtms init --name "My Project"      -- specify project name (default: directory name)
-  gtms init --force --preset bats    -- overwrite gtms.config and upgrade a pristine bats-runner.sh shipped by v0.3.0 to v0.3.2
-                                        (current runner skipped; an edited one, or the unrecognised v0.2.0 runner, is kept
-                                        with the shipped version written beside it as .gtms-new)
-  gtms init --force --preset playwright -- overwrite gtms.config and upgrade a pristine recognised OLDER shipped playwright-runner.sh
-                                        (current runner skipped; an edited one is kept, the shipped version written beside it as .gtms-new)
+  gtms init --force --preset bats    -- refresh a bats project, including a pristine bats-runner.sh shipped by v0.3.0 to
+                                        v0.3.2 (the v0.2.0 runner is not recognised) and the BATS template
+                                        gtms/automation/templates/bats.template.bats
+  gtms init --force --preset playwright -- refresh a playwright project, including a pristine older playwright-runner.sh
+  gtms init --force --demo           -- refresh a demo project, including _demo/adapters/create-demo.sh
   gtms init --demo                   -- seed demo data for learning the pipeline
   gtms init --guidance-off           -- disable post-command guidance messages
   gtms init --guidance-on            -- re-enable post-command guidance messages
+
+Refreshing an existing project ('gtms init --force' with --preset or --demo;
+use the preset the project was created with):
+  - gtms.config is saved to gtms.config.bak (then gtms.config.bak.2, ...)
+    before it is rewritten. No earlier backup is overwritten, and init names
+    the backup it wrote. A gtms.config that is a symlink or other non-regular
+    file is refused before anything changes.
+  - Upgradeable scaffold files: both test case templates, both result
+    templates, the four create and prime scripts, the authoring guide, the
+    result schema, the gtms-tests-create skill and the skills README (every
+    preset); the runner (bats, playwright); the BATS template (bats only);
+    _demo/adapters/create-demo.sh (--demo).
+  - A pristine older shipped copy is upgraded in place. A current copy is
+    left unchanged (the --preset route lists it under 'Skipped (already
+    exist):'). An edited or unrecognised copy is left untouched, and the
+    shipped version is written beside it as <file>.gtms-new (or the next free
+    <file>.gtms-new.N). Line endings (CRLF or LF) do not affect the comparison.
+  - Missing scaffold files, such as a new starter skill, are added. Other
+    existing files are left as they are.
+  - A renamed GTMS folder is refreshed in place.
+Plain 'gtms init --force' in an existing project changes nothing.
 
 Preset switching is not supported in-place. To choose a different preset for
 an existing project, remove gtms.config and generated scaffold assets, then
@@ -189,7 +210,14 @@ re-run init.`,
 					printPresetList(os.Stderr)
 					fmt.Fprintf(os.Stderr, "\nTo choose a different preset, remove gtms.config and generated scaffold assets, then re-run 'gtms init --preset <name>'.\n")
 					// ENH-183: Re-surface the snippet CTA on re-init.
-					fmt.Fprintf(os.Stderr, "\n%s Wire your AI agent in: paste gtms/AGENTS-SNIPPET.md into your CLAUDE.md / AGENTS.md\n", output.IconPending)
+					// CLAUDE-001 (BUG-207): name the snippet under the active GTMS folder,
+					// which is where it actually lives in a renamed project. Best-effort:
+					// fall back to gtms/ if discovery cannot resolve a single parent.
+					snippetParent := "gtms"
+					if pn, pErr := config.FindParentDir(cwd); pErr == nil {
+						snippetParent = pn
+					}
+					fmt.Fprintf(os.Stderr, "\n%s Wire your AI agent in: paste %s/AGENTS-SNIPPET.md into your CLAUDE.md / AGENTS.md\n", output.IconPending, snippetParent)
 					return nil
 				}
 
@@ -216,12 +244,27 @@ re-run init.`,
 						return output.AsDisplayed(err)
 					}
 					if cfg.DemoSeeded {
-						// Always refresh guidance (picks up latest demo guidance text)
-						_ = scaffold.UpdateDemoGuidance(cwd)
-						fmt.Fprintf(os.Stderr, "Demo data already seeded. Guidance refreshed.\nTo re-seed files, delete _demo/ and set demo_seeded: false in gtms.config.\n")
+						// BUG-213 Owner Decision 1: validate the active parent and refresh
+						// guidance through the containment-aware path. A linked active
+						// parent exits non-zero before any mutation; a withheld guidance
+						// update (an unsafe guidance file) warns and is NOT reported as
+						// refreshed.
+						modified, warn, uErr := scaffold.UpdateDemoGuidance(cwd)
+						if uErr != nil {
+							output.Errorf(uErr.Error(), "")
+							return output.AsDisplayed(uErr)
+						}
+						if warn != "" {
+							fmt.Fprintf(os.Stderr, "%s %s\n", output.IconWarning, warn)
+						}
+						msg := "Demo data already seeded."
+						if modified {
+							msg += " Guidance refreshed."
+						}
+						fmt.Fprintf(os.Stderr, "%s\nTo re-seed files, delete _demo/ and set demo_seeded: false in gtms.config.\n", msg)
 						return nil
 					}
-					demoResult, err := scaffold.DemoSeed(cwd)
+					demoResult, err := scaffold.DemoSeed(cwd, false)
 					if err != nil {
 						output.Errorf(err.Error(), "")
 						return output.AsDisplayed(err)
@@ -235,12 +278,13 @@ re-run init.`,
 					}
 					// Existing-config demo-merge: no fresh inference happened here, so
 					// no project completion banner is printed (unchanged pre-ENH-190).
-					formatDemoOutput(cwd, "", "", false, demoResult, !guidanceOffFlag)
+					// No Init ran, so there is no Init config-backup to surface (BUG-203).
+					formatDemoOutput(cwd, "", "", false, nil, demoResult, !guidanceOffFlag)
 					return nil
 				}
 
 				if !configExists || forceFlag {
-					// No config (or --force) -- run full init first with bats preset, then seed demo
+					// No config (or --force) -- run full init first with the manual preset, then seed demo
 					name := nameFlag
 					if name == "" {
 						name = filepath.Base(cwd)
@@ -272,13 +316,13 @@ re-run init.`,
 						Preset:      scaffold.PresetManual,
 						Force:       forceFlag,
 					}
-					_, err := scaffold.Init(initOpts)
+					initResult, err := scaffold.Init(initOpts)
 					if err != nil {
 						output.Errorf(err.Error(), "")
 						return output.AsDisplayed(err)
 					}
 
-					demoResult, err := scaffold.DemoSeed(cwd)
+					demoResult, err := scaffold.DemoSeed(cwd, forceFlag)
 					if err != nil {
 						output.Errorf(err.Error(), "")
 						return output.AsDisplayed(err)
@@ -292,7 +336,8 @@ re-run init.`,
 					}
 					// Fresh init+demo: show the same completion banner and no-origin
 					// guidance as normal init, reflecting the just-inferred repo value.
-					formatDemoOutput(cwd, name, repo, true, demoResult, !guidanceOffFlag)
+					// BUG-203: surface the gtms.config backup Init took under --force.
+					formatDemoOutput(cwd, name, repo, true, initResult, demoResult, !guidanceOffFlag)
 					return nil
 				}
 			}
@@ -389,7 +434,7 @@ re-run init.`,
 	cmd.Flags().StringVar(&repoFlag, "repo", "", "Repository path, e.g. org/repo (default: inferred from the origin remote; stores no-origin-remote when origin is unavailable)")
 	cmd.Flags().StringVar(&presetFlag, "preset", "", "Workflow preset: manual, bats, playwright")
 	cmd.Flags().BoolVar(&presetsFlag, "presets", false, "List available presets and exit")
-	cmd.Flags().BoolVar(&forceFlag, "force", false, "Overwrite existing config or allow nested project creation; with --preset bats or --preset playwright also upgrade a pristine recognised older shipped bats-runner.sh (v0.3.0 to v0.3.2; the v0.2.0 runner is not recognised) or playwright-runner.sh (the current one is skipped; an edited or unrecognised one is kept, the shipped version written beside it as .gtms-new)")
+	cmd.Flags().BoolVar(&forceFlag, "force", false, "Overwrite existing config (saved first as gtms.config.bak, .bak.2, ...) or allow nested project creation; in an existing project also upgrade pristine recognised older shipped scaffold files, per route: every route refreshes the common files; --preset bats adds bats-runner.sh (v0.3.0 to v0.3.2; the v0.2.0 runner is not recognised) and the BATS template; --preset playwright adds playwright-runner.sh; --demo adds _demo/adapters/create-demo.sh and no BATS or Playwright files (a current file is skipped; an edited or unrecognised one is kept, the shipped version written beside it as .gtms-new)")
 	cmd.Flags().BoolVar(&guidanceOffFlag, "guidance-off", false, "Disable post-command guidance messages (updates gtms.config)")
 	cmd.Flags().BoolVar(&guidanceOnFlag, "guidance-on", false, "Re-enable post-command guidance messages (updates gtms.config)")
 	cmd.Flags().BoolVar(&demoFlag, "demo", false, "Seed demo data for learning the GTMS pipeline (not combinable with --preset)")
@@ -461,59 +506,86 @@ func formatInitOutput(root, name, repo, preset string, result *scaffold.Result, 
 	// listed here because the stderr enumeration that used to be their only
 	// mention is now a count summary. They sit with the rest of the gtms/ tree
 	// rather than after the .vscode entries, so the block reads in one group.
+	// BUG-207: the canned banner renders the ACTIVE GTMS parent, so a renamed-folder
+	// refresh reports paths under e.g. testing/ instead of a misleading gtms/.
+	p := result.Parent
+	if p == "" {
+		p = "gtms"
+	}
+	// BUG-213 Owner Decision 1: the Created: banner must reflect what was
+	// actually written, so a destination refused because it resolves outside the
+	// project (a linked GTMS subfolder, a linked root-level folder, or a linked
+	// leaf) never appears here. Each curated line is gated: a specific file line
+	// prints unless that destination was refused; a directory-summary line prints
+	// unless a directory under it was refused. A refused leaf does not hide a
+	// directory that was created successfully. In a normal or --force run with
+	// no links nothing is refused, so every line prints exactly as before.
+	line := func(path, text string) {
+		if !containsString(result.FilesRefused, path) {
+			fmt.Printf("    %s\n", text)
+		}
+	}
+	summary := func(dirPrefix, text string) {
+		if !anyRefusedUnder(result.DirsRefused, dirPrefix) {
+			fmt.Printf("    %s\n", text)
+		}
+	}
 	fmt.Println("  Created:")
 	fmt.Println("    gtms.config")
-	fmt.Println("    gtms/ (pipeline parent directory)")
-	fmt.Println("    gtms/.gtms-root (sentinel)")
-	fmt.Println("    gtms/AGENTS-SNIPPET.md")
-	fmt.Println("    gtms/tasks/ (5 status directories)")
-	fmt.Println("    gtms/test/cases/ (with guides)")
-	fmt.Println("    gtms/test/guides/gtms-test-case-authoring-guide.md")
-	fmt.Println("    gtms/test/templates/manual-testcase.template.md")
-	fmt.Println("    gtms/test/templates/agent-testcase.template.md")
-	fmt.Println("    gtms/skills/ (starter agent skills)")
-	fmt.Println("    gtms/automation/ (wiring, specs)")
+	// The active parent and its sentinel are validated contained before any
+	// mutation (resolveActiveParent); if they resolved outside, init already
+	// exited non-zero, so these always print on a successful run.
+	fmt.Printf("    %s/ (pipeline parent directory)\n", p)
+	fmt.Printf("    %s/.gtms-root (sentinel)\n", p)
+	line(p+"/AGENTS-SNIPPET.md", p+"/AGENTS-SNIPPET.md")
+	summary(p+"/tasks", p+"/tasks/ (5 status directories)")
+	summary(p+"/test/cases", p+"/test/cases/ (with guides)")
+	line(p+"/test/guides/gtms-test-case-authoring-guide.md", p+"/test/guides/gtms-test-case-authoring-guide.md")
+	line(p+"/test/templates/manual-testcase.template.md", p+"/test/templates/manual-testcase.template.md")
+	line(p+"/test/templates/agent-testcase.template.md", p+"/test/templates/agent-testcase.template.md")
+	summary(p+"/skills", p+"/skills/ (starter agent skills)")
+	summary(p+"/automation", p+"/automation/ (wiring, specs)")
 
 	// BUG-149: Preset-conditional automate skeleton templates.
 	// Driven off result.FilesCreated so manual preset (which creates nothing
 	// under this prefix) prints nothing, satisfying tc-0b82d0e3 / tc-2fb023a4.
 	for _, f := range result.FilesCreated {
-		if strings.HasPrefix(f, "gtms/automation/templates/") {
+		if strings.HasPrefix(f, p+"/automation/templates/") {
 			fmt.Printf("    %s\n", f)
 		}
 	}
 
-	fmt.Println("    gtms/scripts/")
-	fmt.Println("    gtms/execution/")
+	summary(p+"/scripts", p+"/scripts/")
+	summary(p+"/execution", p+"/execution/")
 
 	// Manual scaffold entries (always created on a fresh init).
-	fmt.Println("    gtms/manual/records/")
-	fmt.Println("    gtms/manual/templates/")
-	fmt.Println("    gtms/manual/templates/manual-result.template.yaml")
-	fmt.Println("    gtms/manual/templates/agent-result.template.yaml")
-	fmt.Println("    gtms/schemas/")
-	fmt.Println("    gtms/schemas/manual-result.schema.json")
-	fmt.Println("    gtms/tasks/.README.md")
+	summary(p+"/manual/records", p+"/manual/records/")
+	summary(p+"/manual/templates", p+"/manual/templates/")
+	line(p+"/manual/templates/manual-result.template.yaml", p+"/manual/templates/manual-result.template.yaml")
+	line(p+"/manual/templates/agent-result.template.yaml", p+"/manual/templates/agent-result.template.yaml")
+	summary(p+"/schemas", p+"/schemas/")
+	line(p+"/schemas/manual-result.schema.json", p+"/schemas/manual-result.schema.json")
+	line(p+"/tasks/.README.md", p+"/tasks/.README.md")
 
 	// ENH-160: Common adapter scripts (both roles, renamed to *-script convention)
-	fmt.Println("    gtms/adapters/manual-create-script.sh")
-	fmt.Println("    gtms/adapters/agent-create-script.sh")
-	fmt.Println("    gtms/adapters/manual-prime-script.sh")
-	fmt.Println("    gtms/adapters/agent-prime-script.sh")
-	fmt.Println("    gtms/adapters/manual-execute-script.sh")
-	fmt.Println("    gtms/adapters/agent-execute-script.sh")
+	line(p+"/adapters/manual-create-script.sh", p+"/adapters/manual-create-script.sh")
+	line(p+"/adapters/agent-create-script.sh", p+"/adapters/agent-create-script.sh")
+	line(p+"/adapters/manual-prime-script.sh", p+"/adapters/manual-prime-script.sh")
+	line(p+"/adapters/agent-prime-script.sh", p+"/adapters/agent-prime-script.sh")
+	line(p+"/adapters/manual-execute-script.sh", p+"/adapters/manual-execute-script.sh")
+	line(p+"/adapters/agent-execute-script.sh", p+"/adapters/agent-execute-script.sh")
 
 	// Preset-owned assets (framework runners etc.)
 	commonScripts := map[string]bool{
-		"gtms/adapters/manual-create-script.sh":  true,
-		"gtms/adapters/agent-create-script.sh":   true,
-		"gtms/adapters/manual-prime-script.sh":   true,
-		"gtms/adapters/agent-prime-script.sh":    true,
-		"gtms/adapters/manual-execute-script.sh": true,
-		"gtms/adapters/agent-execute-script.sh":  true,
+		p + "/adapters/manual-create-script.sh":  true,
+		p + "/adapters/agent-create-script.sh":   true,
+		p + "/adapters/manual-prime-script.sh":   true,
+		p + "/adapters/agent-prime-script.sh":    true,
+		p + "/adapters/manual-execute-script.sh": true,
+		p + "/adapters/agent-execute-script.sh":  true,
 	}
 	for _, f := range result.FilesCreated {
-		if strings.HasPrefix(f, "gtms/adapters/") && !commonScripts[f] {
+		if strings.HasPrefix(f, p+"/adapters/") && !commonScripts[f] {
 			fmt.Printf("    %s\n", f)
 		}
 	}
@@ -541,6 +613,12 @@ func formatInitOutput(root, name, repo, preset string, result *scaffold.Result, 
 		}
 	}
 
+	// BUG-203: name the gtms.config backup --force took before rewriting it, so the user
+	// can recover their customised config.
+	if result.ConfigBackup != "" {
+		fmt.Printf("\n  Saved your previous gtms.config to %s before rewriting it.\n", result.ConfigBackup)
+	}
+
 	// Show warnings (actionable; rendered with ! glyph).
 	if len(result.Warnings) > 0 {
 		fmt.Println()
@@ -566,7 +644,12 @@ func formatInitOutput(root, name, repo, preset string, result *scaffold.Result, 
 	// This is the absolute last line of init output -- after guidance footer --
 	// so the eye lands on it. Uses IconPending (neutral glyph) to distinguish
 	// from success/warning/error lines.
-	fmt.Fprintf(os.Stderr, "\n%s Wire your AI agent in: paste gtms/AGENTS-SNIPPET.md into your CLAUDE.md / AGENTS.md\n", output.IconPending)
+	// CLAUDE-001 (BUG-207): name the snippet under the active GTMS folder (result.Parent),
+	// which is where Init wrote it; in a renamed project gtms/AGENTS-SNIPPET.md does not exist.
+	snippetPath := p + "/AGENTS-SNIPPET.md"
+	if !containsString(result.FilesRefused, snippetPath) {
+		fmt.Fprintf(os.Stderr, "\n%s Wire your AI agent in: paste %s into your CLAUDE.md / AGENTS.md\n", output.IconPending, snippetPath)
+	}
 }
 
 // formatDemoOutput prints the success summary after demo seeding.
@@ -576,7 +659,7 @@ func formatInitOutput(root, name, repo, preset string, result *scaffold.Result, 
 // banner (and no-origin guidance) as normal init. The existing-config
 // demo-merge path passes showProject=false: it did not run a fresh inference,
 // so it prints no project banner (unchanged behaviour).
-func formatDemoOutput(root, name, repo string, showProject bool, result *scaffold.DemoSeedResult, guidanceEnabled bool) {
+func formatDemoOutput(root, name, repo string, showProject bool, initResult *scaffold.Result, result *scaffold.DemoSeedResult, guidanceEnabled bool) {
 	fmt.Printf("%s Demo data seeded in %s\n", output.IconComplete, root)
 	fmt.Println()
 
@@ -604,6 +687,40 @@ func formatDemoOutput(root, name, repo string, showProject bool, result *scaffol
 		fmt.Println("  Updated: .gtms/guidance.yaml (demo guidance)")
 	}
 
+	// BUG-203: name the gtms.config backup Init took under --force (the user-facing
+	// backup; DemoSeed's own backup of the regenerated config is silent).
+	if initResult != nil && initResult.ConfigBackup != "" {
+		fmt.Printf("\n  Saved your previous gtms.config to %s before rewriting it.\n", initResult.ConfigBackup)
+	}
+
+	// BUG-203 + REV-209 CLAUDE-003: surface BOTH Init's common-asset upgrade notes and
+	// .gtms-new companion warnings (the 11 preset producers under --force) AND the demo
+	// create-demo.sh upgrade note / conflict warning, the same way formatInitOutput does.
+	// Before this, formatDemoOutput dropped Init's Warnings/Notes, so a demo project with
+	// an edited v0.3.x template got a silent companion and nothing explained why create
+	// still emitted the pre-v2 header.
+	var warnings, notes []string
+	if initResult != nil {
+		warnings = append(warnings, initResult.Warnings...)
+		notes = append(notes, initResult.Notes...)
+	}
+	warnings = append(warnings, result.Warnings...)
+	notes = append(notes, result.Notes...)
+	if len(warnings) > 0 {
+		fmt.Println()
+		for _, w := range warnings {
+			fmt.Fprintf(os.Stderr, "%s %s\n", output.IconWarning, w)
+		}
+	}
+	if len(notes) > 0 {
+		if len(warnings) == 0 {
+			fmt.Println()
+		}
+		for _, n := range notes {
+			fmt.Fprintf(os.Stderr, "  Note: %s\n", n)
+		}
+	}
+
 	// ENH-186: count-based summary instead of per-file enumeration.
 	// The demo Created: block and Updated: lines above are the authoritative
 	// listing; this summary names no path.
@@ -616,6 +733,19 @@ func formatDemoOutput(root, name, repo string, showProject bool, result *scaffol
 func containsString(slice []string, s string) bool {
 	for _, v := range slice {
 		if v == s {
+			return true
+		}
+	}
+	return false
+}
+
+// anyRefusedUnder reports whether any refused directory is the directory prefix
+// itself or a directory beneath it. BUG-213: the Created: banner uses it to drop
+// a directory-summary line when that directory structure was refused, without
+// hiding a successfully created directory merely because one leaf was refused.
+func anyRefusedUnder(refused []string, prefix string) bool {
+	for _, r := range refused {
+		if r == prefix || strings.HasPrefix(r, prefix+"/") {
 			return true
 		}
 	}

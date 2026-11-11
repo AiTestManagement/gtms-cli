@@ -548,11 +548,14 @@ func TestBuiltinAutomate_StampsBATSSkeleton(t *testing.T) {
 	require.NoError(t, err)
 	content := string(data)
 	assert.Contains(t, content, "setup_file()")
-	assert.Contains(t, content, "_common_setup")
 	assert.Contains(t, content, "@test")
 	assert.Contains(t, content, "tc-auto0001")
-	assert.Contains(t, content, "teardown()")
-	assert.Contains(t, content, "common-setup.bash")
+	// BUG-202: the shipped skeleton is self-contained -- no helper load, no
+	// _common_setup call, and no empty teardown() block.
+	assert.Contains(t, content, "export PROJECT_ROOT=")
+	assert.NotContains(t, content, "_common_setup")
+	assert.NotContains(t, content, "teardown()")
+	assert.NotContains(t, content, "common-setup.bash")
 }
 
 func TestBuiltinAutomate_WritesWiringWithPendingHash(t *testing.T) {
@@ -1288,7 +1291,10 @@ func TestBuiltinAutomate_FallbackOnMissingTemplate(t *testing.T) {
 	content := string(data)
 	assert.Contains(t, content, "#!/usr/bin/env bats")
 	assert.Contains(t, content, "tc-auto0001")
-	assert.Contains(t, content, "_common_setup")
+	// BUG-202: the fallback skeleton is self-contained -- no helper reference.
+	assert.Contains(t, content, "export PROJECT_ROOT=")
+	assert.NotContains(t, content, "_common_setup")
+	assert.NotContains(t, content, "common-setup.bash")
 }
 
 func TestBuiltinAutomate_NonMissingReadErrorSurfaces(t *testing.T) {

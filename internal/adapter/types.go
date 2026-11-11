@@ -95,6 +95,17 @@ type InvocationResult struct {
 	Stderr     string
 	SavedFiles []string // file paths written during streaming (nil if no delimiters found)
 
+	// Started reports whether the adapter process (or asynchronous dispatch) was
+	// actually launched (ENH-222 Owner Decision 2026-10-27 #4). It is set true once
+	// the launch has demonstrably succeeded -- for Tier 1/2 that is immediately
+	// after cmd.Start() returns nil (process.go), including on a post-launch error
+	// such as a stream-parse or wait failure. It is NEVER inferred from task
+	// creation, a result contract, or error text. A pre-launch failure (prompt
+	// assembly, invalid timeout, cmd.Start error) leaves it false. The CLI reads it
+	// through adapter.Started so the default-mode acceptance notice can tell
+	// "accepted and ran" (Draft D) from "accepted but could not start" (Draft E).
+	Started bool
+
 	// ResultOverride lets Tier 0 built-in adapters communicate the test
 	// outcome (pass/fail/skip/error) back to handleSyncResult, which would
 	// otherwise hardcode `pass` for any exit-0 invocation. ENH-160 surfaced
@@ -151,6 +162,15 @@ type CommandFlags struct {
 	Folder       string // create only: the positional folder arg for create
 	Reference    string // create only: the --reference flag value
 	Name         string // create only: optional name for the test case (second positional arg)
-	ArtefactHash string // execute only: SHA-256 hash of the artefact file at invocation time
+	// ResolvedOutputDir is the authoritative absolute output directory the create
+	// admission boundary (testcase.ResolveCreateTarget) already checked for
+	// containment (BUG-214 Owner Decision 7). When set, buildAdapterContext uses it
+	// verbatim for the create command's ctx.OutputDir instead of recomputing the
+	// target from the raw folder arg or config output-dir, so the path the adapter
+	// writes IS the path that was collision-checked. Empty on every non-create path
+	// and from direct test callers; the invoker then falls back to the historical
+	// config-or-folder computation. create only.
+	ResolvedOutputDir string
+	ArtefactHash      string // execute only: SHA-256 hash of the artefact file at invocation time
 	Force        bool   // automate: reprocess and overwrite existing output files
 }

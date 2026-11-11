@@ -63,24 +63,32 @@ func TestSourceShape_ShouldSkipExecuteReasonStrings(t *testing.T) {
 
 	// CON-023 / ENH-145 / ENH-146: the legacy reasons "no automation
 	// record" and "automation not ready" are retired (no record on the
-	// execute path; wiring is the source of truth). The bulk loop now
-	// uses wiring-aware reasons: "not wired", "stale wiring", "missing
-	// artefact", "multiple frameworks — specify --framework", plus the
-	// retained "already passing" and "active task exists".
+	// execute path; wiring is the source of truth). BUG-200 added the "not
+	// run" classification. ENH-222 replaced the internal reason tokens with
+	// plain-language ones: a changed spec is "spec changed", a changed script
+	// in refuse mode is "script changed", a missing/unreadable script is
+	// "script missing"/"script unreadable", an unverifiable spec is "spec
+	// unavailable", and an ambiguous multi-framework TC is "choose a
+	// framework". The retained "already passing" and "active task exists"
+	// skips stay.
 	expectedReasons := []string{
-		"not wired",
+		"not run",
 		"already passing",
 		"active task exists",
-		"stale wiring",
-		"missing artefact",
+		"spec changed",
+		"script changed",
+		"script missing",
+		"script unreadable",
+		"spec unavailable",
+		"choose a framework",
 	}
 	for _, reason := range expectedReasons {
 		assert.Contains(t, content, reason,
 			"the bulk-execute path must surface reason string: %s", reason)
 	}
 
-	// At least 2 empty returns (no-skip default path on selectWiringForBulk
-	// success + no-skip default on shouldSkipExecute).
+	// At least 2 empty returns (no-skip default on shouldSkipExecute +
+	// no-skip default on activeExecuteTaskSkip).
 	emptyReturnCount := strings.Count(content, `return ""`)
 	assert.GreaterOrEqual(t, emptyReturnCount, 2,
 		"bulk-skip surface must have at least 2 'return \"\"' paths")

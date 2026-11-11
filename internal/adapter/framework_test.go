@@ -34,6 +34,59 @@ func TestResolveFramework_AdapterNameFallback(t *testing.T) {
 	assert.Equal(t, "my-adapter", result)
 }
 
+// BUG-210: a reserved Mode 3 execute adapter always resolves to "manual",
+// ahead of the flag and config, including the omitted-framework custom script
+// case that previously fell through to the adapter name.
+func TestResolveFramework_ReservedMode3AlwaysManual(t *testing.T) {
+	for _, name := range []string{"manual-execute", "agent-execute", "manual-execute-script", "agent-execute-script"} {
+		// Omitted framework, no config framework (custom script definition).
+		resolved := &ResolvedAdapter{Command: "execute", Name: name, Config: &config.AdapterConfig{}}
+		assert.Equal(t, "manual", ResolveFramework(resolved, ""), "%s omitted-framework must resolve to manual", name)
+		// --framework manual.
+		assert.Equal(t, "manual", ResolveFramework(resolved, "manual"), "%s --framework manual", name)
+		// Configured framework: manual (scaffolded).
+		resolvedCfg := &ResolvedAdapter{Command: "execute", Name: name, Config: &config.AdapterConfig{Framework: "manual"}}
+		assert.Equal(t, "manual", ResolveFramework(resolvedCfg, ""), "%s config manual", name)
+	}
+}
+
+// REV-272 CODEX-003: reserved-name behaviour is command-scoped. An adapter with a
+// reserved execute name registered under create/automate/prime is ordinary -- its
+// framework resolves normally and it is not recognised as a manual path. Fails on
+// the previous code, which keyed on the name alone.
+func TestReservedMode3_CommandScoped(t *testing.T) {
+	for _, cmd := range []string{"create", "automate", "prime"} {
+		for _, name := range []string{"manual-execute", "agent-execute", "manual-execute-script", "agent-execute-script"} {
+			// A same-named non-execute adapter with its own framework keeps it.
+			r := &ResolvedAdapter{Command: cmd, Name: name, Config: &config.AdapterConfig{Framework: "playwright"}}
+			assert.Equal(t, "playwright", ResolveFramework(r, ""),
+				"%s/%s: non-execute reserved-name adapter must keep its configured framework", cmd, name)
+			assert.False(t, IsManualFramework(r),
+				"%s/%s: non-execute reserved-name adapter must not be a manual path", cmd, name)
+
+			// With no framework configured, it falls back to the adapter name, not "manual".
+			rn := &ResolvedAdapter{Command: cmd, Name: name, Config: &config.AdapterConfig{}}
+			assert.Equal(t, name, ResolveFramework(rn, ""),
+				"%s/%s: non-execute reserved-name adapter must fall back to its name", cmd, name)
+			assert.False(t, IsManualFramework(rn), "%s/%s: still not a manual path", cmd, name)
+		}
+	}
+}
+
+// --- IsManualFramework: the two script variants (BUG-210) ---
+
+func TestIsManualFramework_ReservedScriptVariants(t *testing.T) {
+	for _, name := range []string{"manual-execute-script", "agent-execute-script"} {
+		// No config framework -- the custom-definition case that returned false
+		// before BUG-210 and left manual context unpopulated. Command is execute.
+		assert.True(t, IsManualFramework(&ResolvedAdapter{Command: "execute", Name: name, Config: &config.AdapterConfig{}}),
+			"%s with no config framework must be recognised as manual", name)
+		// Scaffolded config framework: manual.
+		assert.True(t, IsManualFramework(&ResolvedAdapter{Command: "execute", Name: name, Config: &config.AdapterConfig{Framework: "manual"}}),
+			"%s with config framework manual must be recognised as manual", name)
+	}
+}
+
 // --- IsManualFramework tests ---
 //
 // The predicate keys exclusively on the *resolved adapter*. The signature
@@ -47,8 +100,9 @@ func TestIsManualFramework_AdapterNameManualExecute(t *testing.T) {
 	// Resolved adapter is literally named "manual-execute" — the manual
 	// path owns the lifecycle.
 	resolved := &ResolvedAdapter{
-		Name:   "manual-execute",
-		Config: &config.AdapterConfig{},
+		Command: "execute",
+		Name:    "manual-execute",
+		Config:  &config.AdapterConfig{},
 	}
 	assert.True(t, IsManualFramework(resolved))
 }
@@ -97,10 +151,10 @@ func TestIsManualFramework_NilResolvedSafe(t *testing.T) {
 
 func TestIsManualFramework_NilConfigSafe(t *testing.T) {
 	// Helper must not panic when ResolvedAdapter has no Config (defensive).
-	// The Name branch still trips for manual-execute.
-	resolved := &ResolvedAdapter{Name: "manual-execute", Config: nil}
+	// The reserved-name branch still trips for an execute manual-execute.
+	resolved := &ResolvedAdapter{Command: "execute", Name: "manual-execute", Config: nil}
 	assert.True(t, IsManualFramework(resolved))
 
-	resolved = &ResolvedAdapter{Name: "playwright-runner", Config: nil}
+	resolved = &ResolvedAdapter{Command: "execute", Name: "playwright-runner", Config: nil}
 	assert.False(t, IsManualFramework(resolved))
 }

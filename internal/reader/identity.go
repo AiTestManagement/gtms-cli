@@ -35,6 +35,25 @@ type IdentityDiagnostics struct {
 	// pathIssues: in-scope Unprovable candidates AND display-field decode failures,
 	// each carrying a pre-rendered, sanitised message and its path for sorting.
 	pathIssues []pathIssue
+	// BUG-209: refused .gtms/results entries (an unsafe handoff leaf) and a refused
+	// results directory (an escaping link). Each carries the section-10 first line
+	// and remediation. A refusal makes the read incomplete, so the command warns
+	// once per path on stderr, shows safe partial output, and exits non-zero --
+	// while JSON on stdout stays clean because these render to stderr only.
+	handoffRefusals []resultRefusal
+
+	// resultsOverlay is the terminal-result overlay from the command's one scan of
+	// .gtms/results, carried so triage decoration reuses it rather than scanning again
+	// (section 8, CODEX-006).
+	resultsOverlay map[string]overlayHit
+	dirRefusal      *resultRefusal
+}
+
+// resultRefusal is one BUG-209 refusal rendered for stderr.
+type resultRefusal struct {
+	rel         string // the raw path, which identifies the entry
+	firstLine   string
+	remediation string
 }
 
 type ambiguousDiag struct {
@@ -49,12 +68,15 @@ type pathIssue struct {
 }
 
 // Affected reports whether any identity could not be resolved to a single proven,
-// decodable owner in scope.
+// decodable owner in scope, OR any .gtms/results entry or directory was refused
+// (BUG-209).
 func (d IdentityDiagnostics) Affected() bool {
-	return len(d.ambiguous) > 0 || len(d.pathIssues) > 0
+	return len(d.ambiguous) > 0 || len(d.pathIssues) > 0 || len(d.handoffRefusals) > 0 || d.dirRefusal != nil
 }
 
-// count is the number of affected entries left out of the normal output.
+// count is the number of affected TEST CASES left out of the normal output.
+// Result-directory refusals are reported separately and are not test cases, so
+// they are not counted here.
 func (d IdentityDiagnostics) count() int { return len(d.ambiguous) + len(d.pathIssues) }
 
 // Render writes the per-identity diagnostics and the closing line to w, in the
@@ -75,15 +97,57 @@ func (d IdentityDiagnostics) Render(w io.Writer) int {
 	for _, p := range issues {
 		output.FprintError(w, p.message, "")
 	}
-	n := d.count()
-	noun := "test cases"
-	if n == 1 {
-		noun = "test case"
+	// BUG-209: a refused results directory, then each refused handoff leaf, once
+	// per path per invocation, in the stable section-10 wording.
+	if d.dirRefusal != nil {
+		output.FprintError(w, d.dirRefusal.firstLine, d.dirRefusal.remediation)
 	}
-	output.FprintError(w,
-		fmt.Sprintf("%d %s could not be read; the output above leaves them out", n, noun),
-		"Repair the files named above and rerun.")
-	return n
+	refs := append([]resultRefusal(nil), d.handoffRefusals...)
+	sort.Slice(refs, func(i, j int) bool { return refs[i].firstLine < refs[j].firstLine })
+	for _, r := range refs {
+		output.FprintError(w, r.firstLine, r.remediation)
+	}
+	n := d.count()
+	if n > 0 {
+		noun := "test cases"
+		if n == 1 {
+			noun = "test case"
+		}
+		output.FprintError(w,
+			fmt.Sprintf("%d %s could not be read; the output above leaves them out", n, noun),
+			"Repair the files named above and rerun.")
+	}
+	return n + len(d.handoffRefusals) + boolToInt(d.dirRefusal != nil)
+}
+
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+// addResultsRefusals folds the BUG-209 refusals carried up from the single
+// per-invocation results-directory scan (scanTerminalResults / scanAutomationRecords)
+// into the diagnostics, deduplicating handoff refusals by their first line so each
+// path is reported once per invocation (BUG-209 section 8). A clean set adds
+// nothing. Routing the refusals from the SAME scan the overlay uses is what keeps
+// each command to one scan of .gtms/results.
+func (d *IdentityDiagnostics) addResultsRefusals(r resultsRefusals) {
+	if r.dir != nil && d.dirRefusal == nil {
+		d.dirRefusal = &resultRefusal{firstLine: r.dir.FirstLine(), remediation: r.dir.Remediation()}
+	}
+	seen := make(map[string]bool, len(d.handoffRefusals))
+	for _, hr := range d.handoffRefusals {
+		seen[hr.rel] = true
+	}
+	for _, ref := range r.handoffs {
+		if seen[ref.Rel] {
+			continue
+		}
+		seen[ref.Rel] = true
+		d.handoffRefusals = append(d.handoffRefusals, resultRefusal{rel: ref.Rel, firstLine: ref.FirstLine(), remediation: ref.Remediation()})
+	}
 }
 
 // IncompleteReadError is returned by the bulk read entry points that do not hand
@@ -118,6 +182,14 @@ func (e *IncompleteReadError) Error() string {
 	}
 	for _, p := range issues {
 		lines = append(lines, p.message)
+	}
+	if d.dirRefusal != nil {
+		lines = append(lines, d.dirRefusal.firstLine, d.dirRefusal.remediation)
+	}
+	refs := append([]resultRefusal(nil), d.handoffRefusals...)
+	sort.Slice(refs, func(i, j int) bool { return refs[i].firstLine < refs[j].firstLine })
+	for _, r := range refs {
+		lines = append(lines, r.firstLine, r.remediation)
 	}
 	return strings.Join(lines, "\n")
 }
@@ -206,6 +278,11 @@ func resolveScopedSpecs(snap *testcase.Snapshot, projectRoot string, scope *Scop
 	}
 
 	sort.Slice(specs, func(i, j int) bool { return specs[i].ID < specs[j].ID })
+
+	// BUG-209: the results-directory refusals are folded in by the caller from the
+	// SAME overlay scan (scanTerminalResults / scanAutomationRecords), so each
+	// command scans .gtms/results once. resolveScopedSpecs no longer scans it.
+
 	return specs, diags, nil
 }
 

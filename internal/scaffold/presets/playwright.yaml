@@ -4,6 +4,15 @@ project:
 
 guidance: true
 
+# Script-drift policy for wired automated execution (ENH-231). Relaxed by
+# default: `gtms execute` auto-accepts a changed automation script (the script
+# hash drifting on its own) and runs it, with no `gtms link --refresh` step.
+# Uncomment the block below to require an explicit refresh after each script
+# edit instead. It applies to wired automated execution only and has no effect
+# on manual execution.
+#execute:
+#  on-script-change: refuse
+
 adapters:
   create:
     manual-create-script:                          # add as default to start using script

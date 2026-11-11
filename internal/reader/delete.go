@@ -1,6 +1,7 @@
 package reader
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -47,6 +48,17 @@ type DeleteResult struct {
 	ResultContracts      int
 	FilesDeleted         []string
 	PreservedArtefacts   []PreservedArtefact
+
+	// BUG-209: a refused .gtms/results entry left untouched, or a refused results
+	// directory that stopped handoff removal. Either makes the cleanup incomplete,
+	// so the CLI names it and exits non-zero while the safe removals complete.
+	HandoffRefusals []*result.RefusedHandoffError
+	DirRefusal      *result.RefusedDirError
+}
+
+// Incomplete reports whether a BUG-209 refusal left the delete cleanup incomplete.
+func (r *DeleteResult) Incomplete() bool {
+	return len(r.HandoffRefusals) > 0 || r.DirRefusal != nil
 }
 
 // PreservedArtefact names a referenced test artefact that delete deliberately
@@ -99,6 +111,8 @@ func executeDeletePlan(plan *deletePlan, dryRun bool) (*DeleteResult, error) {
 	result := &DeleteResult{
 		TestCasesProcessed: plan.testCasesProcessed,
 		PreservedArtefacts: plan.preserved,
+		HandoffRefusals:    plan.handoffRefusals,
+		DirRefusal:         plan.dirRefusal,
 	}
 
 	remove := func(paths []string, counter *int) error {
@@ -127,11 +141,72 @@ func executeDeletePlan(plan *deletePlan, dryRun bool) (*DeleteResult, error) {
 	if err := remove(plan.taskFiles, &result.TaskFiles); err != nil {
 		return nil, err
 	}
-	if err := remove(plan.resultContracts, &result.ResultContracts); err != nil {
+	if err := removeResultContracts(plan, result, dryRun); err != nil {
 		return nil, err
 	}
 
 	return result, nil
+}
+
+// addHandoffRefusal records a refusal once per path.
+func (r *DeleteResult) addHandoffRefusal(ref *result.RefusedHandoffError) {
+	for _, have := range r.HandoffRefusals {
+		if have.Rel == ref.Rel {
+			return
+		}
+	}
+	r.HandoffRefusals = append(r.HandoffRefusals, ref)
+}
+
+// removeResultContracts removes the planned handoffs and their leftovers by name,
+// through a freshly verified results directory, rather than through the absolute
+// paths stored in the plan. The directory could have been swapped since planning, so
+// a stored path could reach a file outside it (CODEX-004). A directory refused now,
+// or an entry that has become unsafe, is reported as a refusal and left untouched.
+func removeResultContracts(plan *deletePlan, res *DeleteResult, dryRun bool) error {
+	if len(plan.resultContracts) == 0 {
+		return nil
+	}
+	if dryRun {
+		for _, path := range plan.resultContracts {
+			res.ResultContracts++
+			res.FilesDeleted = append(res.FilesDeleted, path)
+		}
+		return nil
+	}
+	scan := result.OpenScan(plan.projectRoot)
+	defer scan.Close()
+	if scan.DirRefusal != nil {
+		if res.DirRefusal == nil {
+			res.DirRefusal = scan.DirRefusal
+		}
+		return nil
+	}
+	// A refused entry cannot be attributed, so one that appeared since planning leaves
+	// this cleanup incomplete too, even if nothing here was going to remove it (CODEX-005).
+	for _, ref := range scan.Refusals {
+		res.addHandoffRefusal(ref.Err)
+	}
+	for _, path := range plan.resultContracts {
+		err := scan.RemoveEntry(filepath.Base(path))
+		var rh *result.RefusedHandoffError
+		var rd *result.RefusedDirError
+		switch {
+		case err == nil:
+			res.ResultContracts++
+			res.FilesDeleted = append(res.FilesDeleted, path)
+		case errors.As(err, &rd):
+			if res.DirRefusal == nil {
+				res.DirRefusal = rd
+			}
+			return nil
+		case errors.As(err, &rh):
+			res.addHandoffRefusal(rh)
+		default:
+			return fmt.Errorf("removing %s: %w", path, err)
+		}
+	}
+	return nil
 }
 
 // wiringPathsByTestCase enumerates every wiring record ONCE and returns two maps
@@ -375,39 +450,33 @@ func findTaskFiles(projectRoot, tcID string) ([]string, error) {
 	return matches, nil
 }
 
-// findResultContracts scans .gtms/results/ for handoff contracts attributable to
-// the given TC id (F1). Contracts are named by task id, so each file is parsed for
-// its command+target. Attribution is centralised in the result package
-// (result.TargetIsTestCaseScoped, the BUG-130 structural guard) so no results-dir
-// walker inlines the command dimension: a create contract is FOLDER-scoped and is
-// never attributed to a TC deletion, even when the folder name equals the id.
-func findResultContracts(projectRoot, tcID string) ([]string, error) {
-	resultsDir := filepath.Join(projectRoot, ".gtms", "results")
-	if _, err := os.Stat(resultsDir); os.IsNotExist(err) {
+// scanResultContractsForTC returns the absolute paths of the safe handoff
+// contracts attributable to the given TC id, plus their leftover staged files, via
+// the shared BUG-209 scanner. Attribution is centralised in the result package
+// (result.TargetIsTestCaseScoped, the BUG-130 structural guard): a create contract
+// is FOLDER-scoped and is never attributed to a TC deletion, even when the folder
+// name equals the id. An unsafe leaf or an escaping directory is never returned
+// for removal (it was recorded as a refusal on the plan), so delete never follows
+// or removes through it. A leftover staged file ("<base>.tmp-<rand>") is removed
+// with its handoff (AC21).
+func scanResultContractsForTC(scan *result.Scan, tcID string) ([]string, []*result.RefusedHandoffError) {
+	if scan.Absent || scan.DirRefusal != nil {
 		return nil, nil
 	}
-
-	pattern := filepath.Join(resultsDir, "*.handoff.yaml")
-	candidates, err := filepath.Glob(pattern)
-	if err != nil {
-		return nil, fmt.Errorf("globbing result contracts: %w", err)
-	}
-
 	var matches []string
-	for _, path := range candidates {
-		rc, rerr := result.Read(path)
-		if rerr != nil || rc == nil {
-			continue // unreadable/malformed: not attributable
+	var refused []*result.RefusedHandoffError
+	for _, e := range scan.Entries {
+		if !result.TargetIsTestCaseScoped(e.RC) || e.RC.Target != tcID {
+			continue
 		}
-		// TC-scoped command (not create) AND an exact target match. The command
-		// dimension lives in result.TargetIsTestCaseScoped; the exact target check
-		// stays here.
-		if result.TargetIsTestCaseScoped(rc) && rc.Target == tcID {
-			matches = append(matches, path)
+		matches = append(matches, filepath.Join(scan.Dir(), e.Base))
+		safe, unsafe := scan.LeftoversFor(e.Base)
+		for _, lf := range safe {
+			matches = append(matches, filepath.Join(scan.Dir(), lf))
 		}
+		refused = append(refused, unsafe...)
 	}
-
-	return matches, nil
+	return matches, refused
 }
 
 // removeFile removes a file from disk. In dry-run mode, it's a no-op.

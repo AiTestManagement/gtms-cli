@@ -6,7 +6,26 @@ import (
 
 	"github.com/aitestmanagement/gtms-cli/internal/output"
 	"github.com/aitestmanagement/gtms-cli/internal/reader"
+	"github.com/aitestmanagement/gtms-cli/internal/result"
 )
+
+// renderHandoffRefusals writes the BUG-209 refusal diagnostics to stderr in the
+// section-10 wording -- the results-directory refusal first, then each refused
+// handoff once per path -- so reset/delete name every unsafe entry they left
+// untouched. The glyph and indentation follow the CLI's existing error format.
+func renderHandoffRefusals(dir *result.RefusedDirError, handoffs []*result.RefusedHandoffError) {
+	if dir != nil {
+		output.FprintError(os.Stderr, dir.FirstLine(), dir.Remediation())
+	}
+	seen := make(map[string]bool, len(handoffs))
+	for _, h := range handoffs {
+		if seen[h.Rel] {
+			continue
+		}
+		seen[h.Rel] = true
+		output.FprintError(os.Stderr, h.FirstLine(), h.Remediation())
+	}
+}
 
 // finishWithIdentityDiagnostics implements ADR-024 5b policy (e) at the CLI
 // boundary for a migrated bulk read/list command. The command writes its normal

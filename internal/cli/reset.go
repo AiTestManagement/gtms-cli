@@ -111,20 +111,32 @@ func runReset(w io.Writer, projectRoot string, scope *reader.ScopeInfo, tcID str
 	if dryRun {
 		if result.TestCasesAffected == 0 {
 			fmt.Fprintln(w, "[dry-run] Nothing to clear.")
-			return nil
+		} else {
+			fmt.Fprintf(w, "[dry-run] Would clear execute results for %d test case(s):\n", result.TestCasesAffected)
+			fmt.Fprintf(w, "  Automation records: %d\n", result.AutomationRecordsCleared)
+			fmt.Fprintf(w, "  Task files: %d\n", result.TaskFilesRemoved)
 		}
-		fmt.Fprintf(w, "[dry-run] Would clear execute results for %d test case(s):\n", result.TestCasesAffected)
-		fmt.Fprintf(w, "  Automation records: %d\n", result.AutomationRecordsCleared)
-		fmt.Fprintf(w, "  Task files: %d\n", result.TaskFilesRemoved)
-		return nil
+		return finishResetCleanup(result)
 	}
 
 	if result.TestCasesAffected == 0 {
 		fmt.Fprintln(w, "Nothing to clear.")
-		return nil
+		return finishResetCleanup(result)
 	}
 
 	fmt.Fprintf(w, "Cleared execute results for %d test case(s) (%d automation records updated, %d task files removed)\n",
 		result.TestCasesAffected, result.AutomationRecordsCleared, result.TaskFilesRemoved)
-	return nil
+	return finishResetCleanup(result)
+}
+
+// finishResetCleanup renders any BUG-209 handoff/results-directory refusal to
+// stderr (once per path, in the section-10 wording) and returns a non-zero,
+// already-displayed error when the cleanup was left incomplete, while the safe
+// cleanup above has already completed. A clean result returns nil.
+func finishResetCleanup(res *reader.ResetResult) error {
+	if !res.Incomplete() {
+		return nil
+	}
+	renderHandoffRefusals(res.DirRefusal, res.HandoffRefusals)
+	return output.AsDisplayed(fmt.Errorf("reset incomplete: an unsafe .gtms/results entry was left untouched"))
 }

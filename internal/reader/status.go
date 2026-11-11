@@ -69,7 +69,9 @@ func PipelineStatusWithDiagnostics(projectRoot string, scope *ScopeInfo, default
 	if err != nil {
 		return nil, IdentityDiagnostics{}, fmt.Errorf("scanning wiring records: %w", err)
 	}
-	overlay := scanTerminalResults(projectRoot, wiringByTC)
+	overlay, refusals := scanTerminalResults(projectRoot, wiringByTC)
+	diags.addResultsRefusals(refusals)
+	diags.resultsOverlay = overlay
 	manuals := scanManualByTC(projectRoot)
 	tasks, err := scanTasks(projectRoot)
 	if err != nil {
@@ -140,7 +142,8 @@ func PipelineFolderSummaryWithDiagnostics(projectRoot string, defaultFramework s
 	if err != nil {
 		return nil, IdentityDiagnostics{}, err
 	}
-	entries, err := folderSummaryFromSpecs(projectRoot, testCases, defaultFramework)
+	entries, refusals, err := folderSummaryFromSpecs(projectRoot, testCases, defaultFramework)
+	diags.addResultsRefusals(refusals)
 	if err != nil {
 		return nil, IdentityDiagnostics{}, err
 	}
@@ -160,17 +163,17 @@ func PipelineFolderSummaryWithDiagnostics(projectRoot string, defaultFramework s
 // folderSummaryFromSpecs computes the per-folder summary from already-resolved,
 // proven test-case specs (their SourceFile carries the owner path). It performs no
 // identity resolution or enumeration of its own.
-func folderSummaryFromSpecs(projectRoot string, testCases []testCaseFrontmatter, defaultFramework string) ([]FolderSummaryEntry, error) {
-	autoRecords, err := scanAutomationRecords(projectRoot)
+func folderSummaryFromSpecs(projectRoot string, testCases []testCaseFrontmatter, defaultFramework string) ([]FolderSummaryEntry, resultsRefusals, error) {
+	autoRecords, refusals, err := scanAutomationRecords(projectRoot)
 	if err != nil {
-		return nil, fmt.Errorf("scanning automation records: %w", err)
+		return nil, resultsRefusals{}, fmt.Errorf("scanning automation records: %w", err)
 	}
 
 	// ENH-089: load active tasks once and build a TC-id -> in-flight set so
 	// the per-TC loop is O(1) per check rather than O(tasks).
 	tasks, err := scanTasks(projectRoot)
 	if err != nil {
-		return nil, fmt.Errorf("scanning tasks: %w", err)
+		return nil, resultsRefusals{}, fmt.Errorf("scanning tasks: %w", err)
 	}
 	inFlightTCs := make(map[string]bool)
 	for _, t := range tasks {
@@ -293,7 +296,7 @@ func folderSummaryFromSpecs(projectRoot string, testCases []testCaseFrontmatter,
 		return entries[i].Folder < entries[j].Folder
 	})
 
-	return entries, nil
+	return entries, refusals, nil
 }
 
 // deriveFolderName extracts the immediate subfolder name under gtms/test/cases/.
@@ -329,7 +332,14 @@ func PipelineDetail(projectRoot, testCaseID, defaultFramework string, strictFram
 	if err != nil {
 		return nil, err
 	}
-	return PipelineDetailWithSnapshot(snap, projectRoot, testCaseID, defaultFramework, strictFramework)
+	detail, diags, err := PipelineDetailWithSnapshot(snap, projectRoot, testCaseID, defaultFramework, strictFramework)
+	if err != nil {
+		return nil, err
+	}
+	if ierr := incompleteReadErr(diags); ierr != nil {
+		return nil, ierr
+	}
+	return detail, nil
 }
 
 // PipelineDetailWithSnapshot is PipelineDetail against a snapshot the caller already
@@ -337,7 +347,12 @@ func PipelineDetail(projectRoot, testCaseID, defaultFramework string, strictFram
 // check and this detail read against ONE snapshot, so the qualified operation
 // performs exactly one project-wide enumeration (ADR-024 5b "Qualified targets
 // resolve once, too").
-func PipelineDetailWithSnapshot(snap *testcase.Snapshot, projectRoot, testCaseID, defaultFramework string, strictFramework bool) (*PipelineDetailEntry, error) {
+//
+// BUG-209 section 8: the diagnostics carry any refused handoff or refused results
+// directory found by the scan. A refused entry cannot be attributed to a test case,
+// so it applies to this single-test-case read too: the caller shows the safe detail,
+// warns and exits non-zero.
+func PipelineDetailWithSnapshot(snap *testcase.Snapshot, projectRoot, testCaseID, defaultFramework string, strictFramework bool) (*PipelineDetailEntry, IdentityDiagnostics, error) {
 	// ADR-024: direct single-TC read is in the first-half scope. It must refuse an
 	// Ambiguous id (naming its owners) and surface an Unprovable candidate with its
 	// repair, rather than presenting the first scan candidate as fact -- so a user
@@ -346,28 +361,31 @@ func PipelineDetailWithSnapshot(snap *testcase.Snapshot, projectRoot, testCaseID
 	owner, err := snap.RequireOwner(testCaseID)
 	if err != nil {
 		if errors.Is(err, testcase.ErrOwnerNotFound) {
-			return nil, fmt.Errorf("test case '%s' not found", testCaseID)
+			return nil, IdentityDiagnostics{}, fmt.Errorf("test case '%s' not found", testCaseID)
 		}
-		return nil, err
+		return nil, IdentityDiagnostics{}, err
 	}
 
 	// ADR-024 s5: consume the normalized fields from the same snapshot read that
 	// proved this owner. Reopening the spec here would create a second schema view.
 	tc, badField := testCaseFromNormalized(owner.Metadata(), owner.DecodeFailure())
 	if badField != "" {
-		return nil, fmt.Errorf("reading test case '%s' at %s: field '%s' has the wrong type", testCaseID, owner.SpecRel(), badField)
+		return nil, IdentityDiagnostics{}, fmt.Errorf("reading test case '%s' at %s: field '%s' has the wrong type", testCaseID, owner.SpecRel(), badField)
 	}
 	tc.SourceFile = owner.SpecAbs()
 
 	wiringByTC, err := wiringScan(projectRoot)
 	if err != nil {
-		return nil, fmt.Errorf("scanning wiring records: %w", err)
+		return nil, IdentityDiagnostics{}, fmt.Errorf("scanning wiring records: %w", err)
 	}
-	overlay := scanTerminalResults(projectRoot, wiringByTC)
+	overlay, refusals := scanTerminalResults(projectRoot, wiringByTC)
+	var diags IdentityDiagnostics
+	diags.addResultsRefusals(refusals)
+	diags.resultsOverlay = overlay
 	manuals := scanManualByTC(projectRoot)
 	tasks, err := scanTasks(projectRoot)
 	if err != nil {
-		return nil, fmt.Errorf("scanning tasks: %w", err)
+		return nil, diags, fmt.Errorf("scanning tasks: %w", err)
 	}
 
 	pe := buildPipelineEntry(projectRoot, *tc, wiringByTC[tc.ID], overlay, manuals[tc.ID], defaultFramework, strictFramework)
@@ -421,7 +439,12 @@ func PipelineDetailWithSnapshot(snap *testcase.Snapshot, projectRoot, testCaseID
 	// text renderer reads them directly. They are json:"-" except for
 	// Notes / NotesSpill, which the user-task pins as preserved on the
 	// detail surface (ENH-077 / ENH-123 contract).
-	if pe.SelectedFramework != "" {
+	// BUG-206: `&& pe.Wired` keeps the manual-ONLY `--framework manual`
+	// selection (SelectedFramework=="manual" on an unwired case) from newly
+	// populating the "Automation:"/"Last run:" file-path lines, which would
+	// change text output the AC pins as unchanged. Provable no-op for pre-fix
+	// behavior: SelectedFramework was non-empty only on wired cases.
+	if pe.SelectedFramework != "" && pe.Wired {
 		for _, fe := range pe.Frameworks {
 			if fe.Framework == pe.SelectedFramework {
 				detail.ArtefactPath = fe.Artefact
@@ -437,7 +460,7 @@ func PipelineDetailWithSnapshot(snap *testcase.Snapshot, projectRoot, testCaseID
 		detail.AutomateDate = automationRecordMtime(projectRoot, tc.ID, pe.SelectedFramework)
 	}
 
-	return detail, nil
+	return detail, diags, nil
 }
 
 // scanAutomationRecords reads the canonical automation identity from
@@ -454,12 +477,12 @@ func PipelineDetailWithSnapshot(snap *testcase.Snapshot, projectRoot, testCaseID
 // Synthesised fields:
 //   - Status = "developed"   (wiring has no lifecycle -- synthetic stamp)
 //   - Cycle  = 0             (cycle is retired)
-func scanAutomationRecords(projectRoot string) (map[string][]automationFrontmatter, error) {
+func scanAutomationRecords(projectRoot string) (map[string][]automationFrontmatter, resultsRefusals, error) {
 	recs, err := wiringScan(projectRoot)
 	if err != nil {
-		return nil, err
+		return nil, resultsRefusals{}, err
 	}
-	overlay := scanTerminalResults(projectRoot, recs)
+	overlay, refusals := scanTerminalResults(projectRoot, recs)
 	manuals := scanManualByTC(projectRoot)
 
 	out := make(map[string][]automationFrontmatter)
@@ -512,7 +535,7 @@ func scanAutomationRecords(projectRoot string) (map[string][]automationFrontmatt
 		out[tcID] = append(out[tcID], af)
 	}
 
-	return out, nil
+	return out, refusals, nil
 }
 
 // wiringScanFn is a package-level seam so test fixtures can stub the
@@ -787,10 +810,49 @@ func deriveExecuteResult(ar automationFrontmatter) (result, date string) {
 	return ar.Result, "" // date would come from the result file if available
 }
 
+// isReservedMode3ExecuteAdapter reports whether name is one of the four reserved
+// Mode 3 execute adapters, which always produce manual evidence (BUG-210).
+//
+// The authoritative list is adapter.IsMode3ExecuteAdapterName in
+// internal/adapter/mode3.go. internal/adapter imports internal/reader
+// (builtin.go), so reader cannot import adapter without a cycle; this is a
+// deliberate local copy. A source-shape parity test
+// (bug210_mode3_parity_source_shape_test.go) asserts these four names match the
+// adapter package's list, so the two cannot drift apart silently.
+func isReservedMode3ExecuteAdapter(name string) bool {
+	return name == "manual-execute" ||
+		name == "agent-execute" ||
+		name == "manual-execute-script" ||
+		name == "agent-execute-script"
+}
+
 // applyTaskStatus checks active tasks and updates pipeline entry statuses.
 // For execute tasks, it compares timestamps of error vs completed tasks
 // so the most recent execution state wins (BUG-018).
+//
+// BUG-210: a terminal error task produced by a reserved Mode 3 (manual) execute
+// adapter is manual evidence. It must not mark a SELECTED non-manual framework
+// view errored. So such an error task is ignored for the error-override decision
+// when the view is a non-manual framework. It is still honoured for the manual
+// view (SelectedFramework == "manual") and for a truly unwired/manual-only test
+// case, preserving the existing manual-error precedence. A real automated
+// adapter's error task is unaffected.
+//
+// REV-273: SelectedFramework alone cannot tell the two views apart. It is empty
+// both for a strict `--framework manual` view of a wired test case with no
+// parseable manual record (where the manual error MUST stay visible) and for a
+// strict non-manual request the test case has no wiring for, e.g. `--framework fy`
+// (where the manual error must be hidden). So the decision uses the EXPLICITLY
+// requested framework (entry.RequestedFramework, set only under strictFramework):
+//   - `--framework manual` is always a manual view, even with no selected row.
+//   - an unmatched non-manual request on a wired test case is a non-manual view.
+//   - a default selected non-manual view (SelectedFramework set) stays non-manual.
+//   - a truly unwired/manual-only test case keeps today's visibility.
 func applyTaskStatus(entry *PipelineEntry, tasks []taskFrontmatter) {
+	// A manual view shows the reserved-adapter error; a non-manual view hides it.
+	manualView := entry.RequestedFramework == "manual" || entry.SelectedFramework == "manual"
+	nonManualView := !manualView &&
+		(entry.SelectedFramework != "" || entry.Wired)
 	// Track newest error and completed execute task timestamps.
 	// ISO 8601 strings are lexicographically sortable, so string comparison works.
 	var newestErrorCreated string
@@ -823,7 +885,11 @@ func applyTaskStatus(entry *PipelineEntry, tasks []taskFrontmatter) {
 		// Track newest error and completed execute tasks for timestamp comparison
 		if task.Type == "execute" {
 			if task.Status == "error" && task.Created > newestErrorCreated {
-				newestErrorCreated = task.Created
+				// BUG-210: a reserved-adapter (manual) execute error does not
+				// override a selected non-manual framework view.
+				if !(nonManualView && isReservedMode3ExecuteAdapter(task.Adapter)) {
+					newestErrorCreated = task.Created
+				}
 			}
 			if task.Status == "complete" && task.Created > newestCompleteCreated {
 				newestCompleteCreated = task.Created

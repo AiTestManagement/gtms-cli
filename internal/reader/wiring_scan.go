@@ -82,10 +82,10 @@ func overlayKey(testCase, framework string) string {
 // wiring set would let rung 4 (unambiguous adapter mapping) wrongly
 // accept a frameworkless result against the singleton when two
 // currently-existing wiring records for the TC share the same adapter.
-func scanTerminalResultsForTC(projectRoot, testCaseID string) (map[string]overlayHit, error) {
+func scanTerminalResultsForTC(projectRoot, testCaseID string) (map[string]overlayHit, resultsRefusals, error) {
 	recs, err := wiring.FindAllForTC(projectRoot, testCaseID)
 	if err != nil {
-		return nil, err
+		return nil, resultsRefusals{}, err
 	}
 	// Delegate to the single canonical scanner so the wiring join AND the
 	// BUG-193 proven-manual claim are applied exactly once, in one place. A
@@ -96,7 +96,40 @@ func scanTerminalResultsForTC(projectRoot, testCaseID string) (map[string]overla
 	if len(recs) > 0 {
 		wiringByTC[testCaseID] = recs
 	}
-	return scanTerminalResults(projectRoot, wiringByTC), nil
+	overlay, refusals := scanTerminalResults(projectRoot, wiringByTC)
+	return overlay, refusals, nil
+}
+
+// overlayForTCFromScan is scanTerminalResultsForTC against a scan the caller holds.
+func overlayForTCFromScan(projectRoot string, scan *result.Scan, testCaseID string) (map[string]overlayHit, error) {
+	recs, err := wiring.FindAllForTC(projectRoot, testCaseID)
+	if err != nil {
+		return nil, err
+	}
+	wiringByTC := map[string][]*wiring.WiringRecord{}
+	if len(recs) > 0 {
+		wiringByTC[testCaseID] = recs
+	}
+	return overlayFromScan(projectRoot, scan, wiringByTC), nil
+}
+
+// resultsRefusals carries the BUG-209 refusals from one shared results-directory
+// scan (result.OpenScan) up to the command, which folds them into its
+// IdentityDiagnostics. Carrying them from the SAME scan the overlay uses is what
+// keeps each command to a single scan of .gtms/results (AC22 / "once per scan").
+type resultsRefusals struct {
+	handoffs []*result.RefusedHandoffError
+	dir      *result.RefusedDirError
+}
+
+// refusalsFrom extracts the refusals from an open scan (valid after Close -- they
+// are plain error values).
+func refusalsFrom(scan *result.Scan) resultsRefusals {
+	r := resultsRefusals{dir: scan.DirRefusal}
+	for _, ref := range scan.Refusals {
+		r.handoffs = append(r.handoffs, ref.Err)
+	}
+	return r
 }
 
 // scanTerminalResults walks .gtms/results/ and returns the latest
@@ -139,17 +172,24 @@ func scanTerminalResultsForTC(projectRoot, testCaseID string) (map[string]overla
 // ext4 is non-deterministic and causes a passing re-execute to render
 // as Error on the dashboard. Bad files are skipped silently; the reader
 // must not blind itself to the rest because one handoff is malformed.
-func scanTerminalResults(projectRoot string, wiringByTC map[string][]*wiring.WiringRecord) map[string]overlayHit {
-	// The wiring join below is skipped when the project has no wiring (every
-	// result would be an overlay orphan). BUG-193: the proven-manual claim is
-	// wiring-free, so it is merged AFTER this block regardless of wiring -- the
-	// old fast-path `return nil` here would have hidden a manual-only result.
-	out := scanWiringTerminalResults(projectRoot, wiringByTC)
+func scanTerminalResults(projectRoot string, wiringByTC map[string][]*wiring.WiringRecord) (map[string]overlayHit, resultsRefusals) {
+	// BUG-209: the SINGLE results-directory scan for the whole command. Every
+	// handoff is read once through the no-follow handle; unsafe leaves become
+	// refusals (not rows) and an escaping directory is refused, and those are
+	// returned for the command to report. No os.ReadDir of .gtms/results remains.
+	scan := result.OpenScan(projectRoot)
+	defer scan.Close()
+	return overlayFromScan(projectRoot, scan, wiringByTC), refusalsFrom(scan)
+}
 
-	// BUG-193: merge the proven manual claim for every TC with a terminal manual
-	// execute handoff whose artefact proves out. Add-if-absent so a genuine
-	// manual WIRING record's join (rung 1 above) wins over the synthesized claim.
-	out = mergeManualClaims(out, buildManualClaims(projectRoot, ""))
+// overlayFromScan builds the terminal-result overlay from an open scan.
+//
+// The wiring join is skipped when the project has no wiring (every result would be an
+// overlay orphan). BUG-193: the proven-manual claim is wiring-free, so it is merged
+// AFTER regardless of wiring.
+func overlayFromScan(projectRoot string, scan *result.Scan, wiringByTC map[string][]*wiring.WiringRecord) map[string]overlayHit {
+	out := scanWiringTerminalResultsFrom(scan.Entries, wiringByTC)
+	out = mergeManualClaims(out, buildManualClaimsFrom(projectRoot, scan.Entries, ""))
 	if len(out) == 0 {
 		return nil
 	}
@@ -161,13 +201,8 @@ func scanTerminalResults(projectRoot string, wiringByTC map[string][]*wiring.Wir
 // joins to a currently existing wiring record. It is the wiring-only half of
 // scanTerminalResults; BUG-193's wiring-free manual claim is layered on top by
 // the caller. Returns an empty map when the project has no wiring.
-func scanWiringTerminalResults(projectRoot string, wiringByTC map[string][]*wiring.WiringRecord) map[string]overlayHit {
+func scanWiringTerminalResultsFrom(scanEntries []result.ScanEntry, wiringByTC map[string][]*wiring.WiringRecord) map[string]overlayHit {
 	if len(wiringByTC) == 0 {
-		return nil
-	}
-	dir := filepath.Join(projectRoot, ".gtms", "results")
-	entries, err := os.ReadDir(dir)
-	if err != nil {
 		return nil
 	}
 
@@ -178,13 +213,9 @@ func scanWiringTerminalResults(projectRoot string, wiringByTC map[string][]*wiri
 	}
 	by := make(map[string]stamped)
 
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".handoff.yaml") {
-			continue
-		}
-		path := filepath.Join(dir, e.Name())
-		rc, rErr := result.Read(path)
-		if rErr != nil || rc == nil {
+	for _, e := range scanEntries {
+		rc := e.RC
+		if rc == nil {
 			continue
 		}
 		// BUG-130 structural guard: only terminal execute contracts may
@@ -208,10 +239,7 @@ func scanWiringTerminalResults(projectRoot string, wiringByTC map[string][]*wiri
 		if stamp == "" {
 			stamp = rc.Created
 		}
-		var mtime int64
-		if fi, statErr := os.Stat(path); statErr == nil {
-			mtime = fi.ModTime().UnixNano()
-		}
+		mtime := e.MTime
 		key := overlayKey(rc.Target, framework)
 		readerResult := rc.Result
 		if readerResult == "skip" {
@@ -382,13 +410,7 @@ func mergeManualClaims(out, manual map[string]overlayHit) map[string]overlayHit 
 // editable manual template. "Latest" uses Completed (RFC3339) falling back to
 // Created, with filesystem mtime breaking an equal-second tie -- identical to the
 // wiring join's rule.
-func buildManualClaims(projectRoot, tcFilter string) map[string]overlayHit {
-	dir := filepath.Join(projectRoot, ".gtms", "results")
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return nil
-	}
-
+func buildManualClaimsFrom(projectRoot string, scanEntries []result.ScanEntry, tcFilter string) map[string]overlayHit {
 	type stamped struct {
 		stamp string
 		mtime int64
@@ -396,13 +418,9 @@ func buildManualClaims(projectRoot, tcFilter string) map[string]overlayHit {
 	}
 	by := make(map[string]stamped)
 
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".handoff.yaml") {
-			continue
-		}
-		path := filepath.Join(dir, e.Name())
-		rc, rErr := result.Read(path)
-		if rErr != nil || rc == nil {
+	for _, e := range scanEntries {
+		rc := e.RC
+		if rc == nil {
 			continue
 		}
 		// framework: manual is the authority (BUG-193): the adapter NAME
@@ -418,7 +436,7 @@ func buildManualClaims(projectRoot, tcFilter string) map[string]overlayHit {
 		if tcFilter != "" && rc.Target != tcFilter {
 			continue
 		}
-		if !manualClaimAdmissible(e.Name(), rc) {
+		if !manualClaimAdmissible(e.Base, rc) {
 			continue
 		}
 		if !manualArtefactProven(projectRoot, rc) {
@@ -428,10 +446,7 @@ func buildManualClaims(projectRoot, tcFilter string) map[string]overlayHit {
 		if stamp == "" {
 			stamp = rc.Created
 		}
-		var mtime int64
-		if fi, statErr := os.Stat(path); statErr == nil {
-			mtime = fi.ModTime().UnixNano()
-		}
+		mtime := e.MTime
 		readerResult := rc.Result
 		if readerResult == "skip" {
 			readerResult = "skipped"
@@ -542,11 +557,11 @@ func manualClaimAdmissible(fileName string, rc *result.ResultContract) bool {
 	return true
 }
 
-// manualClaimForTC returns the proven manual claim for one test case, or
+// manualClaimFromScan returns the proven manual claim for one test case, or
 // (zero, false). Used by triage framework inference (resolveTriageFramework) so
 // proven manual evidence is a first-class candidate alongside wiring frameworks.
-func manualClaimForTC(projectRoot, testCaseID string) (overlayHit, bool) {
-	claims := buildManualClaims(projectRoot, testCaseID)
+func manualClaimFromScan(projectRoot string, scan *result.Scan, testCaseID string) (overlayHit, bool) {
+	claims := buildManualClaimsFrom(projectRoot, scan.Entries, testCaseID)
 	hit, ok := claims[overlayKey(testCaseID, "manual")]
 	return hit, ok
 }
@@ -757,6 +772,14 @@ func buildPipelineEntry(
 		ExecuteStatus:  "none",
 		LastResult:     "none",
 	}
+	// REV-273: carry the EXPLICITLY requested framework so applyTaskStatus can
+	// distinguish a manual view from an unmatched non-manual view. A request is
+	// explicit only under strictFramework; defaultFramework on its own (the
+	// non-strict default view) is not a request. Set here so every caller
+	// (status, detail, map) gets it through the one shared builder.
+	if strictFramework {
+		entry.RequestedFramework = defaultFramework
+	}
 
 	// Classify every wiring record so the picker can rank them. ENH-205: hash the
 	// spec via the proven owner path already carried on tc.SourceFile (set by the
@@ -819,15 +842,18 @@ func buildPipelineEntry(
 	// case that later graduates to automate must still surface.
 	entry.ManualReady = manual != nil
 
-	// BUG-127: on a WIRED case, model the manual result as a first-class
+	// BUG-127 / BUG-206: model the manual result as a first-class
 	// FrameworkEntry so it is visible in --json and selectable via
 	// --framework manual (frameworks[] is otherwise built only from wiring
-	// records). Gated on entry.Wired: a manual-only TC already surfaces via
-	// ManualReady + the legacy carriers below and keeps an empty frameworks[]
-	// per the ENH-146 contract (map_phase3d), so we must NOT add one there.
+	// records). BUG-127 added this for WIRED cases; BUG-206 extends it to
+	// manual-only (unwired) cases per the binding JSON state table, replacing
+	// ENH-146's "empty frameworks[] whenever wired:false" rule. The row shape
+	// is Owner Decision 7: Wired:false, the manual artefact, and the recorded
+	// outcome -- no provenance or timestamp fields. The legacy carriers below
+	// still populate the text renderer for the manual-only case.
 	// DUP GUARD: a manual WIRING record (CON-023 Edge Case 1) already produced a
 	// Framework=="manual" entry via the wiringRecs loop above; do not add a second.
-	if entry.Wired && manual != nil {
+	if manual != nil {
 		hasManual := false
 		for _, fe := range entry.Frameworks {
 			if fe.Framework == "manual" {
@@ -873,6 +899,15 @@ func buildPipelineEntry(
 			// applyTaskStatus' recordSupersedes can fire on the manual path.
 			entry.LastRunAt = manualExecutionLastRunAt(projectRoot, tc.ID, manual.Result)
 		}
+	}
+
+	// BUG-206: explicit `--framework manual` on a manual-ONLY (unwired) case
+	// selects the synthesized manual row so --json emits
+	// selected_framework: "manual". Mirrors the wired `--framework manual` path
+	// below (which is gated on entry.Wired). Default and non-manual strict views
+	// keep selected_framework null; the manual result is never auto-selected.
+	if !entry.Wired && manual != nil && strictFramework && defaultFramework == "manual" {
+		entry.SelectedFramework = "manual"
 	}
 
 	// Picker selects per-TC.

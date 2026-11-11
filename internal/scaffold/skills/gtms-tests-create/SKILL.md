@@ -32,7 +32,14 @@ generate the bodies, and shift your effort to reviewing them.
 
 - **folder**: a descriptive topic slug for the test case folder (for example
   `login-lockout`, `csv-export-limits`). Name the behaviour under test, not
-  a ticket number.
+  a ticket number. The folder, including any link in its path, must resolve
+  inside the active test cases directory (`gtms/test/cases/` in a default
+  project). If the create adapter configures an `output-dir`, that must
+  resolve inside the project. `gtms create` refuses either case before writing
+  anything (`... resolves outside the test cases directory` or `... resolves
+  outside the project`). Do not retry the unchanged command: fix the link or
+  path, or the adapter's `output-dir`, first. `gtms agent` explains this in
+  full.
 - **source** (optional): the requirement, change description, or context
   file the test cases cover.
 

@@ -60,9 +60,11 @@ func runExecuteStatusList(ctx context.Context, w io.Writer, projectRoot string, 
 	}
 
 	// Check async in-progress tasks for status updates
+	// BUG-209 section 8: keep polling past a refusal, and report after the list.
+	var refusals []error
 	for _, tf := range executeTasks {
 		if tf.Status == "in-progress" {
-			checkAsyncStatus(ctx, projectRoot, cfg, tf, "execute")
+			refusals = append(refusals, checkAsyncStatus(ctx, projectRoot, cfg, tf, "execute"))
 		}
 	}
 
@@ -92,7 +94,7 @@ func runExecuteStatusList(ctx context.Context, w io.Writer, projectRoot string, 
 	}
 
 	tbl.Render(w)
-	return nil
+	return surfaceAsyncRefusals(append(refusals, listedHandoffRefusals(projectRoot, executeTasks)...))
 }
 
 // runExecuteStatusDetail shows detail for a specific execute target.
@@ -108,9 +110,11 @@ func runExecuteStatusDetail(ctx context.Context, w io.Writer, projectRoot string
 		return nil
 	}
 
-	// Check async in-progress for status updates
+	// Check async in-progress for status updates. A refusal is reported after the
+	// safe detail is printed, and makes the exit non-zero (section 8).
+	var refusal error
 	if tf.Status == "in-progress" {
-		checkAsyncStatus(ctx, projectRoot, cfg, tf, "execute")
+		refusal = checkAsyncStatus(ctx, projectRoot, cfg, tf, "execute")
 		// Re-read in case it was updated
 		tf2, err := task.FindByTarget(projectRoot, "execute", target, task.ValidStatuses...)
 		if err == nil && tf2 != nil {
@@ -133,6 +137,10 @@ func runExecuteStatusDetail(ctx context.Context, w io.Writer, projectRoot string
 	// If there's a result contract, show additional info
 	rcPath := result.ResultPath(projectRoot, tf.ID)
 	rc, err := result.Read(rcPath)
+	if result.IsRefusal(err) {
+		// BUG-209 AC29: the handoff is an unsafe leaf, whatever the task's state.
+		refusal = err
+	}
 	if err == nil {
 		if rc.Summary != "" {
 			fmt.Fprintf(w, "Summary: %s\n", rc.Summary)
@@ -152,6 +160,6 @@ func runExecuteStatusDetail(ctx context.Context, w io.Writer, projectRoot string
 		fmt.Fprintf(w, "Handoff: %s\n", rcPath)
 	}
 
-	return nil
+	return surfaceAsyncRefusal(refusal)
 }
 

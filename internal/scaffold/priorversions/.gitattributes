@@ -1,0 +1,6 @@
+# BUG-203: these are byte-exact v0.3.x scaffolded-file snapshots embedded into the
+# binary as the gtms init --force upgrade "prior version" catalogue. Pin them to LF
+# so a Windows checkout does not CRLF-convert them (the go:embed CRLF trap). The
+# upgrade comparison is EOL-insensitive, but pinning keeps the embedded bytes
+# deterministic across platforms.
+* -text

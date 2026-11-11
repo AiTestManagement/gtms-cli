@@ -34,7 +34,13 @@ type PipelineEntry struct {
 	Wired             bool             `json:"wired"`
 	ManualReady       bool             `json:"manual_ready"`
 	SelectedFramework string           `json:"-"` // emitted via (Un)MarshalJSON as `selected_framework: null|string`
-	Frameworks        []FrameworkEntry `json:"frameworks"`
+	// RequestedFramework is the EXPLICITLY requested framework for this view
+	// (the --framework flag), carried for applyTaskStatus so it can tell a manual
+	// view from an unmatched non-manual view (BUG-210 / REV-273). It is only set
+	// when the request was strict (strictFramework); defaultFramework alone is not
+	// a request. json:"-" AND absent from MarshalJSON, so it changes no JSON output.
+	RequestedFramework string           `json:"-"`
+	Frameworks         []FrameworkEntry `json:"frameworks"`
 
 	// BUG-193: test-case-level triage carrier for a MANUAL-ONLY test case, whose
 	// frameworks[] stays [] (ENH-146) so the manual triage object has no framework

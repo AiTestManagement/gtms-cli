@@ -35,6 +35,10 @@ type TriageView struct {
 	// records "[spec missing]". A folder list is spec-scoped, so orphans never
 	// appear and SpecMissing stays false there.
 	SpecMissing bool
+	// Diagnostics carries the BUG-209 refusals found by ShowTriage's result join, so
+	// the show command can warn and exit non-zero. Unset on list views, whose
+	// refusals are returned by the list call itself.
+	Diagnostics IdentityDiagnostics
 }
 
 // ShowTriage selects one triage record for (testCaseID, framework) using the
@@ -54,11 +58,13 @@ func ShowTriage(projectRoot, testCaseID, framework string) (*TriageView, error) 
 	}
 
 	// Single-TC overlay is sufficient for one record (ENH-201 item 7).
-	overlay, err := scanTerminalResultsForTC(projectRoot, rec.TestCaseID)
+	overlay, refusals, err := scanTerminalResultsForTC(projectRoot, rec.TestCaseID)
 	if err != nil {
 		return nil, fmt.Errorf("scanning terminal results: %w", err)
 	}
-	return &TriageView{Record: rec, ResultChanged: compareRawResult(rec, overlay)}, nil
+	var diags IdentityDiagnostics
+	diags.addResultsRefusals(refusals)
+	return &TriageView{Record: rec, ResultChanged: compareRawResult(rec, overlay), Diagnostics: diags}, nil
 }
 
 // ListTriage enumerates, validates, filters, joins, and orders triage records
@@ -165,10 +171,11 @@ func ListTriageWithDiagnostics(projectRoot string, scope *ScopeInfo, valueFilter
 		resolve = folderTriageResolver
 	}
 
-	views, err := buildTriageViews(projectRoot, recs, resolve, valueFilter, includeResolved)
+	views, refusals, err := buildTriageViews(projectRoot, recs, resolve, valueFilter, includeResolved)
 	if err != nil {
 		return nil, IdentityDiagnostics{}, err
 	}
+	diags.addResultsRefusals(refusals)
 	return views, diags, nil
 }
 
@@ -186,7 +193,14 @@ func ListTriageForTC(projectRoot, tcID, valueFilter string, includeResolved bool
 	if err != nil {
 		return nil, err
 	}
-	return ListTriageForTCWithSnapshot(snap, projectRoot, tcID, valueFilter, includeResolved)
+	views, diags, err := ListTriageForTCWithSnapshot(snap, projectRoot, tcID, valueFilter, includeResolved)
+	if err != nil {
+		return nil, err
+	}
+	if ierr := incompleteReadErr(diags); ierr != nil {
+		return nil, ierr
+	}
+	return views, nil
 }
 
 // ListTriageForTCWithSnapshot is ListTriageForTC against a snapshot the caller
@@ -199,15 +213,21 @@ func ListTriageForTC(projectRoot, tcID, valueFilter string, includeResolved bool
 // (REV-184 CODEX-004): an ID whose spec is Ambiguous or Unprovable is refused with
 // the typed *testcase.OwnershipError and no views, because a record keyed by that
 // ID cannot be attributed to one test case (ADR-024 5b "Single-TC forms").
-func ListTriageForTCWithSnapshot(snap *testcase.Snapshot, projectRoot, tcID, valueFilter string, includeResolved bool) ([]TriageView, error) {
+//
+// BUG-209 section 8: the diagnostics carry any refused handoff or results directory
+// from the scan behind the result join, so the caller can warn and exit non-zero.
+func ListTriageForTCWithSnapshot(snap *testcase.Snapshot, projectRoot, tcID, valueFilter string, includeResolved bool) ([]TriageView, IdentityDiagnostics, error) {
 	if oerr := snap.RequireOwnership(tcID); oerr != nil {
-		return nil, oerr
+		return nil, IdentityDiagnostics{}, oerr
 	}
 	recs, err := flattenScopedRecords(projectRoot, []string{tcID})
 	if err != nil {
-		return nil, err
+		return nil, IdentityDiagnostics{}, err
 	}
-	return buildTriageViews(projectRoot, recs, snapshotTriageResolver(snap), valueFilter, includeResolved)
+	views, refusals, err := buildTriageViews(projectRoot, recs, snapshotTriageResolver(snap), valueFilter, includeResolved)
+	var diags IdentityDiagnostics
+	diags.addResultsRefusals(refusals)
+	return views, diags, err
 }
 
 // triageRecordResolver decides, per record test-case ID, whether the record's spec
@@ -260,12 +280,12 @@ func flattenScopedRecords(projectRoot string, ids []string) ([]*triage.Record, e
 // framework) order every list scope shares. It is the single builder behind the
 // root, folder, and test-case-target list routes so their JSON and human shapes
 // cannot diverge.
-func buildTriageViews(projectRoot string, recs []*triage.Record, resolve triageRecordResolver, valueFilter string, includeResolved bool) ([]TriageView, error) {
+func buildTriageViews(projectRoot string, recs []*triage.Record, resolve triageRecordResolver, valueFilter string, includeResolved bool) ([]TriageView, resultsRefusals, error) {
 	wiringByTC, err := wiringScan(projectRoot)
 	if err != nil {
-		return nil, fmt.Errorf("scanning wiring records: %w", err)
+		return nil, resultsRefusals{}, fmt.Errorf("scanning wiring records: %w", err)
 	}
-	overlay := scanTerminalResults(projectRoot, wiringByTC)
+	overlay, refusals := scanTerminalResults(projectRoot, wiringByTC)
 
 	views := make([]TriageView, 0, len(recs))
 	for _, rec := range recs {
@@ -293,7 +313,7 @@ func buildTriageViews(projectRoot string, recs []*triage.Record, resolve triageR
 		}
 		return a.Framework < b.Framework
 	})
-	return views, nil
+	return views, refusals, nil
 }
 
 // compareRawResult joins a record to the terminal-result overlay and returns

@@ -13,6 +13,17 @@ import (
 	"github.com/aitestmanagement/gtms-cli/internal/result"
 )
 
+// shouldSkipExecuteOnDisk mirrors the production bulk path (BUG-209): it scans
+// .gtms/results once, builds the Source-1 candidates, and asks shouldSkipExecute,
+// so these skip-decision tests exercise the same single-scan selection the bulk
+// run uses.
+func shouldSkipExecuteOnDisk(projectRoot, tcID string, resolved *adapter.ResolvedAdapter, framework string) string {
+	scan := result.OpenScan(projectRoot)
+	cand := buildExecutePassCandidates(scan)
+	scan.Close()
+	return shouldSkipExecute(projectRoot, tcID, resolved, framework, cand[tcID])
+}
+
 // CON-023 / ENH-145 / ENH-146:
 //
 // shouldSkipExecute now consumes (root, tcID, *ResolvedAdapter, framework).
@@ -66,7 +77,7 @@ func TestShouldSkipExecute_ManualAdapter_NeverSkips(t *testing.T) {
 		Config: &config.AdapterConfig{Framework: "manual"},
 	}
 
-	reason := shouldSkipExecute(root, "tc-00000001", resolved, "manual")
+	reason := shouldSkipExecuteOnDisk(root, "tc-00000001", resolved, "manual")
 	assert.Equal(t, "", reason, "manual adapter must never skip, even when results show a clean pass")
 }
 
@@ -82,7 +93,7 @@ func TestShouldSkipExecute_NonManualAdapter_SkipsAlreadyPassing(t *testing.T) {
 		Config: &config.AdapterConfig{Framework: "bats"},
 	}
 
-	reason := shouldSkipExecute(root, "tc-00000002", resolved, "bats")
+	reason := shouldSkipExecuteOnDisk(root, "tc-00000002", resolved, "bats")
 	assert.Equal(t, "already passing", reason)
 }
 
@@ -94,7 +105,7 @@ func TestShouldSkipExecute_NoPriorResult_DoesNotSkip(t *testing.T) {
 		Name:   "bats-runner",
 		Config: &config.AdapterConfig{Framework: "bats"},
 	}
-	reason := shouldSkipExecute(root, "tc-00000003", resolved, "bats")
+	reason := shouldSkipExecuteOnDisk(root, "tc-00000003", resolved, "bats")
 	assert.Equal(t, "", reason)
 }
 
@@ -104,7 +115,7 @@ func TestShouldSkipExecute_NilResolved_NormalBehaviour(t *testing.T) {
 	root := t.TempDir()
 	seedPassingResult(t, root, "task-nil01", "tc-00000004", "bats")
 
-	reason := shouldSkipExecute(root, "tc-00000004", nil, "bats")
+	reason := shouldSkipExecuteOnDisk(root, "tc-00000004", nil, "bats")
 	assert.Equal(t, "already passing", reason,
 		"nil resolved adapter should follow normal skip logic (not manual)")
 }
@@ -126,7 +137,7 @@ func TestShouldSkipExecute_MultiFramework_OtherFrameworkPassDoesNotSkip(t *testi
 
 	// Asking about BATS for the same TC must not be skipped — BATS has
 	// no terminal result of its own yet, only Playwright does.
-	reason := shouldSkipExecute(root, "tc-00000005", resolved, "bats")
+	reason := shouldSkipExecuteOnDisk(root, "tc-00000005", resolved, "bats")
 	assert.Equal(t, "", reason,
 		"Playwright pass must not skip BATS execution — skip is per (tc, framework)")
 
@@ -135,7 +146,7 @@ func TestShouldSkipExecute_MultiFramework_OtherFrameworkPassDoesNotSkip(t *testi
 		Name:   "playwright-runner",
 		Config: &config.AdapterConfig{Framework: "playwright"},
 	}
-	pwReason := shouldSkipExecute(root, "tc-00000005", pwResolved, "playwright")
+	pwReason := shouldSkipExecuteOnDisk(root, "tc-00000005", pwResolved, "playwright")
 	assert.Equal(t, "already passing", pwReason,
 		"Playwright pass must still skip a Playwright re-run on the same TC")
 }
@@ -148,16 +159,16 @@ func TestIsAlreadyPassing_FrameworkScoped(t *testing.T) {
 	seedPassingResult(t, root, "task-bats02", "tc-00000006", "bats")
 	seedPassingResult(t, root, "task-pw02", "tc-00000007", "playwright")
 
-	assert.True(t, isAlreadyPassing(root, "tc-00000006", "bats"))
-	assert.False(t, isAlreadyPassing(root, "tc-00000006", "playwright"),
+	assert.True(t, alreadyPassingOnDisk(root, "tc-00000006", "bats"))
+	assert.False(t, alreadyPassingOnDisk(root, "tc-00000006", "playwright"),
 		"BATS pass must not satisfy a Playwright skip check")
-	assert.True(t, isAlreadyPassing(root, "tc-00000007", "playwright"))
-	assert.False(t, isAlreadyPassing(root, "tc-00000007", "bats"),
+	assert.True(t, alreadyPassingOnDisk(root, "tc-00000007", "playwright"))
+	assert.False(t, alreadyPassingOnDisk(root, "tc-00000007", "bats"),
 		"Playwright pass must not satisfy a BATS skip check")
 
 	// Permissive (empty framework) — any matching pass counts.
-	assert.True(t, isAlreadyPassing(root, "tc-00000006", ""))
-	assert.True(t, isAlreadyPassing(root, "tc-00000007", ""))
+	assert.True(t, alreadyPassingOnDisk(root, "tc-00000006", ""))
+	assert.True(t, alreadyPassingOnDisk(root, "tc-00000007", ""))
 }
 
 // seedNonExecutePassingResult writes a terminal handoff under .gtms/results/
@@ -196,7 +207,7 @@ func TestIsAlreadyPassing_IgnoresAutomatePass(t *testing.T) {
 	root := t.TempDir()
 	seedNonExecutePassingResult(t, root, "task-auto01", "tc-00000010", "automate", "bats")
 
-	assert.False(t, isAlreadyPassing(root, "tc-00000010", "bats"),
+	assert.False(t, alreadyPassingOnDisk(root, "tc-00000010", "bats"),
 		"automate pass must not satisfy isAlreadyPassing")
 }
 
@@ -206,7 +217,7 @@ func TestIsAlreadyPassing_IgnoresPrimePass(t *testing.T) {
 	root := t.TempDir()
 	seedNonExecutePassingResult(t, root, "task-prime01", "tc-00000011", "prime", "bats")
 
-	assert.False(t, isAlreadyPassing(root, "tc-00000011", "bats"),
+	assert.False(t, alreadyPassingOnDisk(root, "tc-00000011", "bats"),
 		"prime pass must not satisfy isAlreadyPassing")
 }
 
@@ -216,7 +227,7 @@ func TestIsAlreadyPassing_IgnoresCreatePass(t *testing.T) {
 	root := t.TempDir()
 	seedNonExecutePassingResult(t, root, "task-create01", "tc-00000012", "create", "bats")
 
-	assert.False(t, isAlreadyPassing(root, "tc-00000012", "bats"),
+	assert.False(t, alreadyPassingOnDisk(root, "tc-00000012", "bats"),
 		"create pass must not satisfy isAlreadyPassing")
 }
 
@@ -227,7 +238,7 @@ func TestIsAlreadyPassing_ExecutePassStillDetected(t *testing.T) {
 	root := t.TempDir()
 	seedPassingResult(t, root, "task-exec01", "tc-00000013", "bats")
 
-	assert.True(t, isAlreadyPassing(root, "tc-00000013", "bats"),
+	assert.True(t, alreadyPassingOnDisk(root, "tc-00000013", "bats"),
 		"execute pass must still satisfy isAlreadyPassing")
 }
 
@@ -258,6 +269,6 @@ func TestIsAlreadyPassing_AutomateThenExecutePass(t *testing.T) {
 	_, err := result.Create(root, rc)
 	require.NoError(t, err)
 
-	assert.True(t, isAlreadyPassing(root, "tc-00000014", "bats"),
+	assert.True(t, alreadyPassingOnDisk(root, "tc-00000014", "bats"),
 		"latest execute pass must win over earlier automate pass")
 }
